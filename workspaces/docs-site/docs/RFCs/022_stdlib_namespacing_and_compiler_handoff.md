@@ -492,4 +492,4 @@ This RFC can be considered "implemented" when the following are complete.
 - [ ] Documentation that mentions the legacy marker is updated to the new spelling (`@std.builtin`) and the legacy
   spelling is marked as removed by this RFC.
 - [ ] Documentation, tutorials, and examples are updated to use `std.*` imports and namespaced decorators
-  (e.g. `std.web`and `@std.web.route``), removing legacy spellings like `from web import ...` and `@route(...)`.
+  (e.g. `std.web`and `@std.web.route`), removing legacy spellings like `from web import ...` and `@route(...)`.
