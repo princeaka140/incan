@@ -86,22 +86,20 @@ impl<'a> IrEmitter<'a> {
                     }
                 }
 
-                // If we have function signature, use it to determine borrows
-                if let Some(sig) = function_sig {
-                    if let Some(param) = sig.params.get(idx) {
-                        if param.mutability == Mutability::Mutable {
-                            match &a.ty {
-                                IrType::Ref(_) | IrType::RefMut(_) => return Ok(emitted),
-                                _ => return Ok(quote! { &mut #emitted }),
-                            }
+                // If we have a function signature, use it to determine borrows
+                if let Some(param) = function_sig.and_then(|sig| sig.params.get(idx)) {
+                    if param.mutability == Mutability::Mutable {
+                        match &a.ty {
+                            IrType::Ref(_) | IrType::RefMut(_) => return Ok(emitted),
+                            _ => return Ok(quote! { &mut #emitted }),
                         }
-                        if matches!(&param.ty, IrType::Ref(_)) {
-                            match &a.ty {
-                                IrType::Ref(_) | IrType::RefMut(_) => return Ok(emitted),
-                                _ => {
-                                    if !a.ty.is_copy() {
-                                        return Ok(quote! { &#emitted });
-                                    }
+                    }
+                    if matches!(&param.ty, IrType::Ref(_)) {
+                        match &a.ty {
+                            IrType::Ref(_) | IrType::RefMut(_) => return Ok(emitted),
+                            _ => {
+                                if !a.ty.is_copy() {
+                                    return Ok(quote! { &#emitted });
                                 }
                             }
                         }
@@ -143,10 +141,10 @@ impl<'a> IrEmitter<'a> {
         right: &TypedExpr,
     ) -> Result<TokenStream, EmitError> {
         // Special-case: const-fold string additions using literals/known consts
-        if matches!(op, BinOp::Add) {
-            if let Some(tokens) = self.try_emit_static_str_add(left, right)? {
-                return Ok(tokens);
-            }
+        if matches!(op, BinOp::Add)
+            && let Some(tokens) = self.try_emit_static_str_add(left, right)?
+        {
+            return Ok(tokens);
         }
 
         let l_raw = self.emit_expr(left)?;
