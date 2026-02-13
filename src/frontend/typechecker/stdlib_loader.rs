@@ -140,24 +140,22 @@ fn extract_function_signatures(program: &ast::Program) -> Vec<(String, FunctionI
 
 /// Convert an AST `FunctionDecl` to a typechecker `FunctionInfo`.
 fn function_decl_to_info(func: &ast::FunctionDecl) -> FunctionInfo {
+    // Extract just the type parameter names for type resolution.
+    let tp_names: Vec<String> = func.type_params.iter().map(|tp| tp.name.clone()).collect();
+
     let params: Vec<(String, ResolvedType)> = func
         .params
         .iter()
-        .map(|p| {
-            (
-                p.node.name.clone(),
-                ast_type_to_resolved(&p.node.ty.node, &func.type_params),
-            )
-        })
+        .map(|p| (p.node.name.clone(), ast_type_to_resolved(&p.node.ty.node, &tp_names)))
         .collect();
 
-    let return_type = ast_type_to_resolved(&func.return_type.node, &func.type_params);
+    let return_type = ast_type_to_resolved(&func.return_type.node, &tp_names);
 
     FunctionInfo {
         params,
         return_type,
         is_async: func.is_async,
-        type_params: func.type_params.clone(),
+        type_params: tp_names,
     }
 }
 
@@ -300,6 +298,36 @@ mod tests {
         // Unknown function returns None.
         let unknown = cache.lookup_function(&path, "nonexistent_function");
         assert!(unknown.is_none(), "should not find unknown function");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_async_time_module_falls_back() {
+        // stdlib/async/time.incn contains `model Duration:` with methods and `async def`, which the current parser
+        // can't handle in stub extraction mode. The loader returns None and the typechecker uses the hardcoded
+        // async_import_function_info() fallback.
+        let path = vec!["std".to_string(), "async".to_string(), "time".to_string()];
+        let fns = load_stdlib_module_functions(&path);
+        // Currently returns None because the parser can't handle models + async defs in the same file.
+        // This test documents the current behavior; it will start passing once the parser handles these.
+        assert!(
+            fns.is_none(),
+            "async/time.incn parse currently fails; fallback expected"
+        );
+    }
+
+    #[test]
+    fn test_load_async_channel_module() -> Result<(), Box<dyn std::error::Error>> {
+        let path = vec!["std".to_string(), "async".to_string(), "channel".to_string()];
+        let fns = load_stdlib_module_functions(&path);
+
+        let fns = fns.ok_or("failed to load stdlib/async/channel.incn")?;
+
+        let channel_fn = fns.iter().find(|(name, _)| name == "channel");
+        assert!(channel_fn.is_some(), "should find 'channel' function");
+        let oneshot_fn = fns.iter().find(|(name, _)| name == "oneshot");
+        assert!(oneshot_fn.is_some(), "should find 'oneshot' function");
 
         Ok(())
     }

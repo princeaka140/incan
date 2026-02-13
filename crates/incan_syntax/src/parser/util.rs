@@ -7,6 +7,7 @@ impl<'a> Parser<'a> {
     // Utilities
     // ========================================================================
 
+    /// Parse an identifier.
     fn identifier(&mut self) -> Result<Ident, CompileError> {
         match &self.peek().kind {
             TokenKind::Ident(name) => {
@@ -21,6 +22,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse an identifier and return it as a spanned token.
     fn identifier_spanned(&mut self) -> Result<Spanned<Ident>, CompileError> {
         match &self.peek().kind {
             TokenKind::Ident(name) => {
@@ -84,10 +86,6 @@ impl<'a> Parser<'a> {
                 self.advance();
                 Ok(name)
             }
-            TokenKind::Keyword(KeywordId::Async) => {
-                self.advance();
-                Ok("async".to_string())
-            }
             TokenKind::Keyword(KeywordId::Rust) => {
                 self.advance();
                 Ok("rust".to_string())
@@ -99,14 +97,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn identifier_list(&mut self) -> Result<Vec<Ident>, CompileError> {
-        let mut idents = vec![self.identifier()?];
-        while self.match_token(&TokenKind::Punctuation(PunctuationId::Comma)) {
-            idents.push(self.identifier()?);
-        }
-        Ok(idents)
-    }
-
+    /// Parse a list of identifiers and return them as spanned tokens.
     fn identifier_list_spanned(&mut self) -> Result<Vec<Spanned<Ident>>, CompileError> {
         let mut idents = vec![self.identifier_spanned()?];
         while self.match_token(&TokenKind::Punctuation(PunctuationId::Comma)) {
@@ -115,6 +106,7 @@ impl<'a> Parser<'a> {
         Ok(idents)
     }
 
+    /// Parse a string literal and return it as a spanned token.
     fn string_literal(&mut self) -> Result<String, CompileError> {
         match &self.peek().kind {
             TokenKind::String(s) => {

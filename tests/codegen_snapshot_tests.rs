@@ -1,8 +1,7 @@
 //! Golden snapshot tests for codegen
 //!
-//! These tests generate Rust code from `.incn` input files and compare
-//! the output against stored snapshots. This ensures codegen changes are
-//! reviewed and intentional.
+//! These tests generate Rust code from `.incn` input files and compare the output against stored snapshots.
+//! This ensures codegen changes are reviewed and intentional.
 //!
 //! Run with: `cargo test --test codegen_snapshot_tests`
 //! Review changes: `cargo insta review`
@@ -13,13 +12,16 @@ use std::fs;
 
 /// Generate Rust code from Incan source
 fn generate_rust(source: &str) -> String {
-    let tokens = lexer::lex(source).expect("lexer failed");
-    let ast = parser::parse(&tokens).expect("parser failed");
-    normalize_codegen_output(
-        &IrCodegen::new()
-            .try_generate(&ast)
-            .expect("codegen snapshot inputs must typecheck"),
-    )
+    let Ok(tokens) = lexer::lex(source) else {
+        panic!("lexer failed");
+    };
+    let Ok(ast) = parser::parse(&tokens) else {
+        panic!("parser failed");
+    };
+    let Ok(code) = IrCodegen::new().try_generate(&ast) else {
+        panic!("codegen snapshot inputs must typecheck");
+    };
+    normalize_codegen_output(&code)
 }
 
 /// Normalize generated output so snapshots don't churn on version bumps.
@@ -35,7 +37,10 @@ fn normalize_codegen_output(code: &str) -> String {
 /// Load a test file from the codegen_snapshots directory
 fn load_test_file(name: &str) -> String {
     let path = format!("tests/codegen_snapshots/{}.incn", name);
-    fs::read_to_string(&path).unwrap_or_else(|_| panic!("Failed to read test file: {}", path))
+    let Ok(content) = fs::read_to_string(&path) else {
+        panic!("Failed to read test file: {}", path);
+    };
+    content
 }
 
 #[test]
@@ -116,6 +121,7 @@ def main() -> None:
     let routes_source = r#"
 import std.web as web
 from std.web import Response, Json, Query, POST
+import std.async
 
 @derive(Deserialize)
 model CreateThingRequest:
@@ -134,16 +140,26 @@ async def search(params: Query[SearchParams]) -> Response:
   return Response.ok()
 "#;
 
-    let main_tokens = lexer::lex(main_source).expect("lexer failed");
-    let main_ast = parser::parse(&main_tokens).expect("parser failed");
-    let routes_tokens = lexer::lex(routes_source).expect("lexer failed");
-    let routes_ast = parser::parse(&routes_tokens).expect("parser failed");
+    let Ok(main_tokens) = lexer::lex(main_source) else {
+        panic!("lexer failed")
+    };
+    let Ok(main_ast) = parser::parse(&main_tokens) else {
+        panic!("parser failed")
+    };
+    let Ok(routes_tokens) = lexer::lex(routes_source) else {
+        panic!("lexer failed")
+    };
+    let Ok(routes_ast) = parser::parse(&routes_tokens) else {
+        panic!("parser failed")
+    };
 
     let mut codegen = IrCodegen::new();
     codegen.add_module_with_path_segments("api_routes", &routes_ast, vec!["api".to_string(), "routes".to_string()]);
-    let (main_code, _modules) = codegen
-        .try_generate_multi_file_nested(&main_ast, &[vec!["api".to_string(), "routes".to_string()]])
-        .expect("codegen must succeed");
+    let Ok((main_code, _modules)) =
+        codegen.try_generate_multi_file_nested(&main_ast, &[vec!["api".to_string(), "routes".to_string()]])
+    else {
+        panic!("codegen must succeed");
+    };
     let rust_code = normalize_codegen_output(&main_code);
     insta::assert_snapshot!("web_route_extractors_nested_module", rust_code);
 }
@@ -157,9 +173,15 @@ from std.web import route, Response
 def get(id: int) -> Response:
   return Response.ok()
 "#;
-    let tokens = lexer::lex(source).expect("lexer failed");
-    let ast = parser::parse(&tokens).expect("parser failed");
-    let err = IrCodegen::new().try_generate(&ast).expect_err("expected codegen error");
+    let Ok(tokens) = lexer::lex(source) else {
+        panic!("lexer failed")
+    };
+    let Ok(ast) = parser::parse(&tokens) else {
+        panic!("parser failed")
+    };
+    let Err(err) = IrCodegen::new().try_generate(&ast) else {
+        panic!("expected codegen error")
+    };
     assert!(err.to_string().contains("duplicate web route param 'id'"));
 }
 
@@ -172,9 +194,15 @@ from std.web import route, Response
 def get(id: int) -> Response:
   return Response.ok()
 "#;
-    let tokens = lexer::lex(source).expect("lexer failed");
-    let ast = parser::parse(&tokens).expect("parser failed");
-    let err = IrCodegen::new().try_generate(&ast).expect_err("expected codegen error");
+    let Ok(tokens) = lexer::lex(source) else {
+        panic!("lexer failed")
+    };
+    let Ok(ast) = parser::parse(&tokens) else {
+        panic!("parser failed")
+    };
+    let Err(err) = IrCodegen::new().try_generate(&ast) else {
+        panic!("expected codegen error")
+    };
     assert!(err.to_string().contains("unterminated web route param"));
 }
 
@@ -184,9 +212,8 @@ def get(id: int) -> Response:
 
 #[test]
 fn test_web_route_codegen_no_framework_crate_leakage() {
-    // RFC 022 requires that generated Rust for web programs references
-    // incan_stdlib::web::... but never directly references framework crates
-    // like axum::, actix_web::, etc.
+    // RFC 022 requires that generated Rust for web programs references incan_stdlib::web::... but never directly
+    // references framework crates like axum::, actix_web::, etc.
     let source = load_test_file("web_route_extractors");
     let rust_code = generate_rust(&source);
 
@@ -442,15 +469,45 @@ fn test_newtype_checked_construction_codegen() {
     insta::assert_snapshot!("newtype_checked_construction", rust_code);
 }
 
+// ============================================================================
 /// RFC 023: `rust.module()` + `@rust.extern` delegation codegen.
+// ============================================================================
 ///
-/// Verifies that `@rust.extern` functions emit delegation calls to the declared Rust module path,
-/// while pure Incan functions in the same module compile normally.
+/// Verifies that `@rust.extern` functions emit delegation calls to the declared Rust module path, while pure Incan
+/// functions in the same module compile normally.
 #[test]
 fn test_rust_extern_delegation_codegen() {
     let source = load_test_file("rust_extern_delegation");
     let rust_code = generate_rust(&source);
     insta::assert_snapshot!("rust_extern_delegation", rust_code);
+}
+
+// ============================================================================
+// RFC 023: Trait Bound Inference and `with` Annotation
+// ============================================================================
+
+/// RFC 023: Inferred trait bounds from usage (`==`/`!=` -> PartialEq, f-string -> Display, etc.)
+#[test]
+fn test_trait_bound_inference_codegen() {
+    let source = load_test_file("trait_bound_inference");
+    let rust_code = generate_rust(&source);
+    insta::assert_snapshot!("trait_bound_inference", rust_code);
+}
+
+/// RFC 023: Explicit `with` bounds on type parameters.
+#[test]
+fn test_trait_bound_explicit_codegen() {
+    let source = load_test_file("trait_bound_explicit");
+    let rust_code = generate_rust(&source);
+    insta::assert_snapshot!("trait_bound_explicit", rust_code);
+}
+
+/// RFC 023: Additional inference cases (Display, Dict key hashing, arithmetic, transitive propagation).
+#[test]
+fn test_trait_bound_inference_more_codegen() {
+    let source = load_test_file("trait_bound_inference_more");
+    let rust_code = generate_rust(&source);
+    insta::assert_snapshot!("trait_bound_inference_more", rust_code);
 }
 
 // Glob-based test that auto-discovers all .incn files
