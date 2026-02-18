@@ -533,6 +533,30 @@ fn test_std_derives_string_compiled_codegen() {
     insta::assert_snapshot!("std_derives_string_compiled", rust_code);
 }
 
+/// RFC 023: compile `std.serde.json` (Serialize, Deserialize) from `.incn` source.
+///
+/// Verifies that trait declarations with `@rust.extern` methods compile through the full pipeline when serde namespace
+/// is in IncanSource mode.
+#[test]
+fn test_std_serde_json_compiled_codegen() {
+    let path = "crates/incan_stdlib/stdlib/serde/json.incn";
+    let Ok(source) = fs::read_to_string(path) else {
+        panic!("Failed to read stdlib source file: {}", path);
+    };
+    let rust_code = generate_rust(&source);
+    insta::assert_snapshot!("std_serde_json_compiled", rust_code);
+}
+
+/// RFC 023: verify `from std.serde.json import Serialize, Deserialize` resolves and compiles.
+///
+/// Exercises the stdlib import path for serde traits alongside @derive(Serialize, Deserialize).
+#[test]
+fn test_std_serde_json_import_codegen() {
+    let source = load_test_file("std_serde_json_import");
+    let rust_code = generate_rust(&source);
+    insta::assert_snapshot!("std_serde_json_import", rust_code);
+}
+
 // ============================================================================
 /// Issue #145: Full surface-semantics path for `assert` statements.
 // ============================================================================

@@ -88,7 +88,7 @@ pub const STDLIB_NAMESPACES: &[StdlibNamespace] = &[
     },
     StdlibNamespace {
         name: "serde",
-        impl_mode: StdlibImplMode::RuntimeFacade,
+        impl_mode: StdlibImplMode::IncanSource,
         feature: Some("json"),
         submodules: &["json"],
     },
@@ -274,6 +274,10 @@ mod tests {
     fn stdlib_impl_modes_are_registry_driven() {
         assert_eq!(
             stdlib_impl_mode_for(&segs(&["std", "testing"])),
+            Some(StdlibImplMode::IncanSource)
+        );
+        assert_eq!(
+            stdlib_impl_mode_for(&segs(&["std", "serde"])),
             Some(StdlibImplMode::IncanSource)
         );
         assert_eq!(

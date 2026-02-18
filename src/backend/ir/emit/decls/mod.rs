@@ -156,15 +156,18 @@ impl<'a> IrEmitter<'a> {
         alias: &Option<String>,
         items: &[super::super::decl::IrImportItem],
     ) -> Result<TokenStream, EmitError> {
-        // Skip serde imports if we're already importing them automatically
-        if self.needs_serde && path.len() == 1 && path[0] == "serde" {
+        // Skip serde imports if we're already importing them automatically.
+        // Covers both `from serde import ...` and `from std.serde.json import Serialize, Deserialize`.
+        if self.needs_serde {
             let is_serde_trait = items.iter().any(|item| {
                 matches!(
                     derives::from_str(item.name.as_str()),
                     Some(DeriveId::Serialize | DeriveId::Deserialize)
                 )
             });
-            if is_serde_trait {
+            let is_serde_import_path = (path.len() == 1 && path[0] == "serde")
+                || (path.len() >= 2 && path[0] == stdlib::STDLIB_ROOT && path[1] == "serde");
+            if is_serde_trait && is_serde_import_path {
                 return Ok(quote! {});
             }
         }

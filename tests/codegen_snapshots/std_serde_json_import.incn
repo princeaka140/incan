@@ -1,0 +1,10 @@
+# RFC 023: Verify `from std.serde.json import` resolves and compiles.
+# Uses the stdlib trait definitions (IncanSource mode) alongside `@derive(Serialize, Deserialize)` for emission.
+
+from std.serde.json import Serialize, Deserialize
+
+@derive(Serialize, Deserialize)
+model Config:
+    host: str
+    port: int
+    debug: bool

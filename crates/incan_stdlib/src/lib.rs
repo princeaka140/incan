@@ -21,6 +21,15 @@ pub mod version;
 #[cfg(feature = "json")]
 pub mod json;
 
+/// RFC 023: Incan `std.serde` namespace facade.
+///
+/// The `std.serde.json` module's `rust.module()` directive points here. Re-exports the JSON traits
+/// so that `incan_stdlib::serde::ToJson` and `incan_stdlib::serde::FromJson` are available.
+#[cfg(feature = "json")]
+pub mod serde {
+    pub use crate::json::{FromJson, ToJson};
+}
+
 /// Internal re-exports used by compiler-generated code.
 ///
 /// These are **not** part of the user-facing stdlib API and may change alongside the compiler (toolchain-locked).

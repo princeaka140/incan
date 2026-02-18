@@ -90,7 +90,7 @@ udeps:
 .PHONY: pre-commit  ## quality - Fast pre-commit: fmt, lint, and test (no release build, no udeps)
 pre-commit: fmt lint
 	@echo "\033[1mRunning tests...\033[0m"
-	@cargo nextest run --all || cargo test --all
+	@cargo test --all
 	@echo "\033[32m✓ Pre-commit checks passed\033[0m"
 
 .PHONY: pre-commit-full  ## quality - Full CI check: fmt, lint, udeps, test, and release build
@@ -168,7 +168,12 @@ verify:
 .PHONY: test-verbose  ## test - Run tests with output
 test-verbose:
 	@echo "\033[1mRunning tests (verbose)...\033[0m"
-	@cargo nextest run --all --no-capture 2>/dev/null || cargo test -- --nocapture
+	@cargo nextest run --all --no-capture 2>/dev/null || cargo test --all -- --nocapture
+
+.PHONY: test-diagnose  ## test - Run tests with live output (use if pre-commit hangs to find culprit)
+test-diagnose:
+	@echo "\033[1mRunning tests with live output (Ctrl+C when stuck to see last test)...\033[0m"
+	@cargo test --all --no-fail-fast -- --nocapture --test-threads=1
 
 .PHONY: test-one  ## test - Run specific test (TEST=name)
 test-one:
