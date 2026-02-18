@@ -2,7 +2,7 @@
 
 - Status: Planned
 - Author(s): Danny Meijer (@dannymeijer)
-- Issue: #149
+- Issue: #148
 - RFC PR: —
 - Created: 2026-02-17
 - Related:
