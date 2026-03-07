@@ -15,6 +15,33 @@ use std::path::{Path, PathBuf};
 use crate::manifest::DependencySpec;
 use incan_core::lang::rust_keywords;
 
+// ============================================================================
+// RFC 023: Stdlib module naming
+// ============================================================================
+
+/// Check if a module path is a stdlib module (starts with "std").
+fn is_stdlib_path(path: &[String]) -> bool {
+    path.first().is_some_and(|s| s == "std")
+}
+
+/// Transform stdlib module path to use `__incan_std` prefix to avoid shadowing Rust's `std`.
+///
+/// ## Examples
+/// - `["std", "testing"]` → `["__incan_std", "testing"]`
+/// - `["db", "models"]` → `["db", "models"]` (unchanged)
+///
+/// RFC 023: Generated stdlib modules are emitted under `__incan_std` to prevent collision with Rust's `std` crate.
+/// This transformation is applied consistently across module declarations, `use` paths, and directory structures.
+fn transform_stdlib_path(path: &[String]) -> Vec<String> {
+    if is_stdlib_path(path) {
+        let mut transformed = vec!["__incan_std".to_string()];
+        transformed.extend_from_slice(&path[1..]);
+        transformed
+    } else {
+        path.to_vec()
+    }
+}
+
 /// Project generator for creating runnable Rust projects from Incan code.
 pub struct ProjectGenerator {
     /// Output directory for the generated project
@@ -24,11 +51,15 @@ pub struct ProjectGenerator {
     /// Whether this is a binary (true) or library (false)
     pub(super) is_binary: bool,
     /// Whether serde is needed (for Serialize/Deserialize derives)
+    // TODO: Replace with manifest-driven feature activation — imported modules should declare
+    // their own required Cargo features rather than the compiler scanning for them. When that
+    // model lands, `needs_serde`, `needs_tokio`, `needs_web`, and their `scan_for_*` counterparts
+    // in `IrCodegen` can all be deleted in favour of a collected set of module-declared features.
     pub(super) needs_serde: bool,
     /// Whether tokio is needed (for async runtime)
     pub(super) needs_tokio: bool,
-    /// Whether web routing support is needed (stdlib feature)
-    pub(super) needs_axum: bool,
+    /// Whether web support is needed (enables the `web` stdlib feature and extra deps like `axum`).
+    pub(super) needs_web: bool,
     /// Resolved Rust crate dependencies.
     pub(super) dependencies: Vec<DependencySpec>,
     /// Resolved dev-only Rust dependencies.
@@ -51,7 +82,7 @@ impl ProjectGenerator {
             is_binary,
             needs_serde: false,
             needs_tokio: false,
-            needs_axum: false,
+            needs_web: false,
             dependencies: Vec::new(),
             dev_dependencies: Vec::new(),
             include_dev_dependencies: false,
@@ -83,15 +114,15 @@ impl ProjectGenerator {
         self.needs_tokio = needs;
     }
 
-    /// Enable axum support (for web framework).
-    pub fn with_axum(mut self) -> Self {
-        self.needs_axum = true;
+    /// Enable web support (stdlib `web` feature + framework dependencies).
+    pub fn with_web(mut self) -> Self {
+        self.needs_web = true;
         self
     }
 
-    /// Set whether axum is needed.
-    pub fn set_needs_axum(&mut self, needs: bool) {
-        self.needs_axum = needs;
+    /// Set whether web support is needed.
+    pub fn set_needs_web(&mut self, needs: bool) {
+        self.needs_web = needs;
     }
 
     /// Set resolved Rust dependencies.
@@ -211,6 +242,8 @@ impl ProjectGenerator {
     /// - `from db::models import User` creates `src/db/mod.rs` and `src/db/models.rs`
     /// - main.rs gets `mod db;` (top-level only)
     ///
+    /// RFC 023: Stdlib modules (`std.*`) are transformed to `__incan_std.*` to avoid shadowing Rust's `std` crate.
+    ///
     /// # Arguments
     /// * `main_code` - The main.rs code (without mod declarations, they will be prepended)
     /// * `modules` - HashMap of path segments to module code (e.g., ["db", "models"] -> "pub struct User { ... }")
@@ -223,6 +256,13 @@ impl ProjectGenerator {
         fs::write(self.output_dir.join("Cargo.toml"), cargo_toml)?;
         self.write_cargo_lock_if_needed()?;
 
+        // ---- RFC 023: Transform stdlib paths to __incan_std ----
+        let mut transformed_modules: HashMap<Vec<String>, String> = HashMap::new();
+        for (path, code) in modules {
+            let transformed_path = transform_stdlib_path(path);
+            transformed_modules.insert(transformed_path, code.clone());
+        }
+
         // ---- Collect directory structure and submodules ----
         // For ["db", "models"], we need:
         //   - src/db/ directory
@@ -231,7 +271,7 @@ impl ProjectGenerator {
         let mut dir_submodules: HashMap<Vec<String>, Vec<String>> = HashMap::new();
         let mut top_level_modules: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-        for path_segments in modules.keys() {
+        for path_segments in transformed_modules.keys() {
             if !path_segments.is_empty() {
                 top_level_modules.insert(path_segments[0].clone());
             }
@@ -250,7 +290,12 @@ impl ProjectGenerator {
             subs.dedup();
         }
 
-        // ---- Create directories and mod.rs files for intermediate directories ----
+        // ---- Separate modules with submodules from leaf modules ----
+        // Modules that have submodules need their code in mod.rs, not a separate .rs file
+        let modules_with_submodules: std::collections::HashSet<Vec<String>> =
+            dir_submodules.keys().filter(|path| !path.is_empty()).cloned().collect();
+
+        // ---- Create directories and mod.rs files for modules with submodules ----
         for (dir_path, submodules) in &dir_submodules {
             if dir_path.is_empty() {
                 // This is the root level — handled by main.rs
@@ -263,19 +308,40 @@ impl ProjectGenerator {
             }
             fs::create_dir_all(&dir)?;
 
-            // Create mod.rs with pub mod declarations (keyword-escaped for Rust).
-            let mod_rs_content: String = submodules
+            // Build mod.rs content: submodule declarations + module code (if exists)
+            let mut mod_rs_content = String::new();
+
+            // Add submodule declarations
+            let submod_declarations: String = submodules
                 .iter()
                 .map(|s| format!("pub mod {};", rust_keywords::escape_keyword(s)))
                 .collect::<Vec<_>>()
                 .join("\n");
 
+            if !submod_declarations.is_empty() {
+                mod_rs_content.push_str(&submod_declarations);
+                mod_rs_content.push('\n');
+            }
+
+            // If this module itself has code, append it
+            if let Some(module_code) = transformed_modules.get(dir_path) {
+                if !mod_rs_content.is_empty() {
+                    mod_rs_content.push('\n');
+                }
+                mod_rs_content.push_str(module_code);
+            }
+
             let mod_rs_path = dir.join("mod.rs");
-            fs::write(mod_rs_path, format!("{}\n", mod_rs_content))?;
+            fs::write(mod_rs_path, mod_rs_content)?;
         }
 
-        // ---- Write each module's code file ----
-        for (path_segments, module_code) in modules {
+        // ---- Write leaf module code files (modules without submodules) ----
+        for (path_segments, module_code) in &transformed_modules {
+            // Skip modules that have submodules (already written to mod.rs above)
+            if modules_with_submodules.contains(path_segments) {
+                continue;
+            }
+
             // Build the file path: src/db/models.rs for ["db", "models"]
             let mut file_path = src_dir.clone();
             for segment in &path_segments[..path_segments.len() - 1] {
@@ -345,6 +411,38 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
+    fn test_is_stdlib_path() {
+        assert!(is_stdlib_path(&["std".to_string(), "testing".to_string()]));
+        assert!(is_stdlib_path(&["std".to_string()]));
+        assert!(!is_stdlib_path(&["db".to_string(), "models".to_string()]));
+        assert!(!is_stdlib_path(&[]));
+    }
+
+    #[test]
+    fn test_transform_stdlib_path() {
+        // Stdlib paths get transformed
+        assert_eq!(
+            transform_stdlib_path(&["std".to_string(), "testing".to_string()]),
+            vec!["__incan_std".to_string(), "testing".to_string()]
+        );
+        assert_eq!(
+            transform_stdlib_path(&["std".to_string(), "derives".to_string(), "comparison".to_string()]),
+            vec![
+                "__incan_std".to_string(),
+                "derives".to_string(),
+                "comparison".to_string()
+            ]
+        );
+
+        // Non-stdlib paths are unchanged
+        assert_eq!(
+            transform_stdlib_path(&["db".to_string(), "models".to_string()]),
+            vec!["db".to_string(), "models".to_string()]
+        );
+        assert_eq!(transform_stdlib_path(&["api".to_string()]), vec!["api".to_string()]);
+    }
+
+    #[test]
     fn test_generate_multi_creates_mod_declarations() -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = std::env::temp_dir().join("incan_test_multi");
         let _ = fs::remove_dir_all(&temp_dir); // Clean up any previous test
@@ -380,6 +478,71 @@ mod tests {
         assert!(utils_content.contains("pub fn greet"));
 
         // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_generate_nested_transforms_stdlib_to_incan_std() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = std::env::temp_dir().join("incan_test_stdlib_transform");
+        let _ = fs::remove_dir_all(&temp_dir);
+
+        let generator = ProjectGenerator::new(&temp_dir, "test_stdlib", true);
+
+        let mut modules = HashMap::new();
+        // Add a stdlib module (std::testing)
+        modules.insert(
+            vec!["std".to_string(), "testing".to_string()],
+            "pub fn assert(condition: bool) { if !condition { panic!() } }".to_string(),
+        );
+        // Add a regular user module
+        modules.insert(
+            vec!["db".to_string(), "models".to_string()],
+            "pub struct User { pub name: String }".to_string(),
+        );
+
+        let main_code = "fn main() { println!(\"Hello\"); }";
+
+        generator.generate_nested(main_code, &modules)?;
+
+        // Check main.rs has transformed stdlib module declaration
+        let main_content = fs::read_to_string(temp_dir.join("src/main.rs"))?;
+        assert!(
+            main_content.contains("mod __incan_std;"),
+            "main.rs should declare '__incan_std' module"
+        );
+        assert!(main_content.contains("mod db;"), "main.rs should declare 'db' module");
+        assert!(
+            !main_content.contains("mod std;"),
+            "main.rs should NOT have 'mod std;' (would shadow Rust std)"
+        );
+
+        // Check __incan_std directory exists (transformed from std)
+        assert!(
+            temp_dir.join("src/__incan_std").exists(),
+            "__incan_std directory should exist"
+        );
+        assert!(
+            temp_dir.join("src/__incan_std/mod.rs").exists(),
+            "__incan_std/mod.rs should exist"
+        );
+        assert!(
+            temp_dir.join("src/__incan_std/testing.rs").exists(),
+            "__incan_std/testing.rs should exist"
+        );
+
+        // Check __incan_std/mod.rs has correct submodule declaration
+        let incan_std_mod = fs::read_to_string(temp_dir.join("src/__incan_std/mod.rs"))?;
+        assert!(incan_std_mod.contains("pub mod testing;"));
+
+        // Check testing module content is preserved
+        let testing_content = fs::read_to_string(temp_dir.join("src/__incan_std/testing.rs"))?;
+        assert!(testing_content.contains("pub fn assert"));
+
+        // Check regular user module is unchanged
+        assert!(temp_dir.join("src/db").exists());
+        assert!(temp_dir.join("src/db/models.rs").exists());
+
         let _ = fs::remove_dir_all(&temp_dir);
         Ok(())
     }

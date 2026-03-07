@@ -51,11 +51,9 @@ pub struct IrEmitter<'a> {
     /// Whether to emit the Zen of Incan in main
     emit_zen_in_main: bool,
     /// Whether serde is needed (for Serialize/Deserialize derives)
-    needs_serde: bool,
+    needs_serde: RefCell<bool>,
     /// Whether tokio is needed (for async runtime)
     needs_tokio: bool,
-    /// Whether axum web framework is needed
-    needs_axum: bool,
     /// Function registry for call-site type checking
     function_registry: &'a FunctionRegistry,
     /// Track struct derives for generating serde methods in impl blocks
@@ -80,8 +78,6 @@ pub struct IrEmitter<'a> {
     in_return_context: RefCell<bool>,
     /// Map of const string bindings to their literal values (for const folding of string adds)
     const_string_literals: std::collections::HashMap<String, String>,
-    /// Collected routes for web emission
-    routes: Vec<RouteSpec>,
     /// Map of type name -> module path segments for dependency modules.
     type_module_paths: HashMap<String, Vec<String>>,
     /// Type names that are declared in multiple modules (ambiguous).
@@ -95,6 +91,14 @@ pub struct IrEmitter<'a> {
     /// When set, `@rust.extern` functions emit delegation calls to `<rust_module_path>::<fn_name>()` instead of
     /// compiling their Incan bodies.
     rust_module_path: Option<String>,
+    /// Rust import path tracking: maps imported type names (incl. aliases) to their original module paths.
+    ///
+    /// Key: type name as seen in Incan code (e.g., "AxumResponse" for `import Response as AxumResponse`)
+    /// Value: original module path (e.g., ["axum", "response"])
+    ///
+    /// Used by derive passthrough and newtype emission to locate the original Rust crate path for
+    /// imported types.
+    rust_import_paths: RefCell<std::collections::HashMap<String, Vec<String>>>,
 }
 
 impl<'a> IrEmitter<'a> {
@@ -106,9 +110,8 @@ impl<'a> IrEmitter<'a> {
             // - unused_variables: pattern bindings like `_x` in destructuring
             add_clippy_allows: true,
             emit_zen_in_main: false,
-            needs_serde: false,
+            needs_serde: RefCell::new(false),
             needs_tokio: false,
-            needs_axum: false,
             function_registry,
             struct_derives: std::collections::HashMap::new(),
             current_function_return_type: RefCell::new(None),
@@ -121,11 +124,11 @@ impl<'a> IrEmitter<'a> {
             struct_field_defaults: std::collections::HashMap::new(),
             in_return_context: RefCell::new(false),
             const_string_literals: std::collections::HashMap::new(),
-            routes: Vec::new(),
             type_module_paths: HashMap::new(),
             ambiguous_type_names: HashSet::new(),
             internal_module_roots: HashSet::new(),
             rust_module_path: None,
+            rust_import_paths: RefCell::new(std::collections::HashMap::new()),
         }
     }
 
@@ -160,17 +163,12 @@ impl<'a> IrEmitter<'a> {
 
     /// Set whether serde is needed.
     pub fn set_needs_serde(&mut self, needs: bool) {
-        self.needs_serde = needs;
+        *self.needs_serde.borrow_mut() = needs;
     }
 
     /// Set whether tokio is needed.
     pub fn set_needs_tokio(&mut self, needs: bool) {
         self.needs_tokio = needs;
-    }
-
-    /// Set whether axum is needed.
-    pub fn set_needs_axum(&mut self, needs: bool) {
-        self.needs_axum = needs;
     }
 
     /// Create a Rust identifier for emission, using raw identifiers for keywords.
@@ -203,17 +201,18 @@ impl<'a> IrEmitter<'a> {
         self
     }
 
+    /// Set whether to emit file-level clippy allows.
+    ///
+    /// Module files generated for the multi-file pipeline must NOT emit `#![allow(...)]` because the project generator
+    /// prepends `pub mod` declarations before the emitted code. Inner attributes are only valid at the start of a
+    /// file/module, so emitting them after `pub mod` lines causes a Rust compile error.
+    pub fn set_add_clippy_allows(&mut self, enabled: bool) {
+        self.add_clippy_allows = enabled;
+    }
+
     /// Set whether to emit the Zen of Incan in main.
     pub fn set_emit_zen(&mut self, emit: bool) {
         self.emit_zen_in_main = emit;
-    }
-
-    /// Set collected routes for web emission.
-    ///
-    /// This should be called by codegen before emitting the program so the router wrapper and `App::run` wiring are
-    /// generated when web routes exist.
-    pub fn set_routes(&mut self, routes: Vec<RouteSpec>) {
-        self.routes = routes;
     }
 
     /// Set type-to-module path mappings for qualifying route wrapper types.
@@ -233,28 +232,4 @@ mod tests {
         let rendered = quote::quote! { #ident }.to_string();
         assert_eq!(rendered, "r#async");
     }
-}
-
-/// Web route info collected during codegen for web emission.
-///
-/// This mirrors route metadata gathered from `@route(...)` decorators.
-#[derive(Debug, Clone)]
-pub struct RouteSpec {
-    /// Handler function name.
-    pub handler_name: String,
-    /// Route path (Incan-style, e.g. `/api/{id}`).
-    pub path: String,
-    /// HTTP methods (e.g. GET, POST).
-    pub methods: Vec<incan_core::lang::http::HttpMethodId>,
-    /// Any unrecognized method spellings collected from decorators.
-    pub unknown_methods: Vec<String>,
-    /// Whether the handler is async.
-    pub is_async: bool,
-    /// Module path segments for nested multi-file projects.
-    ///
-    /// Example: `Some(vec!["api", "routes"])` means the handler lives in `crate::api::routes`.
-    /// `None` means the handler is in the crate root (main module).
-    ///
-    /// This is carried structurally (segments) to avoid brittle string parsing.
-    pub module_path_segments: Option<Vec<String>>,
 }

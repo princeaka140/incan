@@ -52,11 +52,18 @@ impl<'a> IrEmitter<'a> {
             IrDeclKind::Function(func) => self.emit_function(func),
             IrDeclKind::Struct(s) => self.emit_struct(s),
             IrDeclKind::Enum(e) => self.emit_enum(e),
-            IrDeclKind::TypeAlias { name, ty } => {
+            IrDeclKind::TypeAlias {
+                visibility,
+                name,
+                type_params,
+                ty,
+            } => {
+                let vis = self.emit_visibility(visibility);
                 let name_ident = format_ident!("{}", name);
                 let ty_tokens = self.emit_type(ty);
+                let generics = self.emit_type_params(type_params);
                 Ok(quote! {
-                    type #name_ident = #ty_tokens;
+                    #vis type #name_ident #generics = #ty_tokens;
                 })
             }
             IrDeclKind::Const {
@@ -158,7 +165,7 @@ impl<'a> IrEmitter<'a> {
     ) -> Result<TokenStream, EmitError> {
         // Skip serde imports if we're already importing them automatically.
         // Covers both `from serde import ...` and `from std.serde.json import Serialize, Deserialize`.
-        if self.needs_serde {
+        if *self.needs_serde.borrow() {
             let is_serde_trait = items.iter().any(|item| {
                 matches!(
                     derives::from_str(item.name.as_str()),
@@ -240,12 +247,38 @@ impl<'a> IrEmitter<'a> {
 
         let path_ts = join_path_tokens(&path_tokens);
 
+        // `pub use` in two cases:
+        // 1. Stdlib Incan-source imports (std.web.* → crate::__incan_std::web::*)
+        // 2. Rust crate imports inside a `rust.module(...)` file — these are re-exported so users can do `from
+        //    std.web.response import Json` and get axum::Json.
+        let is_rust_crate_reexport = matches!(qualifier, IrImportQualifier::None) && self.rust_module_path.is_some();
+        let export_import = is_incan_source_stdlib || is_rust_crate_reexport;
+
         if let Some(alias_name) = alias {
             let alias_ident = Self::rust_ident(alias_name);
-            Ok(quote! {
-                use #path_ts as #alias_ident;
-            })
+            if export_import {
+                Ok(quote! {
+                    pub use #path_ts as #alias_ident;
+                })
+            } else {
+                Ok(quote! {
+                    use #path_ts as #alias_ident;
+                })
+            }
         } else if !items.is_empty() {
+            // ---- Track Rust import paths for alias resolution ----
+            // When emitting Rust imports (qualifier=None), record the mapping from alias/name → full module path.
+            // This enables newtype trait delegation to resolve "AxumResponse" back to "axum::response::Response" for
+            // pattern matching.
+            if matches!(qualifier, IrImportQualifier::None) {
+                for item in items {
+                    let key = item.alias.as_ref().unwrap_or(&item.name).clone();
+                    let mut full_path = path.to_vec();
+                    full_path.push(item.name.clone());
+                    self.rust_import_paths.borrow_mut().insert(key, full_path);
+                }
+            }
+
             let item_stmts: Vec<TokenStream> = items
                 .iter()
                 .map(|item| {
@@ -254,7 +287,13 @@ impl<'a> IrEmitter<'a> {
                     let path_ts_clone = join_path_tokens(&path_tokens_clone);
                     if let Some(alias) = &item.alias {
                         let alias_ident = Self::rust_ident(alias);
-                        quote! { use #path_ts_clone :: #name_ident as #alias_ident; }
+                        if export_import {
+                            quote! { pub use #path_ts_clone :: #name_ident as #alias_ident; }
+                        } else {
+                            quote! { use #path_ts_clone :: #name_ident as #alias_ident; }
+                        }
+                    } else if export_import {
+                        quote! { pub use #path_ts_clone :: #name_ident; }
                     } else {
                         quote! { use #path_ts_clone :: #name_ident; }
                     }
@@ -263,6 +302,10 @@ impl<'a> IrEmitter<'a> {
             Ok(quote! { #(#item_stmts)* })
         } else if path.len() == 1 && !is_stdlib {
             Ok(quote! {})
+        } else if export_import {
+            Ok(quote! {
+                pub use #path_ts;
+            })
         } else {
             Ok(quote! {
                 use #path_ts;

@@ -24,8 +24,19 @@ impl<'a> IrEmitter<'a> {
                 Some(DeriveId::Serialize) => quote! { serde::Serialize },
                 Some(DeriveId::Deserialize) => quote! { serde::Deserialize },
                 _ => {
-                    let d_ident = format_ident!("{}", d);
-                    quote! { #d_ident }
+                    if let Some(module_path) = s.derive_rust_modules.get(d) {
+                        let mut segs: Vec<TokenStream> = module_path
+                            .split("::")
+                            .map(Self::rust_ident)
+                            .map(|id| quote! { #id })
+                            .collect();
+                        let d_ident = Self::rust_ident(d);
+                        segs.push(quote! { #d_ident });
+                        super::join_path_tokens(&segs)
+                    } else {
+                        let d_ident = format_ident!("{}", d);
+                        quote! { #d_ident }
+                    }
                 }
             })
             .collect();
@@ -60,9 +71,20 @@ impl<'a> IrEmitter<'a> {
                     quote! { #fvis #fty }
                 })
                 .collect();
-            Ok(quote! {
+
+            // Emit struct definition
+            let struct_def = quote! {
                 #derive_attr
                 #vis struct #name #generics (#(#tuple_fields),*);
+            };
+
+            // Note: Constructor generation for newtypes is deferred until trait bound propagation
+            // is implemented properly. For now, users must construct newtypes directly.
+            let constructor_impl = quote! {};
+
+            Ok(quote! {
+                #struct_def
+                #constructor_impl
             })
         } else {
             let fields: Vec<TokenStream> = s
@@ -166,8 +188,19 @@ impl<'a> IrEmitter<'a> {
                 Some(DeriveId::Serialize) => quote! { serde::Serialize },
                 Some(DeriveId::Deserialize) => quote! { serde::Deserialize },
                 _ => {
-                    let d_ident = format_ident!("{}", d);
-                    quote! { #d_ident }
+                    if let Some(module_path) = e.derive_rust_modules.get(d) {
+                        let mut segs: Vec<TokenStream> = module_path
+                            .split("::")
+                            .map(Self::rust_ident)
+                            .map(|id| quote! { #id })
+                            .collect();
+                        let d_ident = Self::rust_ident(d);
+                        segs.push(quote! { #d_ident });
+                        super::join_path_tokens(&segs)
+                    } else {
+                        let d_ident = format_ident!("{}", d);
+                        quote! { #d_ident }
+                    }
                 }
             })
             .collect();

@@ -1,7 +1,6 @@
 //! Newtype declaration lowering.
 
 use super::super::super::decl::{IrStruct, StructField, Visibility};
-use super::super::super::types::IrType;
 use super::super::AstLowering;
 use super::super::errors::LoweringError;
 use crate::frontend::ast;
@@ -24,28 +23,37 @@ impl AstLowering {
             alias: None,
             description: None,
         }];
-        // Newtypes auto-derive Debug, Clone
-        // Only add Copy if underlying type is Copy (int, float, bool)
+
+        // ---- Derives: auto-derive Debug (always), Copy/Clone for Copy types ----
+        // Newtypes auto-derive only Debug by default; external types (e.g., Axum extractors) may not support
+        // Clone/PartialEq, so we stay conservative.
         let debug = derives::as_str(DeriveId::Debug).to_string();
-        let clone = derives::as_str(DeriveId::Clone).to_string();
-        let partial_eq = derives::as_str(DeriveId::PartialEq).to_string();
-        let eq = derives::as_str(DeriveId::Eq).to_string();
-        let mut derives = vec![debug, clone, partial_eq];
-        if !matches!(underlying_ty, IrType::Float) {
-            derives.push(eq);
-        }
+        let mut auto_derives = vec![debug];
         if underlying_ty.is_copy() {
-            derives.push(derives::as_str(DeriveId::Copy).to_string());
+            auto_derives.push(derives::as_str(DeriveId::Clone).to_string());
+            auto_derives.push(derives::as_str(DeriveId::Copy).to_string());
         }
+
+        // ---- Derives: user-specified via @derive(...) decorators ----
+        let (user_derives, derive_rust_modules) = self.extract_derives(&n.decorators);
+
+        // Merge: auto-derives first, then user derives (skip duplicates)
+        let mut derives = auto_derives;
+        for d in user_derives {
+            if !derives.contains(&d) {
+                derives.push(d);
+            }
+        }
+
         // Note: Serialize/Deserialize derives for newtypes are added post-lowering by `add_serde_to_newtypes` in
-        // codegen.rs, which selectively adds only the derives that are actually needed (Serialize, Deserialize, or
-        // both).
+        // codegen.rs, which selectively adds only the derives that are actually needed.
         Ok(IrStruct {
             name: n.name.clone(),
             fields,
             derives,
             visibility: Self::map_visibility(n.visibility),
-            type_params: vec![],
+            type_params: Self::lower_type_params(&n.type_params),
+            derive_rust_modules,
         })
     }
 }

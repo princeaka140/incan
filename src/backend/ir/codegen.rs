@@ -35,10 +35,9 @@ use crate::frontend::diagnostics::CompileError;
 use incan_core::lang::decorators::{self, DecoratorId};
 use incan_core::lang::derives::{self, DeriveId};
 
-use super::emit::RouteSpec;
 use super::scanners::{
-    check_for_this_import as scan_check_for_this_import, collect_routes as scan_collect_routes,
-    collect_rust_crates as scan_collect_rust_crates, detect_list_helpers_usage, detect_serde_usage, detect_web_usage,
+    check_for_this_import as scan_check_for_this_import, collect_rust_crates as scan_collect_rust_crates,
+    detect_list_helpers_usage, detect_serde_usage, detect_web_usage,
 };
 use super::{AstLowering, EmitError, EmitService, IrEmitter, LoweringErrors};
 
@@ -89,6 +88,7 @@ fn collect_type_module_paths(
                 Declaration::Model(m) => Some(&m.name),
                 Declaration::Class(c) => Some(&c.name),
                 Declaration::Enum(e) => Some(&e.name),
+                Declaration::TypeAlias(a) => Some(&a.name),
                 Declaration::Newtype(n) => Some(&n.name),
                 _ => None,
             };
@@ -171,6 +171,30 @@ fn collect_serde_derives(main: &Program, deps: &[(&str, &Program)]) -> (bool, bo
 
 fn add_serde_to_newtypes(ir_program: &mut super::IrProgram, add_serialize: bool, add_deserialize: bool) {
     use super::decl::IrDeclKind;
+    use super::types::IrType;
+
+    fn is_conservative_serde_safe_newtype_inner(ty: &IrType) -> bool {
+        match ty {
+            IrType::Unit
+            | IrType::Bool
+            | IrType::Int
+            | IrType::Float
+            | IrType::String
+            | IrType::StaticStr
+            | IrType::StaticBytes
+            | IrType::FrozenStr
+            | IrType::FrozenBytes
+            | IrType::StrRef => true,
+            IrType::List(inner) | IrType::Set(inner) | IrType::Option(inner) => {
+                is_conservative_serde_safe_newtype_inner(inner)
+            }
+            IrType::Dict(key, value) | IrType::Result(key, value) => {
+                is_conservative_serde_safe_newtype_inner(key) && is_conservative_serde_safe_newtype_inner(value)
+            }
+            IrType::Tuple(items) => items.iter().all(is_conservative_serde_safe_newtype_inner),
+            _ => false,
+        }
+    }
 
     let serialize = derives::as_str(DeriveId::Serialize);
     let deserialize = derives::as_str(DeriveId::Deserialize);
@@ -180,6 +204,12 @@ fn add_serde_to_newtypes(ir_program: &mut super::IrProgram, add_serialize: bool,
             && s.fields.len() == 1
             && s.fields[0].name == "0"
         {
+            if !s.type_params.is_empty() {
+                continue;
+            }
+            if !is_conservative_serde_safe_newtype_inner(&s.fields[0].ty) {
+                continue;
+            }
             if add_serialize && !s.derives.iter().any(|d| d == serialize) {
                 s.derives.push(serialize.to_string());
             }
@@ -272,13 +302,15 @@ pub struct IrCodegen<'a> {
     /// segments (used for correct Rust qualification in codegen).
     dependency_modules: Vec<(&'a str, &'a Program, Option<Vec<String>>)>,
     /// Whether serde is needed (for Serialize/Deserialize derives)
+    // TODO: Replace with manifest-driven feature activation — imported modules should declare
+    // their own required Cargo features rather than the compiler scanning for them. When that
+    // model lands, `needs_serde`, `needs_tokio`, `needs_web`, and their `scan_for_*` methods
+    // can all be deleted.
     needs_serde: bool,
     /// Whether tokio is needed (for async runtime)
     needs_tokio: bool,
-    /// Whether axum web framework is needed
-    needs_axum: bool,
-    /// Collected routes from @route decorators
-    routes: Vec<RouteSpec>,
+    /// Whether web support is needed (`std.web` imports / submodules)
+    needs_web: bool,
     /// Fixtures available for test functions (name -> (has_teardown, dependencies))
     fixtures: HashMap<String, (bool, Vec<String>)>,
     /// Rust crates imported via `import rust::` or `from rust::`
@@ -305,8 +337,7 @@ impl<'a> IrCodegen<'a> {
             needs_serde: false,
             external_rust_functions: HashSet::new(),
             needs_tokio: false,
-            needs_axum: false,
-            routes: Vec::new(),
+            needs_web: false,
             fixtures: HashMap::new(),
             rust_crates: HashSet::new(),
             emit_zen_in_main: false,
@@ -342,9 +373,9 @@ impl<'a> IrCodegen<'a> {
         self.needs_tokio
     }
 
-    /// Check if axum is needed
-    pub fn needs_axum(&self) -> bool {
-        self.needs_axum
+    /// Check if web support is needed
+    pub fn needs_web(&self) -> bool {
+        self.needs_web
     }
 
     /// Add a dependency module (for multi-file compilation)
@@ -430,13 +461,6 @@ impl<'a> IrCodegen<'a> {
         }
     }
 
-    /// Scan a program for web framework usage
-    pub fn scan_for_web(&mut self, program: &Program) {
-        if detect_web_usage(program) {
-            self.needs_axum = true;
-        }
-    }
-
     /// Scan a program for list helper usage (remove, count, index)
     pub fn scan_for_list_helpers(&mut self, program: &Program) {
         if detect_list_helpers_usage(program) {
@@ -444,26 +468,14 @@ impl<'a> IrCodegen<'a> {
         }
     }
 
-    // (helper methods removed in favor of centralized scanners)
-
-    /// Collect routes from @route decorators.
-    ///
-    /// `module_path_segments` should be `None` for the main module, or `Some(&["api", "routes"])`
-    /// for nested submodules. This is used to generate fully qualified paths in route wrappers
-    /// without brittle string parsing.
-    fn collect_routes(&mut self, program: &Program, module_path_segments: Option<&[String]>) {
-        let collected = scan_collect_routes(program, module_path_segments);
-        for (handler_name, path, methods, unknown_methods, is_async, mod_path_segments) in collected {
-            self.routes.push(RouteSpec {
-                handler_name,
-                path,
-                methods,
-                unknown_methods,
-                is_async,
-                module_path_segments: mod_path_segments,
-            });
+    /// Scan a program for web usage (`std.web` imports/submodules)
+    pub fn scan_for_web(&mut self, program: &Program) {
+        if detect_web_usage(program) {
+            self.needs_web = true;
         }
     }
+
+    // (helper methods removed in favor of centralized scanners)
 
     /// Collect rust crates from imports
     fn collect_rust_crates(&mut self, program: &Program) {
@@ -536,20 +548,18 @@ impl<'a> IrCodegen<'a> {
         // Scan for features
         self.scan_for_serde(program);
         self.scan_for_async(program);
-        self.scan_for_web(program);
         self.scan_for_list_helpers(program);
-        self.collect_routes(program, None);
+        self.scan_for_web(program);
         self.collect_rust_crates(program);
         self.check_for_this_import(program);
         self.collect_external_rust_functions(program);
 
         // Scan dependencies
-        for (_mod_name, dep_ast, mod_path_segments) in &self.dependency_modules.clone() {
+        for (_mod_name, dep_ast, _mod_path_segments) in &self.dependency_modules.clone() {
             self.scan_for_serde(dep_ast);
             self.scan_for_async(dep_ast);
-            self.scan_for_web(dep_ast);
             self.scan_for_list_helpers(dep_ast);
-            self.collect_routes(dep_ast, mod_path_segments.as_deref());
+            self.scan_for_web(dep_ast);
             self.collect_rust_crates(dep_ast);
         }
 
@@ -622,11 +632,9 @@ impl<'a> IrCodegen<'a> {
             if self.emit_zen_in_main {
                 inner.set_emit_zen(true);
             }
-            inner.set_routes(self.routes.clone());
             inner.set_type_module_paths(type_module_paths.clone(), ambiguous_type_names.clone());
             inner.set_needs_serde(self.needs_serde);
             inner.set_needs_tokio(self.needs_tokio);
-            inner.set_needs_axum(self.needs_axum);
             inner.set_external_rust_functions(self.external_rust_functions.clone());
             Ok(svc.emit_program(&ir_program)?)
         } else {
@@ -635,11 +643,9 @@ impl<'a> IrCodegen<'a> {
             if self.emit_zen_in_main {
                 emitter.set_emit_zen(true);
             }
-            emitter.set_routes(self.routes.clone());
             emitter.set_type_module_paths(type_module_paths.clone(), ambiguous_type_names.clone());
             emitter.set_needs_serde(self.needs_serde);
             emitter.set_needs_tokio(self.needs_tokio);
-            emitter.set_needs_axum(self.needs_axum);
             emitter.set_external_rust_functions(self.external_rust_functions.clone());
             Ok(emitter.emit_program(&ir_program)?)
         }
@@ -681,17 +687,19 @@ impl<'a> IrCodegen<'a> {
         let use_emit_service = env::var("INCAN_EMIT_SERVICE").ok().as_deref() == Some("1");
         if use_emit_service {
             let mut svc = EmitService::new_from_program(&ir_program);
-            svc.inner_mut().set_internal_module_roots(internal_roots);
+            let inner = svc.inner_mut();
+            inner.set_internal_module_roots(internal_roots);
+            inner.set_add_clippy_allows(false);
             Ok(svc.emit_program(&ir_program)?)
         } else {
             let mut emitter = IrEmitter::new(&ir_program.function_registry);
             emitter.set_internal_module_roots(internal_roots);
+            emitter.set_add_clippy_allows(false);
             if self.emit_zen_in_main {
                 emitter.set_emit_zen(true);
             }
             emitter.set_needs_serde(self.needs_serde);
             emitter.set_needs_tokio(self.needs_tokio);
-            emitter.set_needs_axum(self.needs_axum);
             Ok(emitter.emit_program(&ir_program)?)
         }
     }
@@ -735,17 +743,15 @@ impl<'a> IrCodegen<'a> {
         // Scan all modules for features
         self.scan_for_serde(program);
         self.scan_for_async(program);
-        self.scan_for_web(program);
         self.scan_for_list_helpers(program);
-        self.collect_routes(program, None);
+        self.scan_for_web(program);
         self.collect_rust_crates(program);
 
-        for (_mod_name, dep_ast, mod_path_segments) in &self.dependency_modules.clone() {
+        for (_mod_name, dep_ast, _mod_path_segments) in &self.dependency_modules.clone() {
             self.scan_for_serde(dep_ast);
             self.scan_for_async(dep_ast);
-            self.scan_for_web(dep_ast);
             self.scan_for_list_helpers(dep_ast);
-            self.collect_routes(dep_ast, mod_path_segments.as_deref());
+            self.scan_for_web(dep_ast);
             self.collect_rust_crates(dep_ast);
         }
 
@@ -761,7 +767,6 @@ impl<'a> IrCodegen<'a> {
             .collect();
         let global_aliases = collect_model_field_aliases(program, &deps);
         let (type_module_paths, ambiguous_type_names) = collect_type_module_paths(&self.dependency_modules);
-        let (needs_serialize, needs_deserialize) = collect_serde_derives(program, &deps);
 
         // Generate module files
         let mut modules = HashMap::new();
@@ -781,9 +786,9 @@ impl<'a> IrCodegen<'a> {
                 let mut lowering = AstLowering::new_with_type_info(module_type_info);
                 lowering.seed_struct_field_aliases(global_aliases.clone());
                 let mut ir = lowering.lower_program(ast)?;
-                if self.needs_serde {
-                    add_serde_to_newtypes(&mut ir, needs_serialize, needs_deserialize);
-                }
+                // Do not auto-add serde derives to dependency modules.
+                // Global serde usage in the main module must not mutate unrelated dependency
+                // newtypes (e.g., stdlib wrapper types like std.web.request.Query/Path).
                 // RFC 023: Infer trait bounds for generic functions.
                 super::trait_bound_inference::infer_trait_bounds(&mut ir);
                 let use_emit_service = env::var("INCAN_EMIT_SERVICE").ok().as_deref() == Some("1");
@@ -792,11 +797,13 @@ impl<'a> IrCodegen<'a> {
                     let inner = svc.inner_mut();
                     inner.set_internal_module_roots(internal_roots.clone());
                     inner.set_type_module_paths(type_module_paths.clone(), ambiguous_type_names.clone());
+                    inner.set_add_clippy_allows(false);
                     svc.emit_program(&ir)?
                 } else {
                     let mut emitter = IrEmitter::new(&ir.function_registry);
                     emitter.set_internal_module_roots(internal_roots.clone());
                     emitter.set_type_module_paths(type_module_paths.clone(), ambiguous_type_names.clone());
+                    emitter.set_add_clippy_allows(false);
                     emitter.emit_program(&ir)?
                 };
                 modules.insert(name.to_string(), module_code);
@@ -862,17 +869,15 @@ impl<'a> IrCodegen<'a> {
         // Scan all modules for features
         self.scan_for_serde(program);
         self.scan_for_async(program);
-        self.scan_for_web(program);
         self.scan_for_list_helpers(program);
-        self.collect_routes(program, None);
+        self.scan_for_web(program);
         self.collect_rust_crates(program);
 
-        for (_mod_name, dep_ast, mod_path_segments) in &self.dependency_modules.clone() {
+        for (_mod_name, dep_ast, _mod_path_segments) in &self.dependency_modules.clone() {
             self.scan_for_serde(dep_ast);
             self.scan_for_async(dep_ast);
-            self.scan_for_web(dep_ast);
             self.scan_for_list_helpers(dep_ast);
-            self.collect_routes(dep_ast, mod_path_segments.as_deref());
+            self.scan_for_web(dep_ast);
             self.collect_rust_crates(dep_ast);
         }
 
@@ -888,7 +893,6 @@ impl<'a> IrCodegen<'a> {
             .collect();
         let global_aliases = collect_model_field_aliases(program, &deps);
         let (type_module_paths, ambiguous_type_names) = collect_type_module_paths(&self.dependency_modules);
-        let (needs_serialize, needs_deserialize) = collect_serde_derives(program, &deps);
 
         // Generate module files by path
         let mut modules = HashMap::new();
@@ -912,9 +916,9 @@ impl<'a> IrCodegen<'a> {
                     let mut lowering = AstLowering::new_with_type_info(module_type_info);
                     lowering.seed_struct_field_aliases(global_aliases.clone());
                     let mut ir = lowering.lower_program(ast)?;
-                    if self.needs_serde {
-                        add_serde_to_newtypes(&mut ir, needs_serialize, needs_deserialize);
-                    }
+                    // Do not auto-add serde derives to dependency modules.
+                    // Global serde usage in the main module must not mutate unrelated dependency
+                    // newtypes (e.g., stdlib wrapper types like std.web.request.Query/Path).
                     // RFC 023: Infer trait bounds for generic functions.
                     super::trait_bound_inference::infer_trait_bounds(&mut ir);
                     let use_emit_service = env::var("INCAN_EMIT_SERVICE").ok().as_deref() == Some("1");
@@ -923,11 +927,13 @@ impl<'a> IrCodegen<'a> {
                         let inner = svc.inner_mut();
                         inner.set_internal_module_roots(internal_roots.clone());
                         inner.set_type_module_paths(type_module_paths.clone(), ambiguous_type_names.clone());
+                        inner.set_add_clippy_allows(false);
                         svc.emit_program(&ir)?
                     } else {
                         let mut emitter = IrEmitter::new(&ir.function_registry);
                         emitter.set_internal_module_roots(internal_roots.clone());
                         emitter.set_type_module_paths(type_module_paths.clone(), ambiguous_type_names.clone());
+                        emitter.set_add_clippy_allows(false);
                         emitter.emit_program(&ir)?
                     };
                     modules.insert(path.clone(), module_code);
@@ -1133,6 +1139,21 @@ def fetch() -> str:
         let mut codegen = IrCodegen::new();
         codegen.scan_for_async(&ast);
         assert!(!codegen.needs_tokio());
+    }
+
+    #[test]
+    fn test_web_detection() {
+        let source = r#"
+from std.web import App
+
+def main() -> None:
+  app = App()
+"#;
+        let tokens = must_ok(lexer::lex(source));
+        let ast = must_ok(parser::parse(&tokens));
+        let mut codegen = IrCodegen::new();
+        codegen.scan_for_web(&ast);
+        assert!(codegen.needs_web());
     }
 
     #[test]

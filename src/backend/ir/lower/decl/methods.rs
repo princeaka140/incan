@@ -8,6 +8,7 @@ use super::super::super::{IrSpan, Mutability};
 use super::super::AstLowering;
 use super::super::errors::LoweringError;
 use crate::frontend::ast::{self, Spanned};
+use incan_core::lang::decorators::{self, DecoratorId};
 use incan_core::lang::keywords::{self, KeywordId};
 
 impl AstLowering {
@@ -15,6 +16,7 @@ impl AstLowering {
     pub(in crate::backend::ir::lower) fn lower_model_methods(
         &mut self,
         type_name: &str,
+        type_params: &[ast::TypeParam],
         methods: &[Spanned<ast::MethodDecl>],
     ) -> Result<IrImpl, LoweringError> {
         let prev = self.current_impl_type.replace(type_name.to_string());
@@ -29,6 +31,7 @@ impl AstLowering {
 
         Ok(IrImpl {
             target_type: type_name.to_string(),
+            type_params: Self::lower_type_params(type_params),
             trait_name: None,
             methods: lowered_methods,
         })
@@ -40,6 +43,7 @@ impl AstLowering {
     pub(in crate::backend::ir::lower) fn lower_trait_impl(
         &mut self,
         type_name: &str,
+        type_params: &[ast::TypeParam],
         trait_name: &str,
         impl_methods: &[Spanned<ast::MethodDecl>],
     ) -> Result<IrImpl, LoweringError> {
@@ -84,6 +88,7 @@ impl AstLowering {
 
         Ok(IrImpl {
             target_type: type_name.to_string(),
+            type_params: Self::lower_type_params(type_params),
             trait_name: Some(trait_name.to_string()),
             methods,
         })
@@ -140,6 +145,7 @@ impl AstLowering {
 
         // RFC 023: detect @rust.extern decorator to mark this method as externally-backed.
         let is_extern = Self::has_rust_extern_decorator(&m.decorators);
+        let rust_attributes = self.extract_passthrough_attributes(&m.decorators);
 
         self.scopes.pop();
 
@@ -152,6 +158,7 @@ impl AstLowering {
             visibility: Visibility::Private,
             type_params: vec![],
             is_extern,
+            rust_attributes,
         })
     }
 
@@ -159,6 +166,7 @@ impl AstLowering {
     pub(in crate::backend::ir::lower) fn lower_class_methods(
         &mut self,
         type_name: &str,
+        type_params: &[ast::TypeParam],
         methods: &[Spanned<ast::MethodDecl>],
     ) -> Result<IrImpl, LoweringError> {
         let prev = self.current_impl_type.replace(type_name.to_string());
@@ -173,6 +181,7 @@ impl AstLowering {
 
         Ok(IrImpl {
             target_type: type_name.to_string(),
+            type_params: Self::lower_type_params(type_params),
             trait_name: None,
             methods: lowered_methods,
         })
@@ -253,15 +262,28 @@ impl AstLowering {
         };
         self.scopes.pop();
 
+        // Static methods are public: they form the type's public API and have no self receiver.
+        let is_static = m
+            .decorators
+            .iter()
+            .any(|d| decorators::from_str(d.node.name.as_str()) == Some(DecoratorId::StaticMethod));
+        let visibility = if is_static {
+            Visibility::Public
+        } else {
+            Visibility::Private
+        };
+        let is_extern = Self::has_rust_extern_decorator(&m.decorators);
+
         Ok(IrFunction {
             name: m.name.clone(),
             params,
             return_type,
             body,
             is_async: m.is_async(),
-            visibility: Visibility::Private,
+            visibility,
             type_params: vec![],
-            is_extern: false,
+            is_extern,
+            rust_attributes: self.extract_passthrough_attributes(&m.decorators),
         })
     }
 }

@@ -3,101 +3,62 @@ HTTP Request Extractors
 
 Types for extracting data from HTTP requests.
 
+`Query[T]` and `Path[T]` are direct re-exports of Axum extractor tuple structs.
+They already implement `FromRequestParts`, so no extra wrapper types are needed.
+
 Example:
-    from std.web import route, Json, Query
-    
+    ```incan
+    from std.web.routing import route
+    from std.web.request import Query, Path
+    from std.web.response import Json
+
     @route("/search")
     async def search(params: Query[SearchParams]) -> Json[list[Result]]:
         results = do_search(params.q, params.limit)
         return Json(results)
-    
+
     @route("/users/{id}")
-    async def get_user(id: int) -> Json[User]:
-        # Path parameters extracted automatically
-        return Json(find_user(id))
+    async def get_user(id: Path[int]) -> Json[User]:
+        return Json(find_user(id.0))
+    ```
+"""
+rust.module("incan_stdlib::web")
+
+from rust::axum::extract import Query
+"""
+`Query[T]` — extract URL query parameters (`?key=value&...`) into a typed struct.
+
+`T` must implement `serde::Deserialize`. If deserialization fails, Axum returns
+`400 Bad Request` automatically.
+
+Example:
+    ```incan
+    from std.web.request import Query
+
+    class SearchParams:
+        q: str
+        limit: int = 20
+
+    @route("/search")
+    async def search(params: Query[SearchParams]) -> ...:
+        ...
+    ```
 """
 
+from rust::axum::extract import Path
+"""
+`Path[T]` — extract path parameters (`/users/{id}`) into a typed value or struct.
 
-model Query[T]:
-    """
-    Query string extractor.
-    
-    Parses URL query parameters into a typed model.
-    The inner type T must implement Deserialize.
-    
-    Example:
+For a single parameter, `T` can be a primitive like `int` or `str`.
+For multiple parameters, use a struct with matching field names.
+
+Example:
     ```incan
-    from std.web import route, Json, Query
-    
-    @derive(Deserialize)
-    model SearchParams:
-        q: str
-        limit: int = 10
-    
-    @route("/search")
-    async def search(params: Query[SearchParams]) -> Json[list[Item]]:
-        # Access: params.q, params.limit
-        return Json(search_items(params.q, params.limit))
-    ```
-    
-    Compiles to: axum::extract::Query<T>
-    """
+    from std.web.request import Path
 
-
-model Path[T]:
-    """
-    Path parameter extractor for multiple params.
-    
-    For single path parameters, use the type directly in function signature.
-    For multiple parameters, use Path with a tuple.
-    
-    Example:
-    ```incan
-    from std.web import route, Json, Path
-    
-    # Single param - just use the type
     @route("/users/{id}")
-    async def get_user(id: int) -> Json[User]:
-        ...
-    
-    # Multiple params - use Path with tuple
-    @route("/users/{user_id}/posts/{post_id}")
-    async def get_post(ids: Path[tuple[int, int]]) -> Json[Post]:
-        user_id, post_id = ids
+    async def get_user(id: Path[int]) -> ...:
+        user_id = id.0
         ...
     ```
-    
-    Compiles to: axum::extract::Path<T>
-    """
-
-
-model Body[T]:
-    """
-    Request body extractor (raw bytes or text).
-    
-    For JSON bodies, use Json[T] instead.
-    The inner type T must implement Deserialize.
-    
-    Compiles to: axum::body::Body or String
-    """
-
-
-model Request:
-    """
-    Full HTTP request access.
-    
-    Usually you'll use specific extractors (Query, Path, Json) instead,
-    but Request gives full access when needed.
-    
-    Compiles to: axum::extract::Request
-    """
-    method: str
-    path: str
-    
-    def header(self, name: str) -> Option[str]:
-        """Get a request header by name."""
-        ...
-    
-    def headers(self) -> dict[str, str]:
-        """Get all request headers."""
-        ...
+"""

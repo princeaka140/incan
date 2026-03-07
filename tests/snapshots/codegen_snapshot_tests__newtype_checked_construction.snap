@@ -11,11 +11,11 @@ expression: rust_code
 incan_stdlib::__incan_stdlib_version_check!("0.2.0-dev.2");
 use incan_stdlib::prelude::*;
 use incan_derive::{FieldInfo, IncanClass};
-#[derive(Debug, Clone, PartialEq, Eq, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct UserId(pub i64);
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct Ratio(pub f64);
-#[derive(Debug, Clone, PartialEq, Eq, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct Attempts(pub i64);
 impl Attempts {
     fn from_underlying(n: i64) -> Result<Attempts, String> {
@@ -42,7 +42,7 @@ impl Attempts {
         incan_stdlib::frozen::FrozenList::new(&__INCAN_FIELDS)
     }
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 struct Email(pub String);
 impl Email {
     fn from_str(v: String) -> Result<Email, String> {

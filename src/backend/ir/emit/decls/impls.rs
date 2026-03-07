@@ -20,6 +20,10 @@ impl<'a> IrEmitter<'a> {
     ) -> Result<TokenStream, EmitError> {
         let target_type = format_ident!("{}", &impl_block.target_type);
 
+        // RFC 023: emit generic type parameters with trait bounds (declaration) and bare names (type positions).
+        let generics = self.emit_type_params(&impl_block.type_params);
+        let generics_bare = self.emit_type_params_bare(&impl_block.type_params);
+
         let mut regular_methods = Vec::new();
         let mut trait_impls = Vec::new();
 
@@ -32,7 +36,7 @@ impl<'a> IrEmitter<'a> {
                         .map(|s| self.emit_stmt(s))
                         .collect::<Result<_, _>>()?;
                     trait_impls.push(quote! {
-                        impl PartialEq for #target_type {
+                        impl #generics PartialEq for #target_type #generics_bare {
                             fn eq(&self, other: &Self) -> bool {
                                 #(#body_stmts)*
                             }
@@ -42,7 +46,7 @@ impl<'a> IrEmitter<'a> {
                 Some(magic_methods::MagicMethodId::Str) => {
                     regular_methods.push(self.emit_method(method)?);
                     trait_impls.push(quote! {
-                        impl std::fmt::Display for #target_type {
+                        impl #generics std::fmt::Display for #target_type #generics_bare {
                             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                                 write!(f, "{}", self.__str__())
                             }
@@ -172,13 +176,13 @@ impl<'a> IrEmitter<'a> {
                     .collect::<Result<_, _>>()?;
                 let trait_ident = format_ident!("{}", trait_name);
                 quote! {
-                    impl #trait_ident for #target_type {
+                    impl #generics #trait_ident for #target_type #generics_bare {
                         #(#trait_methods)*
                     }
                 }
             } else if !regular_methods.is_empty() {
                 quote! {
-                    impl #target_type {
+                    impl #generics #target_type #generics_bare {
                         #(#regular_methods)*
                     }
                 }
@@ -188,7 +192,7 @@ impl<'a> IrEmitter<'a> {
         } else if let Some(trait_name) = &impl_block.trait_name {
             let trait_ident = format_ident!("{}", trait_name);
             quote! {
-                impl #trait_ident for #target_type {}
+                impl #generics #trait_ident for #target_type #generics_bare {}
             }
         } else {
             quote! {}
