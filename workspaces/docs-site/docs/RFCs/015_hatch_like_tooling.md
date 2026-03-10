@@ -3,7 +3,13 @@
 **Status:** In Progress  
 **Created:** 2025-12-23  
 **Author(s):** Danny Meijer (@danny-meijer)  
-**Related:** RFC 013 (Rust crate dependencies), RFC 020 (Cargo offline/locked policy)
+**Issue:** [#73](https://github.com/dannys-code-corner/incan/issues/73)  
+**RFC PR:** —  
+**Related:**
+    - RFC 013 (Rust crate dependencies)
+    - RFC 020 (Cargo offline/locked policy)  
+**Written against:** v0.1  
+**Shipped in:** —  
 
 ## Summary
 
@@ -452,6 +458,14 @@ Extensibility (future; non-normative):
 - Cargo-style third-party subcommands may be supported (similar to `cargo-foo` → `cargo foo`):
   if `incan <cmd>` is not built-in, the CLI may attempt to execute `incan-<cmd>` from `PATH`.
 
+## Layers affected
+
+- **CLI** — `incan new`, `incan init`, `incan version`, and `incan env` are all new top-level commands introduced by this RFC. All existing commands (`build`, `run`, `test`, `lock`) must be updated to consult `incan.toml` and derive project metadata from it.
+- **Project manifest parsing** — a new manifest reader must parse `incan.toml`, validate the `[project]`, `[project.scripts]`, and `[tool.incan.envs.*]` schemas, and emit span-precise diagnostics for missing or invalid keys.
+- **Project root discovery** — the compiler and CLI must walk upward from the current directory to locate `incan.toml`, with a `--project <path>` override. All commands must agree on the resolved root.
+- **Build / codegen** — generated project files (`Cargo.toml`, entrypoint wiring) must be derived from `incan.toml` metadata rather than hardcoded defaults.
+- **Documentation** — a project configuration reference and a "your first Incan project" guide are expected deliverables of this RFC.
+
 ## Implementation Plan
 
 ### Phase 1: Metadata + scaffolding
@@ -466,7 +480,7 @@ Extensibility (future; non-normative):
 
 - Implement SemVer parsing + bump logic
 - Apply updates to `incan.toml`
-- Optional: update any secondary manifests (only if this repo’s policy requires it)
+- Optional: update any secondary manifests (only if this repo's policy requires it)
 
 ### Phase 3: Env runner
 
@@ -477,29 +491,10 @@ Extensibility (future; non-normative):
 ### Phase 4: Polish + docs
 
 - Add guide pages: `docs/tooling/project_lifecycle.md`
-- Provide “new project” tutorial for Python users
+- Provide "new project" tutorial for Python users
 - Add examples for `new/init/version/test/env` and project root discovery
 
-## Alternatives Considered
-
-- **Rely solely on Makefile targets**: simple but inconsistent across repos, hard to compose and introspect;
-    also adds an extra tool dependency we don’t need.
-- **Embed everything in Cargo**: good for Rust, but Incan’s source-of-truth isn’t Cargo.toml;
-    also doesn’t cover project scaffolding or Incan-centric metadata.
-- **Adopt an existing tool (justfile, cargo-make)**: helps execution but doesn’t solve metadata/version semantics.
-
-## Open Questions
-
-1. How do we want to represent "dev" versions (e.g., `-dev.1` vs `-dev+<sha>`)?
-
-   **Recommendation:** support both forms:
-   - `-dev.N` for sequential dev releases (e.g., `0.2.0-dev.1`, `0.2.0-dev.2`)
-   - `-dev+<sha>` for build metadata in CI artifacts (SemVer allows `+` build metadata)
-
-   The `.N` form is useful for manual dev releases; the `+<sha>` form is useful for CI-generated artifacts where
-   the commit hash provides traceability.
-
-## Checklist
+## Progress Checklist
 
 - [x] Define and validate `incan.toml` schema (`[project]`, `[project.scripts]`, `[tool.incan.envs.*]`) and document it
       *(partial: `[project]`, `[project.scripts]`, `[build]`, `[dependencies]` implemented; `[tool.incan.envs.*]` pending)*
@@ -522,3 +517,24 @@ Extensibility (future; non-normative):
 Follow-ups (recommended):
 
 - [ ] Specify and implement matrix expansion (tox/nox-like)
+
+## Alternatives Considered
+
+- **Rely solely on Makefile targets**: simple but inconsistent across repos, hard to compose and introspect;
+    also adds an extra tool dependency we don’t need.
+- **Embed everything in Cargo**: good for Rust, but Incan’s source-of-truth isn’t Cargo.toml;
+    also doesn’t cover project scaffolding or Incan-centric metadata.
+- **Adopt an existing tool (justfile, cargo-make)**: helps execution but doesn’t solve metadata/version semantics.
+
+## Unresolved questions
+
+1. How do we want to represent "dev" versions (e.g., `-dev.1` vs `-dev+<sha>`)?
+
+   **Recommendation:** support both forms:
+   - `-dev.N` for sequential dev releases (e.g., `0.2.0-dev.1`, `0.2.0-dev.2`)
+   - `-dev+<sha>` for build metadata in CI artifacts (SemVer allows `+` build metadata)
+
+   The `.N` form is useful for manual dev releases; the `+<sha>` form is useful for CI-generated artifacts where
+   the commit hash provides traceability.
+
+<!-- Rename the "Unresolved questions" section above to "Design Decisions" once all open questions have been resolved and the RFC moves to Planned status. -->

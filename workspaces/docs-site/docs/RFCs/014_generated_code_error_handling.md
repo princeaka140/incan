@@ -1,12 +1,17 @@
 # RFC 014: Error Handling in Generated Rust Code
 
-**Status:** Draft
+**Status:** Draft  
+**Created:** 2025-12-01  
+**Author(s):** Danny Meijer (@danny-meijer)  
+**Issue:** [#81](https://github.com/dannys-code-corner/incan/issues/81)  
+**RFC PR:** —  
+**Related:** RFC 013 (Rust crate dependencies)  
+**Written against:** v0.1  
+**Shipped in:** —  
 
 ## Summary
 
-The Incan compiler currently emits `.unwrap()` calls in generated Rust code for operations that can fail at runtime.
-This causes cryptic Rust panics when users encounter edge cases. This RFC proposes a phased approach to improve error
-handling in generated code.
+The Incan compiler currently emits `.unwrap()` calls in generated Rust code for operations that can fail at runtime. This causes cryptic Rust panics when users encounter edge cases. This RFC proposes a phased approach to improve error handling in generated code.
 
 ## Problem
 
@@ -38,6 +43,12 @@ thread 'main' panicked at 'called `Option::unwrap()` on a `None` value'
 2. **Source locations**: Errors should reference Incan source lines when possible
 3. **Graceful degradation**: Some operations should return `None`/default instead of panicking
 4. **Future-proof**: Design should support Incan-level error handling via `Result`/`Option`, `match`, and `?`
+
+## Non-Goals
+
+- Python-style `try/except` blocks — Incan handles errors via `match` on `Result` and `Option`, not exception catching.
+- Changing the Incan language surface for operations that currently have implicit semantics (e.g., `d[key]` still raises a `KeyError`-equivalent, not returns `None`).
+- Full source-map infrastructure — source location in runtime messages is best-effort for this RFC.
 
 ## Proposed Solution
 
@@ -83,7 +94,7 @@ pub enum IncanError {
 impl std::fmt::Display for IncanError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IncanError::KeyError { key, context } => 
+            IncanError::KeyError { key, context } =>
                 write!(f, "KeyError: '{}' not found{}", key, context),
             // ... etc
         }
@@ -246,25 +257,17 @@ __incan_list_find_index(&vec, &v).expect("ValueError: value not found in list")
 __incan_list_find_index(&vec, &v).unwrap_or_else(|| panic!("ValueError: value not found in list"))
 ```
 
-## Implementation Plan
+## Alternatives considered
 
-1. **Phase 1**: Update codegen to emit better panic messages
-2. **Phase 2**: Add IncanError type to generated prelude
-3. **Phase 3**: Add `Dict.get(key, default=...)` **and introduce a new safe list API**
-    (e.g. `List.get(index, default=...)` or `List.at(index)` returning `Option[T]`)
-    and update codegen to use Rust's `Vec::get`.
+### Always return `Result` for fallible operations
 
-## Alternatives Considered
-
-### Always Return Result
-
-Make all fallible operations return `Result<T, IncanError>`. Rejected because:
+Make every fallible operation return `Result<T, IncanError>`. Rejected because:
 
 - Requires pervasive `?` or `.unwrap()` in generated code
 - Doesn't match Python/Incan semantics where these operations "just work"
 - Would require pervasive `Result` handling (via `match`/`?`) to be usable
 
-### Silent Defaults
+### Silent defaults
 
 Return default values instead of panicking (e.g., `0` for missing int parse). Rejected because:
 
@@ -272,10 +275,25 @@ Return default values instead of panicking (e.g., `0` for missing int parse). Re
 - Doesn't match Python semantics (Python raises exceptions)
 - Makes debugging harder
 
-## References
+## Drawbacks
 
-- Python's exception model
-- Rust's `unwrap_or_else` pattern
-- [RFC 013: Rust Crate Dependencies][RFC 013] — related codegen concerns
+- Phase 1 adds verbosity to generated Rust for every affected operation. This is noise in the generated output but has no runtime cost.
+- Phase 2 introduces a shared prelude type (`IncanError`) that must be kept backward compatible as the language evolves.
+- Phase 4 requires language-level changes (return-type inference for built-ins) that interact with the typechecker and lowering pipeline.
 
---8<-- "_snippets/rfcs_refs.md"
+## Layers affected
+
+- **Lowering / IR emission** — must replace bare unwrap patterns with named-message equivalents for all operations listed in "Specific Improvements"; must lower `dict.get(key)` and `dict.get(key, default)` to `Option`-returning and `unwrap_or`-based patterns respectively.
+- **Generated prelude** — must introduce the `IncanError` enum (Phase 2) so all generated error messages share a common format.
+- **Typechecker** — must track the return type of `dict.get(key)` as `Option[V]` (Phase 3); must eventually support `Result`-returning built-in variants (Phase 4).
+- **Stdlib** — `dict.get`, `list.get`, and any `Result`-returning variants of `int()`/`float()` must be declared in `std` and wired to the appropriate Rust implementations.
+
+## Unresolved questions
+
+1. **Source location in runtime messages.** Should generated error messages include the Incan file and line number? If so, what mechanism threads that information into the generated Rust without significant overhead?
+
+2. **`int()` / `float()` Result variants.** Should Phase 4 introduce `int.try_parse(s) -> Result[int, ValueError]` as a separate function, or should `int(s)` itself change return type when used in a `match`-position context?
+
+3. **`IncanError` stability.** Once introduced in Phase 2, the `IncanError` enum is part of the implicit generated API. What versioning guarantees apply to it across compiler versions?
+
+<!-- Rename the "Unresolved questions" section above to "Design Decisions" once all open questions have been resolved and the RFC moves to Planned status. -->

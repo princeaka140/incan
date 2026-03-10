@@ -3,14 +3,35 @@
 - **Status:** Draft
 - **Created:** 2026-03-06
 - **Author(s):** Danny Meijer (@dannymeijer)
-- **Related:** RFC 027 (incan-vocab — keyword registration API), RFC 034 (`incan.pub` registry)
-- **Target version:** v0.2
+- **Issue:** [#165](https://github.com/dannys-code-corner/incan/issues/165)
+- **RFC PR:** —
+- **Related**:
+    - RFC 027 (incan-vocab — keyword registration API)
+    - RFC 034 (`incan.pub` registry)
+- **Written against:** v0.2
+- **Shipped in:** —
 
 ## Summary
 
 Introduce Incan library dependencies so that one Incan project can depend on another, import its types, and compile against its generated Rust crate. Phase 1 covers the minimal local-only flow: `path` dependencies, a type manifest (`.incnlib`), a library build mode, `pub::` import syntax, and Cargo wiring through ordinary path dependencies.
 
 The core abstractions here are intended to carry forward into later phases such as git dependencies and the `incan.pub` registry, even if some concrete CLI details or artifact layout choices evolve.
+
+## Goals
+
+- Allow one Incan project to declare another as a dependency (via `path` reference) and import its exported types, functions, and soft keywords.
+- Introduce `incan build --lib` as the canonical command for building a library artifact: a type manifest (`.incnlib`) plus a generated Rust crate.
+- Establish `pub::` as the import namespace prefix for Incan library dependencies, parallel to `rust::` for Rust crates.
+- Rename `[dependencies]` in `incan.toml` to `[rust-dependencies]` for Rust crate pass-through, freeing the unqualified `[dependencies]` key for Incan library dependencies.
+- Define the manifest schema and the consumer build flow (manifest loading → typechecking → Rust code emission → Cargo wiring) in sufficient normative detail for implementation.
+
+## Non-Goals
+
+- Git-based dependency resolution, `~/.incan/libs/` caching, lockfile entries, or `incan fetch` — those are Phase 2 concerns.
+- The `incan.pub` registry, `incan publish`, or SemVer resolution — those are Phase 3 concerns addressed by RFC 034.
+- Transitive Incan library dependencies — Phase 1 supports a single consumer + library; recursive manifests are out of scope.
+- Namespace collision resolution beyond a clear compile error.
+- Deep LSP warm-cache strategies for remote dependencies — not needed for local path deps.
 
 ## Motivation
 
@@ -261,12 +282,12 @@ Instead of deriving exports from `pub` visibility in `lib.incn`, require an expl
 
 ## Layers affected
 
-- **Parser** (`crates/incan_syntax/src/parser/`) — recognise `pub::` as an import path prefix (parallel to `rust::`); support `pub from ... import ...` re-export syntax valid only in `lib.incn`, requiring a visibility field on `ImportDecl`.
-- **Typechecker** (`src/frontend/typechecker/`) — load manifest exports into the symbol table before checking user code so library types are indistinguishable from local types during checking; load soft keyword activations from manifests into the parser's keyword registry.
-- **IR Emission** (`src/backend/ir/emit/`) — generate `use <lib>::...` statements for `pub::` imports.
-- **Project generator** (`src/backend/project/`) — add library crate paths to the generated `Cargo.toml` `[dependencies]` section.
-- **CLI** (`src/cli/`) — introduce `incan build --lib`; wire dependency resolution (path lookup, manifest loading, stale-artifact detection) into `build`, `run`, and `test` flows; emit the migration diagnostic when Rust crate names are found in `[dependencies]`.
-- **Manifest layer** (new) — `LibraryManifest` data model, JSON serialization/deserialization, and the generation step that extracts the checked public API from the typechecker's symbol table.
+- **Parser** — must recognise `pub::` as an import path prefix (parallel to `rust::`); must support `pub from ... import ...` re-export syntax valid only in `lib.incn`, requiring a visibility modifier on import declarations.
+- **Typechecker** — must load manifest exports into the symbol table before checking user code, so library types are indistinguishable from local types during checking; must load soft keyword activations from manifests into the parser's keyword registry.
+- **IR Emission** — must generate `use <lib>::...` statements for symbols resolved through `pub::` imports.
+- **Project generator** — must add library crate paths to the generated `Cargo.toml` dependency section for each `[dependencies]` entry resolved to a local path.
+- **CLI** — must introduce `incan build --lib`; must wire dependency resolution (path lookup, manifest loading, stale-artifact detection) into all build, run, and test flows; must emit a migration diagnostic when Rust crate names are found in the `[dependencies]` section.
+- **Manifest layer** (new) — a new `LibraryManifest` data model with JSON serialization and deserialization; a generation step that extracts the checked public API from the typechecker's symbol table at the end of `incan build --lib`.
 - **LSP** — load library manifests on workspace open to provide completions and hover info for library types.
 
 ## Unresolved questions
@@ -282,4 +303,6 @@ Implementation details such as the LSP's manifest cache layering are intentional
 ## Future phases (out of scope for this RFC)
 
 - **Phase 2: Git dependencies + caching.** `mylib = { git = "https://...", tag = "v0.1.0" }`. Adds lockfile (`incan.lock`), `~/.incan/libs/` cache, checksum verification, transitive dependency resolution, and inline `@` version syntax.
-- **Phase 3: `incan.pub` registry.** Published Incan libraries with SemVer resolution. `mylib = "0.1.0"` resolves from the registry. `incan publish` for library distribution. Defined in [RFC 034](034_incan_pub_registry.md).
+- **Phase 3: `incan.pub` registry.** Published Incan libraries with SemVer resolution. `mylib = "0.1.0"` resolves from the registry. `incan publish` for library distribution. Defined in RFC 034 (incan.pub registry).
+
+<!-- Rename the "Unresolved questions" section above to "Design Decisions" once all open questions have been resolved and the RFC moves to Planned status. -->

@@ -3,6 +3,11 @@
 **Status:** Planned  
 **Created:** 2026-01-14  
 **Author(s):** Danny Meijer (@danny-meijer)  
+**Issue:** [#76](https://github.com/dannys-code-corner/incan/issues/76)  
+**RFC PR:** —  
+**Related:** RFC 019 (test runner and CLI)  
+**Written against:** v0.1
+**Shipped in:** —
 **Supersedes:** RFC 001 (language portions), RFC 002 (language portions)  
 
 ## Summary
@@ -515,7 +520,6 @@ Legend:
 
 ### Language + assertion API surface
 
-<!-- markdownlint-disable MD013 -->
 | Item                                             | Today      | After RFC 018 | Notes                                           | Implemented |
 | ------------------------------------------------ | ---------- | ------------- | ----------------------------------------------- | ----------- |
 | `assert <expr>` keyword                          | No         | New           | Lowers to `testing.assert_*` helpers            |             |
@@ -525,57 +529,19 @@ Legend:
 | `testing.assert_is_*` helpers                    | Partial    | Changed       | RFC pins behavior + msg propagation             |             |
 | `testing.assert_raises` (+ `assert ... raises`)  | Partial    | Changed       | RFC pins desugaring + optional msg              |             |
 | `testing.fail(msg)`                              | Yes        | Unchanged     | Explicit failure                                |             |
-<!-- markdownlint-enable MD013 -->
 
-## Implementation plan
+## Layers affected
 
-Implement incrementally:
-
-1. Parse `assert` and `assert ... raises` forms (AST + diagnostics).
-2. Add a reserved `module tests:` block in the parser/AST.
-3. Implement `assert` lowering to `testing.assert_*` with message propagation.
-4. Implement `module tests:` scoping and stripping in non-test compilation modes.
-5. Implement `testing`-gated resolution rules for test constructs (imports/aliases).
-
-### Implementation dependencies (informative)
-
-This section is informative (non-normative). It exists to help contributors implement the RFC in a sensible dependency
-order.
-
-Suggested dependency order:
-
-- `assert` parsing + lowering to `testing.assert_*`
-- `module tests:` parsing + stripping rules
-- `testing`-gated decorator resolution
-
-Conformance tests to add (turn the guide-level examples into real tests):
-
-- [ ] `assert a == b` lowers to `testing.assert_eq(a, b)` (rich equality diagnostics)
-- [ ] `assert a == b, "msg"` lowers to `testing.assert_eq(a, b, "msg")`
-- [ ] `assert a != b` lowers to `testing.assert_ne(a, b)`
-- [ ] `assert a == b` where `T` lacks `Debug` emits a diagnostic suggesting `@derive(Debug)`
-- [ ] `assert x > y, "msg"` lowers to `testing.assert(x > y, "msg")`
-- [ ] `assert x > y` lowers to `testing.assert(x > y)`
-- [ ] boolean logic: `assert a and b`, `assert not a`, `assert (a and b) or c`
-- [ ] Option/Result methods: `assert opt.is_some()`, `assert res.is_ok()`
-- [ ] pattern matching: `assert opt is Some(_)`, `assert res is Err(_)`
-- [ ] ensure `assert x is y` is treated as pattern matching only (no identity semantics)
-- [ ] `assert opt is Some(v)` binds `v` via `testing.assert_is_some`
-- [ ] `assert opt is Some(v), "msg"` binds `v` and passes `msg` through to `testing.assert_is_some`
-- [ ] `assert opt is None` lowers to `testing.assert_is_none`
-- [ ] `assert res is Ok(v)` / `assert res is Err(e)` binding behavior
-- [ ] `assert call() raises ErrorType` lowers to `testing.assert_raises[ErrorType](lambda: call())`
-- [ ] `assert call() raises ErrorType, "msg"` lowers to `testing.assert_raises[ErrorType](lambda: call(), "msg")`
-- [ ] `assert call() raises E` matches exact runtime error type `E` (and matches subtypes only if runtime error subtyping
-  is supported)
-- [ ] `from testing import *` is a compile-time error
-- [ ] `assert opt is Some(v)` rejects shadowing `v` in the same block
-- [ ] `module tests:` is stripped in `incan build`/`incan run` and type-checked in `incan --check`
-- [ ] only one `module tests:` per file (duplicate is a compile error)
-- [ ] `module tests:` can access private (non-`pub`) names from the enclosing module
-- [ ] names declared inside `module tests:` are not visible outside the test block
+- **Lexer** — `assert` must be treated as a soft keyword activated by `std.testing` imports, not a hard keyword. The lexer emits `Ident("assert")`; the parser promotes it via the keyword registry.
+- **Parser** — must parse the `assert <expr>` form, the `assert <expr>, <msg>` form, and the `assert <expr> raises <Type>` form as distinct AST nodes; must parse and validate `module tests:` as a reserved inline block producing a `TestModule` AST node; must enforce that `module tests:` appears at most once per file at module scope.
+- **Typechecker** — must gate resolution of test-only decorators and helpers behind `testing`-activated import context; must validate that names inside `module tests:` are not visible outside and that the block has read access to private module members.
+- **Lowering** — must lower `assert <expr>` to the appropriate `testing.assert_*` call based on expression shape (equality, inequality, option/result, pattern binding); must lower `assert <expr> raises <Type>` to `testing.assert_raises`; must strip `module tests:` bodies from non-test compilation modes.
+- **Stdlib (`std.testing`)** — `assert_eq`, `assert_ne`, `assert_is_some`, `assert_is_none`, `assert_raises`, `assert`, and their message-accepting overloads must conform to the desugaring rules specified in this RFC.
+- **CLI** — `incan build` and `incan run` must strip `module tests:` bodies; `incan --check` must typecheck them; `incan test` must include them in the compilation unit.
 
 ## References
 
-- RFC 019: Test Runner, CLI, and Ecosystem (`/RFCs/019_runner_testing/`)
+- RFC 019: Test Runner, CLI, and Ecosystem
 - Python `assert` statement: `https://docs.python.org/3/reference/simple_stmts.html#the-assert-statement`
+
+<!-- The "Design decisions" section (if present) was renamed from "Unresolved questions" once all open questions were resolved. If new unresolved questions arise during implementation, add an "Unresolved questions" section and move resolved items to "Design decisions" after resolution. -->
