@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use crate::cli::commands::common::resolve_stdlib_module_source_path;
 use crate::cli::prelude::ParsedModule;
 use crate::frontend::ast::{Declaration, ImportKind, Program};
+use crate::frontend::library_manifest_index::LibraryManifestIndex;
+use crate::frontend::vocab_desugar_pass;
 use crate::frontend::{diagnostics, lexer, parser};
 use incan_core::lang::stdlib;
 
@@ -47,6 +49,8 @@ fn queue_incan_stdlib_source_module(
 pub(super) fn collect_source_modules_for_test(
     test_ast: &Program,
     source_root: &Path,
+    library_imported_vocab: Option<&parser::ImportedLibraryVocab>,
+    library_manifest_index: Option<&LibraryManifestIndex>,
 ) -> Result<Vec<ParsedModule>, String> {
     let mut modules = Vec::new();
     let mut processed = HashSet::new();
@@ -67,13 +71,21 @@ pub(super) fn collect_source_modules_for_test(
 
         let Some(path) = import_path else { continue };
 
-        if path.parent_levels == 0 && !path.is_absolute && stdlib::is_any_stdlib_path(&path.segments) {
-            queue_incan_stdlib_source_module(
-                &path.segments,
-                &mut incan_source_stdlib_module_paths,
-                &processed,
-                &mut to_process,
-            )?;
+        if path.parent_levels == 0
+            && !path.is_absolute
+            && path
+                .segments
+                .first()
+                .is_some_and(|segment| segment == stdlib::STDLIB_ROOT)
+        {
+            if stdlib::stdlib_stub_path(&path.segments).is_some() {
+                queue_incan_stdlib_source_module(
+                    &path.segments,
+                    &mut incan_source_stdlib_module_paths,
+                    &processed,
+                    &mut to_process,
+                )?;
+            }
             continue;
         }
 
@@ -147,13 +159,23 @@ pub(super) fn collect_source_modules_for_test(
         })?;
 
         let fp = file_path.to_string_lossy();
-        let ast = parser::parse_with_module_path(&tokens, Some(fp.as_ref())).map_err(|errs| {
-            let mut msg = String::new();
-            for err in &errs {
-                msg.push_str(&diagnostics::format_error(&fp, &source, err));
-            }
-            msg
-        })?;
+        let mut ast =
+            parser::parse_with_context(&tokens, Some(fp.as_ref()), library_imported_vocab).map_err(|errs| {
+                let mut msg = String::new();
+                for err in &errs {
+                    msg.push_str(&diagnostics::format_error(&fp, &source, err));
+                }
+                msg
+            })?;
+        if let Some(index) = library_manifest_index {
+            vocab_desugar_pass::desugar_program_vocab_blocks(&mut ast, Some(fp.as_ref()), index).map_err(|errs| {
+                let mut msg = String::new();
+                for err in &errs {
+                    msg.push_str(&diagnostics::format_error(&fp, &source, err));
+                }
+                msg
+            })?;
+        }
         // Surface any non-fatal parser warnings immediately.
         for warn in &ast.warnings {
             let fp = file_path.to_string_lossy();
@@ -171,13 +193,21 @@ pub(super) fn collect_source_modules_for_test(
                 _ => continue,
             };
             let Some(dep) = dep_path else { continue };
-            if dep.parent_levels == 0 && !dep.is_absolute && stdlib::is_any_stdlib_path(&dep.segments) {
-                queue_incan_stdlib_source_module(
-                    &dep.segments,
-                    &mut incan_source_stdlib_module_paths,
-                    &processed,
-                    &mut to_process,
-                )?;
+            if dep.parent_levels == 0
+                && !dep.is_absolute
+                && dep
+                    .segments
+                    .first()
+                    .is_some_and(|segment| segment == stdlib::STDLIB_ROOT)
+            {
+                if stdlib::stdlib_stub_path(&dep.segments).is_some() {
+                    queue_incan_stdlib_source_module(
+                        &dep.segments,
+                        &mut incan_source_stdlib_module_paths,
+                        &processed,
+                        &mut to_process,
+                    )?;
+                }
                 continue;
             }
             if dep
