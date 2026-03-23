@@ -43,6 +43,21 @@ pub struct Parser<'a> {
     library_imported_vocab: ImportedLibraryVocab,
 }
 
+/// Compares the last path segment to an expected spelling for library entrypoint detection.
+#[cfg(windows)]
+fn library_entrypoint_segment_eq(expected: &str, actual: &std::ffi::OsStr) -> bool {
+    actual
+        .to_str()
+        .map(|value| value.eq_ignore_ascii_case(expected))
+        .unwrap_or(false)
+}
+
+/// Compares the last path segment to an expected spelling for library entrypoint detection.
+#[cfg(not(windows))]
+fn library_entrypoint_segment_eq(expected: &str, actual: &std::ffi::OsStr) -> bool {
+    actual == std::ffi::OsStr::new(expected)
+}
+
 impl<'a> Parser<'a> {
     /// Create a new parser for a token stream.
     ///
@@ -184,23 +199,30 @@ impl<'a> Parser<'a> {
     }
 
     /// Whether the parser is currently parsing `src/lib.incn`.
+    ///
+    /// This gates [`Visibility::Public`] on `from ... import ...` (RFC 031). Callers must pass a
+    /// filesystem-style module path (as the CLI and LSP do) so the immediate parent directory is
+    /// `src` and the file name is `lib.incn`.
+    ///
+    /// On Windows, the `src` / `lib.incn` segments are compared ASCII case-insensitively so editor
+    /// URIs that normalize path casing still match the library entrypoint rule.
     fn is_library_entrypoint_module(&self) -> bool {
         let Some(module_path) = self.module_path.as_deref() else {
             return false;
         };
 
         let path = std::path::Path::new(module_path);
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        let Some(file_name) = path.file_name() else {
             return false;
         };
-        if file_name != "lib.incn" {
+        if !library_entrypoint_segment_eq("lib.incn", file_name) {
             return false;
         }
 
-        path.parent()
-            .and_then(std::path::Path::file_name)
-            .and_then(|name| name.to_str())
-            == Some("src")
+        let Some(parent_dir) = path.parent().and_then(std::path::Path::file_name) else {
+            return false;
+        };
+        library_entrypoint_segment_eq("src", parent_dir)
     }
 
     /// Activate soft keywords introduced by stdlib or library imports in this declaration.
