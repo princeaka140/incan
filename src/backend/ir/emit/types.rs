@@ -65,6 +65,10 @@ impl<'a> IrEmitter<'a> {
                 let ts: Vec<_> = args.iter().map(|t| self.emit_type(t)).collect();
                 quote! { #n < #(#ts),* > }
             }
+            IrType::ImplTrait(bound) => {
+                let bound_tokens = self.emit_trait_bound(bound);
+                quote! { impl #bound_tokens }
+            }
             IrType::SelfType => {
                 quote! { Self }
             }
@@ -154,9 +158,10 @@ impl<'a> IrEmitter<'a> {
             .collect();
         let path = super::decls::join_path_tokens(&path_tokens);
 
-        if bound.assoc_types.is_empty() {
+        if bound.type_args.is_empty() && bound.assoc_types.is_empty() {
             path
         } else {
+            let type_args: Vec<TokenStream> = bound.type_args.iter().map(|t| self.emit_type(t)).collect();
             let assocs: Vec<TokenStream> = bound
                 .assoc_types
                 .iter()
@@ -166,8 +171,17 @@ impl<'a> IrEmitter<'a> {
                     quote! { #name_ident = #ty_tokens }
                 })
                 .collect();
-            quote! { #path < #(#assocs),* > }
+            let generic_items: Vec<TokenStream> = type_args.into_iter().chain(assocs).collect();
+            quote! { #path < #(#generic_items),* > }
         }
+    }
+
+    /// Emit a supertrait reference for a trait definition header (`Bar`, `DataSet<T>`), RFC 042.
+    ///
+    /// Delegates to [`Self::emit_trait_bound`] so path splitting and generic rendering are not duplicated.
+    pub(super) fn emit_supertrait_bound_path(&self, trait_path: &str, type_args: &[IrType]) -> TokenStream {
+        let bound = super::super::decl::IrTraitBound::with_type_args(trait_path, type_args.to_vec());
+        self.emit_trait_bound(&bound)
     }
 
     /// Emit visibility modifier.

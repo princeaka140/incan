@@ -117,6 +117,13 @@ pub struct IrImportItem {
 #[derive(Debug, Clone)]
 pub struct IrTrait {
     pub name: String,
+    /// Generic parameters (`trait Foo[T]: ...`), including `with` bounds from the source (RFC 023 / RFC 042).
+    pub type_params: Vec<IrTypeParam>,
+    /// Direct supertraits for the generated Rust trait header (`trait Foo: Bar + Baz<T> {}`), RFC 042.
+    ///
+    /// Each entry is a Rust trait path string (possibly `::`-separated, as for [`IrTraitBound::trait_path`]) plus
+    /// concrete type arguments for that bound.
+    pub supertraits: Vec<(String, Vec<IrType>)>,
     /// Methods with default implementations
     pub methods: Vec<IrFunction>,
     pub visibility: Visibility,
@@ -129,8 +136,10 @@ pub struct IrImpl {
     pub target_type: String,
     /// Type parameters for the impl block
     pub type_params: Vec<IrTypeParam>,
-    /// The trait being implemented, if any
+    /// The trait being implemented, if any.
     pub trait_name: Option<String>,
+    /// Concrete type arguments for the implemented trait (e.g. `impl<T> Boxed<T> for Cell<T>`), RFC 042.
+    pub trait_type_args: Vec<IrType>,
     /// Methods in this impl block
     pub methods: Vec<IrFunction>,
 }
@@ -253,6 +262,8 @@ pub enum VariantFields {
 pub struct IrTraitBound {
     /// Rust trait path (e.g., `"PartialEq"`, `"std::fmt::Display"`, `"std::ops::Add"`).
     pub trait_path: String,
+    /// Optional generic type arguments (e.g. `i64` in `Collection<i64>`).
+    pub type_args: Vec<IrType>,
     /// Optional associated type constraints (e.g., `Output = T` for `Add<Output = T>`).
     pub assoc_types: Vec<(String, IrType)>,
 }
@@ -262,6 +273,16 @@ impl IrTraitBound {
     pub fn simple(trait_path: impl Into<String>) -> Self {
         Self {
             trait_path: trait_path.into(),
+            type_args: Vec::new(),
+            assoc_types: Vec::new(),
+        }
+    }
+
+    /// Create a trait bound with concrete generic arguments.
+    pub fn with_type_args(trait_path: impl Into<String>, type_args: Vec<IrType>) -> Self {
+        Self {
+            trait_path: trait_path.into(),
+            type_args,
             assoc_types: Vec::new(),
         }
     }
@@ -270,6 +291,7 @@ impl IrTraitBound {
     pub fn with_output(trait_path: impl Into<String>, output_type: IrType) -> Self {
         Self {
             trait_path: trait_path.into(),
+            type_args: Vec::new(),
             assoc_types: vec![("Output".to_string(), output_type)],
         }
     }

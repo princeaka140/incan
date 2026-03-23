@@ -1,8 +1,10 @@
 //! First-pass collection: register types, functions, and imports into the symbol table.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::frontend::ast::*;
+use crate::frontend::diagnostics::errors;
+use crate::frontend::resolved_type_subst::{substitute_resolved_type, type_param_subst_map};
 use crate::frontend::symbols::*;
 use crate::frontend::typechecker::helpers::freeze_const_type;
 
@@ -168,21 +170,223 @@ impl TypeChecker {
         (parent_info.fields.clone(), parent_info.methods.clone())
     }
 
-    /// Register a trait declaration with its method signatures and requirements.
+    /// Register a trait declaration with its method signatures, supertraits, and requirements.
     fn collect_trait(&mut self, tr: &TraitDecl, span: Span) {
         let methods = collect_methods(&tr.methods, self);
         let requires = self.extract_requires(&tr.decorators);
+        if !tr.traits.is_empty() {
+            self.pending_trait_supertraits
+                .push((tr.name.clone(), tr.traits.clone()));
+        }
 
         self.symbols.define(Symbol {
             name: tr.name.clone(),
             kind: SymbolKind::Trait(TraitInfo {
                 type_params: tr.type_params.iter().map(|tp| tp.name.clone()).collect(),
+                supertraits: Vec::new(),
                 methods,
                 requires,
             }),
             span,
             scope: 0,
         });
+    }
+
+    /// Resolve one `with` supertrait bound to `(trait_name, type_arguments)` after validation (RFC 042).
+    fn resolve_trait_supertrait_bound(&mut self, bound: &Spanned<TraitBound>) -> Option<(String, Vec<ResolvedType>)> {
+        let ty = trait_bound_to_ast_type(bound);
+        let spanned = Spanned::new(ty, bound.span);
+        let resolved = self.resolve_type_checked(&spanned);
+        let (trait_name, args) = match resolved {
+            ResolvedType::Named(n) => (n, Vec::new()),
+            ResolvedType::Generic(n, args) => (n, args),
+            _ => {
+                self.errors.push(errors::supertrait_bound_invalid(bound.span));
+                return None;
+            }
+        };
+        let Some(trait_info) = self.lookup_trait_info(&trait_name) else {
+            self.errors
+                .push(errors::supertrait_bound_not_trait(&trait_name, bound.span));
+            return None;
+        };
+        let expected_arity = trait_info.type_params.len();
+        if args.len() != expected_arity {
+            self.errors.push(errors::supertrait_bound_arity_mismatch(
+                &trait_name,
+                expected_arity,
+                args.len(),
+                bound.span,
+            ));
+            return None;
+        }
+        Some((trait_name, args))
+    }
+
+    /// Resolve queued trait `with` bounds now that all types and traits exist in the symbol table (RFC 042).
+    pub(crate) fn resolve_pending_trait_supertraits(&mut self) {
+        let pending = std::mem::take(&mut self.pending_trait_supertraits);
+        for (trait_name, bounds) in pending {
+            let mut supertraits: Vec<(String, Vec<ResolvedType>)> = Vec::new();
+            for bound in &bounds {
+                if let Some(entry) = self.resolve_trait_supertrait_bound(bound) {
+                    supertraits.push(entry);
+                }
+            }
+            let Some(sym_id) = self.symbols.lookup(&trait_name) else {
+                continue;
+            };
+            let Some(sym) = self.symbols.get_mut(sym_id) else {
+                continue;
+            };
+            let SymbolKind::Trait(info) = &mut sym.kind else {
+                continue;
+            };
+            info.supertraits = supertraits;
+        }
+    }
+
+    /// After all declarations are collected: detect supertrait cycles and fill `supertrait_closure`.
+    pub(crate) fn finalize_supertrait_graph(&mut self) {
+        self.supertrait_closure.clear();
+        let edges = self.supertrait_name_adjacency();
+        let trait_names: Vec<String> = self
+            .symbols
+            .all_symbols()
+            .iter()
+            .filter_map(|sym| matches!(sym.kind, SymbolKind::Trait(_)).then_some(sym.name.clone()))
+            .collect();
+        if let Some(cycle) = find_supertrait_cycle_path(&edges) {
+            let span = cycle
+                .first()
+                .and_then(|name| self.lookup_symbol(name))
+                .map(|sym| sym.span)
+                .unwrap_or_default();
+            self.errors.push(errors::supertrait_cycle(&cycle, span));
+            for name in trait_names {
+                self.supertrait_closure.insert(name, Vec::new());
+            }
+            return;
+        }
+        for name in trait_names {
+            let closure = self.expand_supertraits_transitively(&name);
+            self.supertrait_closure.insert(name, closure);
+        }
+    }
+
+    fn supertrait_name_adjacency(&self) -> HashMap<String, Vec<String>> {
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        for sym in self.symbols.all_symbols() {
+            if let SymbolKind::Trait(info) = &sym.kind {
+                let names: Vec<String> = info.supertraits.iter().map(|(n, _)| n.clone()).collect();
+                map.insert(sym.name.clone(), names);
+            }
+        }
+        map
+    }
+
+    /// Transitive supertraits of `trait_name`, with type arguments substituted along each edge.
+    fn expand_supertraits_transitively(&self, trait_name: &str) -> Vec<(String, Vec<ResolvedType>)> {
+        let mut result: Vec<(String, Vec<ResolvedType>)> = Vec::new();
+        let mut seen = HashSet::new();
+        let mut work: Vec<(String, Vec<ResolvedType>)> = Vec::new();
+        let Some(root) = self.lookup_trait_info(trait_name) else {
+            return result;
+        };
+        work.extend(root.supertraits.clone());
+        while let Some((sup_name, sup_args)) = work.pop() {
+            let key = format!(
+                "{sup_name}<{}>",
+                sup_args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(",")
+            );
+            if !seen.insert(key) {
+                continue;
+            }
+            result.push((sup_name.clone(), sup_args.clone()));
+            let Some(sup_info) = self.lookup_trait_info(&sup_name) else {
+                continue;
+            };
+            let subst = type_param_subst_map(&sup_info.type_params, &sup_args);
+            for (ss_name, ss_args) in &sup_info.supertraits {
+                let mapped: Vec<ResolvedType> = ss_args.iter().map(|t| substitute_resolved_type(t, &subst)).collect();
+                work.push((ss_name.clone(), mapped));
+            }
+        }
+        result
+    }
+
+    /// Merge `@requires` fields from transitive supertraits into each trait symbol (RFC 042).
+    ///
+    /// Uses each trait's **explicit** `@requires` from a snapshot taken before merging, so order does not matter.
+    /// Incompatible requirements for the same field name emit [`errors::supertrait_requires_conflict`].
+    pub(crate) fn merge_supertrait_requires_into_traits(&mut self) {
+        let mut explicit: HashMap<String, Vec<(String, ResolvedType)>> = HashMap::new();
+        for sym in self.symbols.all_symbols() {
+            if let SymbolKind::Trait(info) = &sym.kind {
+                explicit.insert(sym.name.clone(), info.requires.clone());
+            }
+        }
+
+        let trait_names: Vec<String> = explicit.keys().cloned().collect();
+        let mut updates: Vec<(String, Vec<(String, ResolvedType)>)> = Vec::new();
+
+        for tname in trait_names {
+            let span = self
+                .symbols
+                .lookup(&tname)
+                .and_then(|id| self.symbols.get(id))
+                .map(|s| s.span)
+                .unwrap_or_default();
+
+            let mut merged: HashMap<String, ResolvedType> =
+                explicit.get(&tname).cloned().unwrap_or_default().into_iter().collect();
+
+            let closure = self.supertrait_closure.get(tname.as_str()).cloned().unwrap_or_default();
+
+            for (sup_name, sup_args) in closure {
+                let Some(sup_info) = self.lookup_trait_info(&sup_name) else {
+                    continue;
+                };
+                let sup_req = explicit.get(&sup_name).cloned().unwrap_or_default();
+                let subst = type_param_subst_map(&sup_info.type_params, &sup_args);
+                for (field, ty) in sup_req {
+                    let inst = substitute_resolved_type(&ty, &subst);
+                    match merged.get(&field) {
+                        None => {
+                            merged.insert(field, inst);
+                        }
+                        Some(existing) => {
+                            if existing == &inst {
+                                continue;
+                            }
+                            if self.types_compatible(existing, &inst) || self.types_compatible(&inst, existing) {
+                                continue;
+                            }
+                            self.errors.push(errors::supertrait_requires_conflict(
+                                &tname,
+                                &field,
+                                &existing.to_string(),
+                                &inst.to_string(),
+                                span,
+                            ));
+                        }
+                    }
+                }
+            }
+
+            let mut req_vec: Vec<(String, ResolvedType)> = merged.into_iter().collect();
+            req_vec.sort_by(|a, b| a.0.cmp(&b.0));
+            updates.push((tname, req_vec));
+        }
+
+        for (tname, requires) in updates {
+            if let Some(id) = self.symbols.lookup(&tname)
+                && let Some(sym) = self.symbols.get_mut(id)
+                && let SymbolKind::Trait(info) = &mut sym.kind
+            {
+                info.requires = requires;
+            }
+        }
     }
 
     /// Register a newtype declaration with its underlying type and methods.
@@ -282,5 +486,63 @@ impl TypeChecker {
             span,
             scope: 0,
         });
+    }
+}
+
+fn trait_bound_to_ast_type(bound: &Spanned<TraitBound>) -> Type {
+    if bound.node.type_args.is_empty() {
+        Type::Simple(bound.node.name.clone())
+    } else {
+        Type::Generic(bound.node.name.clone(), bound.node.type_args.clone())
+    }
+}
+
+/// Returns one simple cycle (trait names), if the directed supertrait graph has a cycle.
+fn find_supertrait_cycle_path(edges: &HashMap<String, Vec<String>>) -> Option<Vec<String>> {
+    let mut nodes: HashSet<String> = HashSet::new();
+    for (k, vs) in edges {
+        nodes.insert(k.clone());
+        for v in vs {
+            nodes.insert(v.clone());
+        }
+    }
+    let mut color: HashMap<String, u8> = HashMap::new();
+    let mut stack: Vec<String> = Vec::new();
+    for start in nodes {
+        if color.get(&start).copied().unwrap_or(0) != 0 {
+            continue;
+        }
+        stack.clear();
+        if let Some(cycle) = dfs_supertrait_cycle(&start, edges, &mut color, &mut stack) {
+            return Some(cycle);
+        }
+    }
+    None
+}
+
+fn dfs_supertrait_cycle(
+    n: &str,
+    edges: &HashMap<String, Vec<String>>,
+    color: &mut HashMap<String, u8>,
+    stack: &mut Vec<String>,
+) -> Option<Vec<String>> {
+    match color.get(n).copied().unwrap_or(0) {
+        1 => {
+            let idx = stack.iter().position(|x| x == n)?;
+            Some(stack[idx..].to_vec())
+        }
+        2 => None,
+        _ => {
+            color.insert(n.to_string(), 1);
+            stack.push(n.to_string());
+            for succ in edges.get(n).into_iter().flatten() {
+                if let Some(c) = dfs_supertrait_cycle(succ, edges, color, stack) {
+                    return Some(c);
+                }
+            }
+            stack.pop();
+            color.insert(n.to_string(), 2);
+            None
+        }
     }
 }
