@@ -1,6 +1,6 @@
 # RFC 042: Traits Are Always Abstract
 
-- **Status:** Planned
+- **Status:** Implemented
 - **Created:** 2026-03-18
 - **Author(s):** Danny Meijer (@dannymeijer)
 - **Related:**
@@ -9,8 +9,8 @@
     - RFC 025 (multi-instantiation trait dispatch)
     - RFC 026 (user-defined trait bridges)
     - RFC 028 (trait-based operator overloading)
-- **Issue:** https://github.com/dannys-code-corner/incan/issues/179
-- **RFC PR:** -
+- **Issue:** [#179](https://github.com/dannys-code-corner/incan/issues/179)
+- **RFC PR:** [#180](https://github.com/dannys-code-corner/incan/pull/180)
 - **Written against:** v0.1
 - **Shipped in:** v0.2
 
@@ -417,6 +417,74 @@ Supertrait relationships map naturally to Rust's supertrait syntax. A trait decl
 - **Formatter:** the formatter must handle `with` clauses on trait declarations, formatting them consistently with `with` clauses on concrete declarations.
 - **LSP / tooling:** hover text, completions, and diagnostics should describe traits as abstract capability types, should surface trait-conformance mismatches clearly, and should show the full method surface including inherited supertrait methods.
 - **Documentation:** guides and references must update the trait teaching model to state directly that all traits are abstract and that traits may adopt other traits to form capability hierarchies.
+
+## Implementation Plan
+
+### Phase 1: Parser + AST
+
+- Accept `with` clauses on `trait` declarations using the same comma-separated surface style as concrete declarations, with optional generic arguments on each supertrait (e.g. `DataSet[T]`).
+- Extend the trait declaration AST to carry the list of adopted supertraits as structured trait bounds.
+- Teach the formatter to print `with` on traits consistently with models and classes.
+
+### Phase 2: Typechecker — symbols and supertrait graph
+
+- Record supertrait relationships on trait symbols during collection and resolve bound types against the declaring trait’s type parameters.
+- Build the transitive supertrait closure, detect cycles, and emit a dedicated diagnostic for supertrait cycles.
+
+### Phase 3: Typechecker — assignability and conformance
+
+- Treat trait names and generic trait instantiations as abstract annotation types everywhere annotations are allowed; reject direct trait construction where applicable.
+- Extend trait implementation and compatibility checks for transitive supertraits, generic trait annotations, `@requires` propagation, and diamond ambiguity where required by the spec.
+
+### Phase 4: Lowering + emission
+
+- Preserve supertrait relationships in IR and emit Rust supertrait bounds and generic parameters on generated traits; ensure adopting types lower to `impl` blocks that satisfy the full hierarchy.
+
+### Phase 5: Tests, stdlib alignment, and docs
+
+- Add parser, typechecker, snapshot, and integration coverage for supertraits, generic trait annotations, and error cases (cycles, ambiguity, invalid instantiation).
+- Align stdlib trait hierarchies where appropriate; update docs-site trait guidance and release notes.
+
+## Implementation log
+
+### Spec / design
+
+- [x] Confirm remaining edge cases for diamond conflicts and `Self` under trait-typed annotations are reflected in Design Decisions where needed.
+
+### Parser / AST
+
+- [x] Parser: `with` on trait declarations (single, multiple, generic supertraits).
+- [x] AST: `TraitDecl` carries supertraits as `Spanned<TraitBound>`.
+- [x] Formatter: `with` on traits matches concrete declaration style.
+
+### Typechecker
+
+- [x] Symbol table: store resolved supertraits per trait.
+- [x] Transitive supertrait closure and cycle diagnostic.
+- [x] `type_implements_trait` and `types_compatible`: generic trait annotations and transitivity.
+- [x] Conformance: transitive supertrait method and `@requires` obligations; conflict/ambiguity diagnostics.
+- [x] Reject trait constructor / invalid instantiation where specified.
+
+### Lowering / IR
+
+- [x] IR trait: supertraits and type parameters.
+- [x] Lowering and emission: Rust `trait Name<T>: Super<T>` shape; impl coverage for hierarchies.
+
+### Stdlib / runtime
+
+- [x] Document and adjust stdlib traits under the “always abstract” model; add supertrait links where hierarchies exist.
+
+### Tests
+
+- [x] Parser unit test: trait `with` (multiple and generic supertraits).
+- [x] Additional parser / formatter round-trip tests as later phases land.
+- [x] Typechecker tests: assignability, transitivity, cycles, missing supertrait methods, diamond ambiguity, `@requires` merge conflicts.
+- [x] Codegen snapshots and integration tests for hierarchy examples (e.g. DataSet-style APIs).
+
+### Docs
+
+- [x] Update docs-site trait pages and teaching model.
+- [ ] Release notes entry when shipped.
 
 ## Design Decisions
 

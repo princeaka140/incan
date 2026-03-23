@@ -8,7 +8,7 @@ use crate::frontend::library_manifest_index::{
 use crate::frontend::{lexer, parser};
 use crate::library_manifest::{
     ConstExport, EnumExport, EnumVariantExport, FunctionExport, LibraryExports, LibraryManifest, ModelExport,
-    ParamExport, TypeRef,
+    ParamExport, TraitExport, TypeParamExport, TypeRef,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -106,6 +106,48 @@ fn library_index_with_mylib_exports() -> LibraryManifestIndex {
         LibraryManifestIndexEntry::Loaded {
             manifest: Box::new(manifest),
             metadata: LibraryArtifactMetadata::from_crate_root("mylib", "mylib", synthetic_artifact_root("mylib")),
+        },
+    )]))
+}
+
+fn library_index_with_trait_export() -> LibraryManifestIndex {
+    let manifest = LibraryManifest {
+        name: "mylib".to_string(),
+        version: "0.1.0".to_string(),
+        incan_version: crate::version::INCAN_VERSION.to_string(),
+        manifest_format: crate::library_manifest::LIBRARY_MANIFEST_FORMAT,
+        exports: LibraryExports {
+            models: Vec::new(),
+            classes: Vec::new(),
+            functions: Vec::new(),
+            traits: vec![TraitExport {
+                name: "ExternBox".to_string(),
+                type_params: vec![TypeParamExport {
+                    name: "T".to_string(),
+                    bounds: Vec::new(),
+                }],
+                supertraits: Vec::new(),
+                requires: Vec::new(),
+                methods: Vec::new(),
+            }],
+            enums: Vec::new(),
+            type_aliases: Vec::new(),
+            newtypes: Vec::new(),
+            consts: Vec::new(),
+        },
+        vocab: None,
+        soft_keywords: Default::default(),
+    };
+
+    LibraryManifestIndex::from_entries(HashMap::from([(
+        "mylib".to_string(),
+        LibraryManifestIndexEntry::Loaded {
+            manifest: Box::new(manifest),
+            metadata: LibraryArtifactMetadata::from_crate_root(
+                "mylib",
+                "mylib",
+                synthetic_artifact_root("mylib_trait_export"),
+            ),
         },
     )]))
 }
@@ -1326,6 +1368,417 @@ class Bad with Named:
     return "x"
 "#;
     assert!(check_str(source).is_err());
+}
+
+// RFC 042: supertrait graph (symbol collection + transitive closure)
+
+#[test]
+fn test_supertrait_cycle_is_diagnosed() -> Result<(), Vec<CompileError>> {
+    let source = r#"
+trait A with B:
+  def fa(self) -> int: ...
+
+trait B with A:
+  def fb(self) -> int: ...
+"#;
+    let tokens = lexer::lex(source)?;
+    let ast = parser::parse(&tokens)?;
+    let mut checker = TypeChecker::new();
+    let Err(errs) = checker.check_program(&ast) else {
+        panic!("expected supertrait cycle to be rejected");
+    };
+    assert!(
+        errs.iter().any(|e| e.message.contains("Supertrait cycle")),
+        "unexpected errors: {:?}",
+        errs.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn test_supertrait_transitive_closure() -> Result<(), Vec<CompileError>> {
+    let source = r#"
+trait Root:
+  def root_m(self) -> int: ...
+
+trait Mid with Root:
+  def mid_m(self) -> int: ...
+
+trait Leaf with Mid:
+  def leaf_m(self) -> int: ...
+"#;
+    let tokens = lexer::lex(source)?;
+    let ast = parser::parse(&tokens)?;
+    let mut checker = TypeChecker::new();
+    checker.check_program(&ast)?;
+    let Some(leaf) = checker.supertrait_closure.get("Leaf") else {
+        return Err(vec![CompileError::type_error(
+            "Leaf should have a supertrait closure".to_string(),
+            Span::default(),
+        )]);
+    };
+    assert!(
+        leaf.iter().any(|(n, _)| n == "Mid"),
+        "expected Mid in Leaf closure, got {:?}",
+        leaf
+    );
+    assert!(
+        leaf.iter().any(|(n, _)| n == "Root"),
+        "expected Root in Leaf closure, got {:?}",
+        leaf
+    );
+    Ok(())
+}
+
+#[test]
+fn test_supertrait_bound_rejects_non_trait_type() -> Result<(), Vec<CompileError>> {
+    let source = r#"
+model M:
+  x: int
+
+trait T with M:
+  def f(self) -> int: ...
+"#;
+    let tokens = lexer::lex(source)?;
+    let ast = parser::parse(&tokens)?;
+    let mut checker = TypeChecker::new();
+    let Err(errs) = checker.check_program(&ast) else {
+        panic!("expected errors for non-trait supertrait bound");
+    };
+    assert!(
+        errs.iter().any(|e| e.message.contains("is not a trait")),
+        "unexpected errors: {:?}",
+        errs.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn test_supertrait_bound_rejects_arity_mismatch() -> Result<(), Vec<CompileError>> {
+    let source = r#"
+trait Boxed[T]:
+  def get(self) -> T: ...
+
+trait Bad with Boxed:
+  def run(self) -> int: ...
+"#;
+    let tokens = lexer::lex(source)?;
+    let ast = parser::parse(&tokens)?;
+    let mut checker = TypeChecker::new();
+    let Err(errs) = checker.check_program(&ast) else {
+        panic!("expected errors for supertrait arity mismatch");
+    };
+    assert!(
+        errs.iter().any(|e| e.message.contains("expects 1 type argument")),
+        "unexpected errors: {:?}",
+        errs.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn test_generic_supertrait_cycle_is_diagnosed() -> Result<(), Vec<CompileError>> {
+    let source = r#"
+trait A[T] with A[list[T]]:
+  def f(self) -> int: ...
+"#;
+    let tokens = lexer::lex(source)?;
+    let ast = parser::parse(&tokens)?;
+    let mut checker = TypeChecker::new();
+    let Err(errs) = checker.check_program(&ast) else {
+        panic!("expected generic supertrait cycle to be rejected");
+    };
+    assert!(
+        errs.iter().any(|e| e.message.contains("Supertrait cycle")),
+        "unexpected errors: {:?}",
+        errs.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+// RFC 042 Phase 3: assignability, conformance, `@requires` merge, trait construction, diamond diagnostics
+
+#[test]
+fn test_type_implements_trait_includes_transitive_supertraits() -> Result<(), Vec<CompileError>> {
+    let source = r#"
+trait Root:
+  def r(self) -> int: ...
+
+trait Mid with Root:
+  def m(self) -> int: ...
+
+trait Leaf with Mid:
+  def l(self) -> int: ...
+
+model M with Leaf:
+  def r(self) -> int:
+    return 0
+  def m(self) -> int:
+    return 0
+  def l(self) -> int:
+    return 0
+"#;
+    let tokens = lexer::lex(source)?;
+    let ast = parser::parse(&tokens)?;
+    let mut checker = TypeChecker::new();
+    checker.check_program(&ast)?;
+    assert!(checker.type_implements_trait("M", "Leaf"));
+    assert!(checker.type_implements_trait("M", "Mid"));
+    assert!(checker.type_implements_trait("M", "Root"));
+    Ok(())
+}
+
+#[test]
+fn test_types_compatible_generic_trait_annotation() -> Result<(), Vec<CompileError>> {
+    let source = r#"
+trait Boxed[T]:
+  def get(self) -> T: ...
+
+model Cell[T] with Boxed:
+  value: T
+
+  def get(self) -> T:
+    return self.value
+"#;
+    let tokens = lexer::lex(source)?;
+    let ast = parser::parse(&tokens)?;
+    let mut checker = TypeChecker::new();
+    checker.check_program(&ast)?;
+    let actual = ResolvedType::Generic("Cell".to_string(), vec![ResolvedType::Int]);
+    let expected = ResolvedType::Generic("Boxed".to_string(), vec![ResolvedType::Int]);
+    assert!(
+        checker.types_compatible(&actual, &expected),
+        "Generic concrete type should be assignable to matching generic trait annotation (RFC 042)"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_types_compatible_generic_trait_annotation_extra_concrete_type_params() -> Result<(), Vec<CompileError>> {
+    let source = r#"
+trait Boxed[T]:
+  def get(self) -> T: ...
+
+model Pair[A, B] with Boxed:
+  first: A
+  second: B
+
+  def get(self) -> A:
+    return self.first
+"#;
+    let tokens = lexer::lex(source)?;
+    let ast = parser::parse(&tokens)?;
+    let mut checker = TypeChecker::new();
+    checker.check_program(&ast)?;
+
+    let ok_actual = ResolvedType::Generic("Pair".to_string(), vec![ResolvedType::Int, ResolvedType::Str]);
+    let expected = ResolvedType::Generic("Boxed".to_string(), vec![ResolvedType::Int]);
+    assert!(
+        checker.types_compatible(&ok_actual, &expected),
+        "Concrete type with more type parameters than the trait should still match when leading args align (RFC 042)"
+    );
+
+    let bad_actual = ResolvedType::Generic("Pair".to_string(), vec![ResolvedType::Str, ResolvedType::Int]);
+    assert!(
+        !checker.types_compatible(&bad_actual, &expected),
+        "First concrete type parameter must be compatible with the trait's type argument"
+    );
+
+    let short_actual = ResolvedType::Generic("Pair".to_string(), vec![ResolvedType::Int]);
+    assert!(
+        !checker.types_compatible(&short_actual, &expected),
+        "Concrete type must supply at least as many type arguments as the trait annotation"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_types_compatible_generic_supertrait_annotation() -> Result<(), Vec<CompileError>> {
+    let source = r#"
+trait Collection[T]:
+  def first(self) -> T: ...
+
+trait OrderedCollection[T] with Collection[T]:
+  def sorted(self) -> Self: ...
+
+model BoxedValue[T] with OrderedCollection:
+  value: T
+
+  def first(self) -> T:
+    return self.value
+
+  def sorted(self) -> Self:
+    return self
+"#;
+    let tokens = lexer::lex(source)?;
+    let ast = parser::parse(&tokens)?;
+    let mut checker = TypeChecker::new();
+    checker.check_program(&ast)?;
+    let actual = ResolvedType::Generic("BoxedValue".to_string(), vec![ResolvedType::Int]);
+    let expected = ResolvedType::Generic("Collection".to_string(), vec![ResolvedType::Int]);
+    assert!(
+        checker.types_compatible(&actual, &expected),
+        "Generic adopters should satisfy transitive generic supertrait annotations with substituted args"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_types_compatible_named_concrete_rejects_mismatched_generic_trait_annotation() -> Result<(), Vec<CompileError>> {
+    let source = r#"
+trait Boxed[T]:
+  def get(self) -> T: ...
+
+model IntBox with Boxed:
+  value: int
+
+  def get(self) -> int:
+    return self.value
+"#;
+    let tokens = lexer::lex(source)?;
+    let ast = parser::parse(&tokens)?;
+    let mut checker = TypeChecker::new();
+    checker.check_program(&ast)?;
+    let actual = ResolvedType::Named("IntBox".to_string());
+    let expected = ResolvedType::Generic("Boxed".to_string(), vec![ResolvedType::Str]);
+    assert!(
+        !checker.types_compatible(&actual, &expected),
+        "Non-generic adopters must not silently satisfy arbitrary generic trait instantiations"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_supertrait_requires_merge_conflict() -> Result<(), Vec<CompileError>> {
+    let source = r#"
+@requires(x: int)
+trait A:
+  def fa(self) -> int: ...
+
+@requires(x: str)
+trait B:
+  def fb(self) -> str: ...
+
+trait C with A, B:
+  def fc(self) -> int: ...
+"#;
+    let tokens = lexer::lex(source)?;
+    let ast = parser::parse(&tokens)?;
+    let mut checker = TypeChecker::new();
+    let Err(errs) = checker.check_program(&ast) else {
+        panic!("expected @requires merge conflict");
+    };
+    assert!(
+        errs.iter().any(|e| e.message.contains("merges conflicting @requires")),
+        "unexpected errors: {:?}",
+        errs.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn test_cannot_instantiate_trait() {
+    let source = r#"
+trait T:
+  def f(self) -> int: ...
+
+def main() -> int:
+  let _x = T()
+  return 0
+"#;
+    let err = check_str(source).expect_err("trait constructor should be rejected");
+    assert!(
+        err.iter().any(|e| e.message.contains("Cannot construct trait")),
+        "unexpected errors: {:?}",
+        err.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_supertrait_incompatible_method_conflict() -> Result<(), Vec<CompileError>> {
+    let source = r#"
+trait A:
+  def m(self) -> int: ...
+
+trait B:
+  def m(self) -> str: ...
+
+trait C with A, B:
+  def c(self) -> int: ...
+
+model M with C:
+  def c(self) -> int:
+    return 0
+"#;
+    let tokens = lexer::lex(source)?;
+    let ast = parser::parse(&tokens)?;
+    let mut checker = TypeChecker::new();
+    let Err(errs) = checker.check_program(&ast) else {
+        panic!("expected conflicting supertrait method requirements");
+    };
+    assert!(
+        errs.iter().any(|e| e.message.contains("Conflicting implementations")),
+        "unexpected errors: {:?}",
+        errs.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn test_supertrait_method_ambiguity_param_name_only() -> Result<(), Vec<CompileError>> {
+    let source = r#"
+trait A:
+  def m(self, a: int) -> int: ...
+
+trait B:
+  def m(self, b: int) -> int: ...
+
+trait C with A, B:
+  def c(self) -> int: ...
+
+model M with C:
+  def c(self) -> int:
+    return 0
+"#;
+    let tokens = lexer::lex(source)?;
+    let ast = parser::parse(&tokens)?;
+    let mut checker = TypeChecker::new();
+    let Err(errs) = checker.check_program(&ast) else {
+        panic!("expected ambiguous supertrait method");
+    };
+    assert!(
+        errs.iter().any(|e| e.message.contains("Ambiguous trait method")),
+        "unexpected errors: {:?}",
+        errs.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn test_transitive_supertrait_abstract_method_required() -> Result<(), Vec<CompileError>> {
+    let source = r#"
+trait Root:
+  def root_only(self) -> int: ...
+
+trait Leaf with Root:
+  def leaf_m(self) -> int: ...
+
+model M with Leaf:
+  def leaf_m(self) -> int:
+    return 1
+"#;
+    let tokens = lexer::lex(source)?;
+    let ast = parser::parse(&tokens)?;
+    let mut checker = TypeChecker::new();
+    let Err(errs) = checker.check_program(&ast) else {
+        panic!("expected missing transitive supertrait method");
+    };
+    assert!(
+        errs.iter().any(|e| e.message.contains("requires method 'root_only'")),
+        "unexpected errors: {:?}",
+        errs.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+    Ok(())
 }
 
 #[test]
@@ -2615,6 +3068,36 @@ fn test_pub_from_import_manifest_symbols_are_in_symbol_table() -> Result<(), Box
         const_sym.kind,
         crate::frontend::symbols::SymbolKind::Variable(_)
     ));
+    Ok(())
+}
+
+#[test]
+fn test_type_info_records_imported_trait_metadata_for_lowering() -> Result<(), Box<dyn std::error::Error>> {
+    let source = r#"
+from pub::mylib import ExternBox
+
+model Cell[T] with ExternBox:
+  value: T
+"#;
+    let tokens = lexer::lex(source).map_err(|errs| format!("lex failed: {errs:?}"))?;
+    let ast = parser::parse(&tokens).map_err(|errs| format!("parse failed: {errs:?}"))?;
+    let mut checker = TypeChecker::new();
+    checker.set_library_manifest_index(library_index_with_trait_export());
+    checker
+        .check_program(&ast)
+        .map_err(|errs| format!("typecheck failed: {errs:?}"))?;
+
+    let type_info = checker.type_info();
+    assert_eq!(
+        type_info.trait_type_params.get("ExternBox"),
+        Some(&vec!["T".to_string()]),
+        "Imported trait type params should be available to lowering metadata"
+    );
+    assert_eq!(
+        type_info.trait_direct_supertraits.get("ExternBox"),
+        Some(&Vec::new()),
+        "Imported trait supertraits should be recorded even when empty"
+    );
     Ok(())
 }
 

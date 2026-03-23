@@ -220,6 +220,103 @@ pub fn non_exhaustive_match(missing: &[String], span: Span) -> CompileError {
 
 // -- Traits ------------------------------------------------------------------
 
+/// Emitted when a trait's `with` supertrait graph contains a directed cycle (RFC 042).
+pub fn supertrait_cycle(cycle: &[String], span: Span) -> CompileError {
+    let path = cycle.join(" → ");
+    let message = if cycle.len() == 1 {
+        format!(
+            "Supertrait cycle: trait '{}' declares itself in its `with` clause",
+            cycle[0]
+        )
+    } else if cycle.is_empty() {
+        "Supertrait cycle detected in trait hierarchy".to_string()
+    } else {
+        format!(
+            "Supertrait cycle: {} → {}",
+            path,
+            cycle.first().map(String::as_str).unwrap_or("?")
+        )
+    };
+    CompileError::type_error(message, span)
+        .with_note("Break the cycle by removing or rearranging `with` clauses on these traits.")
+}
+
+/// Emitted when a supertrait bound names a type that is not a trait (RFC 042).
+pub fn supertrait_bound_not_trait(name: &str, span: Span) -> CompileError {
+    CompileError::type_error(format!("Supertrait bound '{}' is not a trait", name), span)
+        .with_hint("Only trait names may appear in a trait's `with` clause")
+}
+
+/// Emitted when a supertrait bound supplies the wrong number of generic arguments.
+pub fn supertrait_bound_arity_mismatch(name: &str, expected: usize, found: usize, span: Span) -> CompileError {
+    CompileError::type_error(
+        format!(
+            "Supertrait bound '{}' expects {} type argument(s), found {}",
+            name, expected, found
+        ),
+        span,
+    )
+    .with_hint("Match the supertrait generic arity in the `with` clause")
+}
+
+/// Emitted when a supertrait bound is not a simple trait name or generic trait instantiation.
+pub fn supertrait_bound_invalid(span: Span) -> CompileError {
+    CompileError::type_error(
+        "Supertrait bound must be a trait name or a generic trait instantiation (e.g. `DataSet[T]`)".to_string(),
+        span,
+    )
+}
+
+/// Emitted when a trait is used like a concrete type in a constructor call (RFC 042: traits are abstract).
+pub fn cannot_instantiate_trait(trait_name: &str, span: Span) -> CompileError {
+    CompileError::type_error(
+        format!("Cannot construct trait '{}' — traits are abstract", trait_name),
+        span,
+    )
+    .with_hint("Implement the trait on a model or class and construct that concrete type instead")
+    .with_note("Trait names may only appear in type annotations and `with` adoption clauses")
+}
+
+/// Emitted when two supertraits require the same field with incompatible types (RFC 042).
+pub fn supertrait_requires_conflict(
+    trait_name: &str,
+    field: &str,
+    existing: &str,
+    other: &str,
+    span: Span,
+) -> CompileError {
+    CompileError::type_error(
+        format!(
+            "Trait '{}' merges conflicting @requires for field '{}' (types '{}' vs '{}')",
+            trait_name, field, existing, other
+        ),
+        span,
+    )
+    .with_hint("Adjust supertrait `@requires` types or the declaring trait's `with` clause so the field types agree")
+}
+
+/// Emitted when two independent supertraits declare the same method name with compatible-but-distinct signatures and
+/// neither the adopting trait nor the concrete type resolves the ambiguity (RFC 042).
+pub fn supertrait_method_ambiguity(
+    adopted_trait: &str,
+    method: &str,
+    via_a: &str,
+    via_b: &str,
+    span: Span,
+) -> CompileError {
+    CompileError::type_error(
+        format!(
+            "Ambiguous trait method '{}' when adopting '{}' — supertraits '{}' and '{}' disagree",
+            method, adopted_trait, via_a, via_b
+        ),
+        span,
+    )
+    .with_hint(format!(
+        "Declare `def {method}(self, ...)` on '{}' or on the concrete type to disambiguate",
+        adopted_trait
+    ))
+}
+
 pub fn trait_conflict(trait_a: &str, trait_b: &str, method: &str, span: Span) -> CompileError {
     CompileError::type_error(
         format!(

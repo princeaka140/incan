@@ -17,6 +17,28 @@ mod tests {
         parse_with_module_path(&tokens, module_path)
     }
 
+    /// Test helper: surface a structured failure instead of panicking when a declaration is not a trait.
+    fn require_trait_decl(decl: &Spanned<Declaration>) -> Result<&TraitDecl, Vec<CompileError>> {
+        match &decl.node {
+            Declaration::Trait(t) => Ok(t),
+            _ => Err(vec![CompileError::new(
+                "parser test internal error: expected trait declaration".to_string(),
+                decl.span,
+            )]),
+        }
+    }
+
+    /// Test helper: expected `Type::Simple` for generic-argument position assertions.
+    fn require_simple_type(ty: &Spanned<Type>) -> Result<&String, Vec<CompileError>> {
+        match &ty.node {
+            Type::Simple(name) => Ok(name),
+            _ => Err(vec![CompileError::new(
+                "parser test internal error: expected simple type".to_string(),
+                ty.span,
+            )]),
+        }
+    }
+
     #[test]
     fn test_unexpected_indent_at_toplevel_is_single_clear_error() {
         // We intentionally allow the lexer to emit INDENT/DEDENT tokens at the top-level.
@@ -474,6 +496,42 @@ trait Debug:
         assert_eq!(tr.name, "Debug");
         assert_eq!(tr.methods.len(), 1);
         assert_eq!(tr.methods[0].node.name, "__repr__");
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_trait_with_supertraits() -> Result<(), Vec<CompileError>> {
+        let source = r#"
+trait DataSet[T]:
+    def len(self) -> int: ...
+
+trait BoundedDataSet[T] with DataSet[T]:
+    def sorted(self) -> Self: ...
+
+trait Combo with BoundedDataSet[int], DataSet[str]:
+    def go(self) -> None: ...
+"#;
+        let program = parse_str(source)?;
+        assert_eq!(program.declarations.len(), 3);
+
+        let ds = require_trait_decl(&program.declarations[0])?;
+        assert_eq!(ds.name, "DataSet");
+        assert!(ds.traits.is_empty());
+
+        let bounded = require_trait_decl(&program.declarations[1])?;
+        assert_eq!(bounded.name, "BoundedDataSet");
+        assert_eq!(bounded.traits.len(), 1);
+        assert_eq!(bounded.traits[0].node.name, "DataSet");
+        assert_eq!(bounded.traits[0].node.type_args.len(), 1);
+        assert_eq!(require_simple_type(&bounded.traits[0].node.type_args[0])?, "T");
+
+        let combo = require_trait_decl(&program.declarations[2])?;
+        assert_eq!(combo.name, "Combo");
+        assert_eq!(combo.traits.len(), 2);
+        assert_eq!(combo.traits[0].node.name, "BoundedDataSet");
+        assert_eq!(combo.traits[0].node.type_args.len(), 1);
+        assert_eq!(combo.traits[1].node.name, "DataSet");
+        assert_eq!(combo.traits[1].node.type_args.len(), 1);
         Ok(())
     }
 

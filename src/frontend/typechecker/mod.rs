@@ -93,6 +93,16 @@ use incan_core::lang::types::stringlike::StringLikeId;
 /// ```
 #[derive(Debug, Default, Clone)]
 pub struct TypeCheckInfo {
+    /// RFC 042: Direct supertraits per trait name, copied from [`TraitInfo::supertraits`] for IR lowering.
+    ///
+    /// Lowering does not retain the typechecker symbol table; this snapshot supplies resolved supertrait type
+    /// arguments after a successful check.
+    pub trait_direct_supertraits: HashMap<String, Vec<(String, Vec<ResolvedType>)>>,
+    /// RFC 042: Trait type parameter names keyed by trait name for lowering-time generic substitution.
+    ///
+    /// Includes locally-declared and imported traits so backend lowering can handle cross-module trait hierarchies
+    /// without relying on local AST declarations.
+    pub trait_type_params: HashMap<String, Vec<String>>,
     /// Map from expression span (start,end) -> resolved type.
     pub expr_types: HashMap<(usize, usize), ResolvedType>,
     /// Map from identifier expression span (start,end) -> how it resolved (value vs type vs module).
@@ -201,6 +211,16 @@ pub struct TypeChecker {
     pub(crate) import_aliases: HashMap<String, Vec<String>>,
     /// Unified import-driven activation and strategy context for soft-keyword/decorator semantics.
     pub(crate) surface_context: SurfaceContext,
+    /// RFC 042: transitive supertrait closure for each trait, keyed by trait name.
+    ///
+    /// Values list every reachable supertrait `(name, type_arguments)` after applying generic substitution along the
+    /// chain. Filled at the end of the collection pass (before the second typecheck pass runs).
+    pub(crate) supertrait_closure: HashMap<String, Vec<(String, Vec<ResolvedType>)>>,
+    /// Trait `with` bounds queued during collection and resolved once all declarations are registered (RFC 042).
+    ///
+    /// Ensures supertrait names are not mistaken for free type parameters when the supertrait is declared later in the
+    /// same module.
+    pub(crate) pending_trait_supertraits: Vec<(String, Vec<Spanned<TraitBound>>)>,
 }
 
 impl TypeChecker {
@@ -226,6 +246,8 @@ impl TypeChecker {
             testing_marker_import_bindings: HashSet::new(),
             import_aliases: HashMap::new(),
             surface_context: SurfaceContext::default(),
+            supertrait_closure: HashMap::new(),
+            pending_trait_supertraits: Vec::new(),
         }
     }
 
@@ -328,13 +350,77 @@ impl TypeChecker {
         self.generic_placeholder_name(ty).is_some()
     }
 
-    /// Whether a concrete named type declares adoption of `trait_name`.
-    pub(crate) fn type_implements_trait(&self, type_name: &str, trait_name: &str) -> bool {
-        match self.lookup_type_info(type_name) {
-            Some(TypeInfo::Model(model)) => model.traits.iter().any(|name| name == trait_name),
-            Some(TypeInfo::Class(class)) => class.traits.iter().any(|name| name == trait_name),
-            _ => false,
+    /// Infer the concrete instantiation of `trait_name` for `type_name`, if the type adopts that trait.
+    ///
+    /// RFC 042 currently uses the same implicit positional mapping as trait-annotation compatibility: a concrete
+    /// adopter's leading type arguments instantiate the adopted trait's type parameters, and transitive supertrait
+    /// arguments are substituted through the recorded closure.
+    fn instantiated_trait_args_for_type(
+        &self,
+        type_name: &str,
+        concrete_type_args: &[ResolvedType],
+        trait_name: &str,
+    ) -> Option<Vec<ResolvedType>> {
+        let adopted = match self.lookup_type_info(type_name) {
+            Some(TypeInfo::Model(model)) => &model.traits,
+            Some(TypeInfo::Class(class)) => &class.traits,
+            _ => return None,
+        };
+
+        for adopted_trait in adopted {
+            let Some(adopted_info) = self.lookup_trait_info(adopted_trait) else {
+                continue;
+            };
+            let direct_args: Vec<ResolvedType> = concrete_type_args
+                .iter()
+                .take(adopted_info.type_params.len())
+                .cloned()
+                .collect();
+            if direct_args.len() != adopted_info.type_params.len() {
+                continue;
+            }
+
+            if adopted_trait == trait_name {
+                return Some(direct_args);
+            }
+
+            let Some(closure) = self.supertrait_closure.get(adopted_trait) else {
+                continue;
+            };
+            let subst =
+                crate::frontend::resolved_type_subst::type_param_subst_map(&adopted_info.type_params, &direct_args);
+            for (supertrait_name, supertrait_args) in closure {
+                if supertrait_name != trait_name {
+                    continue;
+                }
+                let instantiated = supertrait_args
+                    .iter()
+                    .map(|arg| crate::frontend::resolved_type_subst::substitute_resolved_type(arg, &subst))
+                    .collect();
+                return Some(instantiated);
+            }
         }
+        None
+    }
+
+    /// Whether a concrete named type declares adoption of `trait_name` (RFC 042: includes transitive supertraits).
+    pub(crate) fn type_implements_trait(&self, type_name: &str, trait_name: &str) -> bool {
+        let adopted = match self.lookup_type_info(type_name) {
+            Some(TypeInfo::Model(model)) => &model.traits,
+            Some(TypeInfo::Class(class)) => &class.traits,
+            _ => return false,
+        };
+        for t in adopted {
+            if t == trait_name {
+                return true;
+            }
+            if let Some(closure) = self.supertrait_closure.get(t)
+                && closure.iter().any(|(n, _)| n == trait_name)
+            {
+                return true;
+            }
+        }
+        false
     }
 
     /// Look up a variable binding by name (in any scope) and return its [`VariableInfo`].
@@ -368,6 +454,25 @@ impl TypeChecker {
         match &sym.kind {
             SymbolKind::Trait(info) => Some(info),
             _ => None,
+        }
+    }
+
+    /// RFC 042: Snapshot trait metadata into [`TypeCheckInfo`] for backend lowering.
+    ///
+    /// This records all visible trait symbols (local and imported), not just traits declared in the current module,
+    /// so lowering can resolve supertrait graphs and generic trait arity across module boundaries.
+    fn record_trait_metadata_for_lowering(&mut self) {
+        self.type_info.trait_direct_supertraits.clear();
+        self.type_info.trait_type_params.clear();
+        for sym in self.symbols.all_symbols() {
+            if let SymbolKind::Trait(info) = &sym.kind {
+                self.type_info
+                    .trait_direct_supertraits
+                    .insert(sym.name.clone(), info.supertraits.clone());
+                self.type_info
+                    .trait_type_params
+                    .insert(sym.name.clone(), info.type_params.clone());
+            }
         }
     }
 
@@ -477,11 +582,17 @@ impl TypeChecker {
         self.testing_marker_import_bindings.clear();
         self.surface_context = SurfaceContext::from_program(program);
         self.import_aliases = self.surface_context.import_aliases().clone();
+        self.supertrait_closure.clear();
+        self.pending_trait_supertraits.clear();
 
         // First pass: collect type declarations
         for decl in &program.declarations {
             self.collect_declaration(decl);
         }
+
+        self.resolve_pending_trait_supertraits();
+        self.finalize_supertrait_graph();
+        self.merge_supertrait_requires_into_traits();
 
         // Second pass: check consts first so their resolved types are available to later checks.
         for decl in &program.declarations {
@@ -494,6 +605,8 @@ impl TypeChecker {
                 self.check_declaration(decl);
             }
         }
+
+        self.record_trait_metadata_for_lowering();
 
         // ---- RFC 023: validate rust.module() and @rust.extern rules ----
         self.validate_rust_module_and_extern(program);
@@ -623,6 +736,48 @@ impl TypeChecker {
                 if self.lookup_trait_info(trait_name).is_some() =>
             {
                 self.type_implements_trait(type_name, trait_name)
+            }
+            // RFC 042: `Concrete[T]` assignable to generic trait annotation `Trait[T]` (and similar).
+            (ResolvedType::Generic(type_name, actual_args), ResolvedType::Generic(trait_name, expected_args))
+                if self.lookup_trait_info(trait_name).is_some()
+                    && self.lookup_trait_info(type_name).is_none()
+                    && self.lookup_type_info(type_name).is_some() =>
+            {
+                let Some(instantiated_args) = self.instantiated_trait_args_for_type(type_name, actual_args, trait_name)
+                else {
+                    return false;
+                };
+                let concrete_arity_ok = match self.lookup_type_info(type_name) {
+                    Some(TypeInfo::Model(m)) => actual_args.len() == m.type_params.len(),
+                    Some(TypeInfo::Class(c)) => actual_args.len() == c.type_params.len(),
+                    Some(TypeInfo::Newtype(n)) => actual_args.len() == n.type_params.len(),
+                    Some(TypeInfo::Enum(e)) => actual_args.len() == e.type_params.len(),
+                    _ => true,
+                };
+                if !concrete_arity_ok {
+                    return false;
+                }
+                if instantiated_args.len() != expected_args.len() {
+                    return false;
+                }
+                expected_args
+                    .iter()
+                    .zip(instantiated_args.iter())
+                    .all(|(e, a)| self.types_compatible(a, e))
+            }
+            (ResolvedType::Named(type_name), ResolvedType::Generic(trait_name, expected_args))
+                if self.lookup_trait_info(trait_name).is_some() =>
+            {
+                let Some(instantiated_args) = self.instantiated_trait_args_for_type(type_name, &[], trait_name) else {
+                    return false;
+                };
+                if instantiated_args.len() != expected_args.len() {
+                    return false;
+                }
+                expected_args
+                    .iter()
+                    .zip(instantiated_args.iter())
+                    .all(|(expected, actual)| self.types_compatible(actual, expected))
             }
             // Allow bare surface generic types (e.g. `Json`) to match `Json[T]` when used without args.
             (ResolvedType::Named(name), ResolvedType::Generic(generic_name, _))
