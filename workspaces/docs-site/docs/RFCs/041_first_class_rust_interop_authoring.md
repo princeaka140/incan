@@ -1,6 +1,6 @@
 # RFC 041: First-Class Rust Interop Authoring
 
-- **Status:** Draft
+- **Status:** Planned
 - **Created:** 2026-03-09
 - **Author(s):** Danny Meijer (@dannymeijer)
 - **Related:**
@@ -8,33 +8,30 @@
     - RFC 013 (Rust crate dependencies)
     - RFC 023 (Compilable stdlib & Rust module binding)
     - RFC 026 (User-defined trait bridges)
+    - RFC 029 (Union types)
+    - RFC 030 (`std.collections`)
     - RFC 039 (`race` for awaitable concurrency)
-- **Issue:** —
-- **RFC PR:** —
-- **Target version:** v0.2
+- **Issue:** [#175](https://github.com/dannys-code-corner/incan/issues/175)
+- **RFC PR:** -
+- **Written against:** v0.1
+- **Shipped in:** -
 
 ## Summary
 
-This RFC's central claim is simple: once a `rust::...` import resolves, the imported Rust item should behave like an ordinary Incan symbol of the corresponding kind. Rust provenance and lowering details remain compiler-managed, but authors should not have to reconstruct that information in shim code or handwritten bridge ceremony.
-
-That core claim is made concrete through four mechanisms:
-
-- ordinary member and associated-item lookup, including rebinding, for Rust-origin APIs
-- compiler-managed boundary adaptation for built-in Incan types through per-type coercion matrices
-- explicit `rusttype` interop roots for direct Rust-backed non-builtin types, with ordinary `newtype` wrappers above them
-- Incan-authored capability bounds that lower to Rust backend requirements
-
-`rust::` remains the explicit dependency-resolution and declaration boundary. Async semantics remain Incan-owned and are specified elsewhere; this RFC only requires Rust-origin async APIs to plug into that eventual model.
+This RFC proposes that once a `rust::...` import resolves, the imported Rust item must behave like an ordinary Incan symbol of the corresponding kind, with compiler-managed provenance replacing handwritten bridge ceremony. Concretely, it makes Rust-origin members and associated items available through ordinary lookup and rebinding, introduces compiler-managed built-in boundary coercions, establishes `rusttype` as the direct Rust-backed interop root above which ordinary `newtype` wrappers remain optional, and allows Incan-authored capability bounds to lower to Rust predicates, all while keeping `rust::` as the explicit dependency boundary and leaving async semantics owned by Incan.
 
 ## Core model
 
 Read this RFC as one foundation plus four mechanisms:
 
-1. Foundation: after `rust::...` import resolution succeeds, imported Rust items become first-class compiler symbols.
-2. Mechanism: Rust methods and associated items participate in ordinary Incan lookup and rebinding.
-3. Mechanism: built-in Incan types cross explicit Rust boundaries through compiler-owned coercion matrices with canonical lowerings, admitted target types, and per-target policies.
-4. Mechanism: direct Rust-backed non-builtin types use `rusttype` as the interop-root declaration form, while `newtype` remains the ordinary wrapper syntax above that root.
-5. Mechanism: Incan-written capability bounds lower to Rust predicates without exposing raw Rust syntax.
+**Foundation**: after `rust::...` import resolution succeeds, imported Rust items become first-class compiler symbols.
+
+**Mechanisms**:
+
+1. Rust methods and associated items participate in ordinary Incan lookup and rebinding.
+2. Built-in Incan types cross explicit Rust boundaries through compiler-owned coercion matrices with canonical lowerings, admitted target types, and per-target policies.
+3. Direct Rust-backed non-builtin types use `rusttype` as the interop-root declaration form, while `newtype` remains the ordinary wrapper syntax above that root.
+4. Incan-written capability bounds lower to Rust predicates without exposing raw Rust syntax.
 
 Everything else in the RFC follows from that model: optional wrappers, interop metadata placement, diagnostics, and the reduced need for handwritten Rust adapter layers.
 
@@ -393,7 +390,7 @@ For every built-in Incan type, the compiler maintains:
 - a set of admitted Rust boundary target types
 - a per-target coercion policy
 
-This coercion matrix is compiler-owned and conceptually lives with the built-in type definitions themselves, rather than as scattered ad hoc call-site hacks. In other words, the design direction is closer to built-in type metadata in the design space of `Float.to_rust_f32()`, `Float.to_rust_f64()`, `Int.to_rust_u32()`, and similar target-specific lowering hooks than to a bag of unrelated emitter heuristics. These are compiler-managed lowering hooks, not user-callable methods.
+This coercion matrix is compiler-owned and conceptually lives with the built-in type definitions themselves rather than as scattered call-site heuristics. These are compiler-managed lowering rules over admitted Rust boundary targets, and not user-callable methods.
 
 The initial built-in matrix for this RFC is:
 
@@ -526,14 +523,14 @@ Normative semantic rules:
 - at most one declared interop edge may participate in a single adaptation path, optionally alongside the implied wrap/unwrap steps of the `rusttype` chain
 - if multiple adapter paths are valid and the expected target type does not disambiguate them, the compiler must reject the adaptation as ambiguous
 
-Conceptually, a host-backed `rusttype` should be able to declare compiler-relevant information in the design space of:
+Conceptually, a host-backed `rusttype` should be able to declare compiler-relevant information such as:
 
 - admitted Rust boundary targets
 - coercion hooks or policies
 - fallible adapter edges such as parse/serialize/deserialize
 - compiler-relevant structural capabilities
 
-Illustrative direction:
+Illustrative examples:
 
 ```incan
 type Email = rusttype RustEmailAddress:
@@ -584,9 +581,9 @@ This is especially important for types like RFC 030's `Deque[T]` and `Counter[T]
 
 ### Rust-lowered capability bounds
 
-This RFC introduces the concept of Rust-lowered capability bounds in Incan syntax.
+This RFC introduces Rust-lowered capability bounds in Incan syntax.
 
-These are Incan-facing bound names that lower to Rust predicates at code generation time. Examples include capability markers in the design space of:
+These are Incan-facing bound names that lower to Rust predicates at code generation time. Obvious examples include:
 
 - `Send`
 - `Sync`
@@ -595,7 +592,7 @@ These are Incan-facing bound names that lower to Rust predicates at code generat
 - `FnMut[T]`
 - `FnOnce[T]`
 
-The exact initial set remains an implementation and design detail, but the semantics are normative:
+The initial supported set must be large enough to make real Rust-backed library authoring viable in pure Incan. The capability markers listed above are the obvious starting set, and the semantics below are normative:
 
 - these bounds are written in Incan source
 - they participate in generic `with` clauses
@@ -711,7 +708,7 @@ What changes is that many of those shims and mandatory wrappers can gradually be
 
 - keep current shims if they still provide value
 - remove them when direct Rust imports plus wrapper rebinding become sufficient
-- mechanically migrate direct Rust-backed `newtype` declarations to `rusttype` where the implementation does not provide a temporary compatibility alias
+- temporarily accept direct Rust-backed `newtype` declarations as a compatibility alias while emitting a migration diagnostic toward `rusttype`
 
 ## Alternatives considered
 
@@ -746,7 +743,7 @@ This would reduce some visible boilerplate, but it would keep the mental model i
 
 ## Implementation architecture (non-normative)
 
-This RFC intentionally specifies the language model more strongly than the internal module layout, but the implementation should still keep interop policy central and boring. The core risk in a feature like this is not only complexity; it is drift, where the typechecker, lowering, emitter, runtime helpers, and tooling each grow their own partial idea of what an interop adaptation means.
+This RFC intentionally specifies the language model more strongly than any particular internal module layout, but the implementation should still keep interop policy centralized and predictable. The core risk in a feature like this is not only complexity; it is drift, where the typechecker, lowering, emitter, runtime helpers, and tooling each grow their own partial idea of what an interop adaptation means.
 
 The recommended shape is:
 
@@ -756,7 +753,7 @@ The recommended shape is:
 
 In practice, that means builtin coercion matrices, adaptation recipe kinds, canonical names, and other pure interop metadata should sit beside the rest of the language's shared semantic policy rather than being redefined ad hoc in frontend and backend code. The compiler should then resolve `rusttype` declarations, validate `interop:` edges, and compute a single adaptation plan for a given Rust boundary crossing. Lowering and emission should consume that plan rather than each re-deciding conversion rules locally.
 
-This is also why a separate dedicated interop crate is not the initial recommendation. `incan_core` already exists to hold pure shared semantics and registries, while `incan_stdlib` exists to hold runtime glue for generated programs. Adding another crate too early would likely scatter the model rather than simplify it. A separate crate only becomes attractive later if the interop machinery genuinely outgrows `incan_core` or needs to be consumed independently by tools beyond the compiler/runtime split described in the repository's layering docs.
+This is also why a separate dedicated interop crate is not the initial recommendation. `incan_core` already exists to hold pure shared semantics and registries, while `incan_stdlib` exists to hold runtime glue for generated programs. Adding another crate too early would likely scatter the model rather than simplify it. A separate crate only becomes attractive later if the interop machinery genuinely outgrows `incan_core` or needs to be consumed independently by tooling beyond the compiler/runtime split described in the repository's layering docs.
 
 ## Layers affected
 
@@ -768,16 +765,14 @@ This is also why a separate dedicated interop crate is not the initial recommend
 - **Formatter**: stable formatting for `rusttype` declarations, `interop:` blocks, and wrapper rebinding syntax.
 - **LSP / Tooling**: completions and docs for imported Rust members and associated items; improved diagnostics that surface the canonical Rust path in error messages.
 
-## Unresolved questions
+## Design Decisions
 
-- What exact metadata source should the compiler use for Rust items and members?
-- Should the initial conservative built-in interop matrix expand beyond `float -> f32` and borrow-based string/bytes targets once additional RFC 009 numeric types land?
-- Should direct Rust-backed `newtype` remain accepted as a compatibility alias for `rusttype` during migration?
-- In what contexts should fallible interop-root adapters be allowed to run implicitly, and how should their failures surface?
-- What is the initial supported set of Rust-lowered capability bounds in `std.rust`?
-- Should short-form rebinding like `send_now = try_send` be allowed in every wrapper context, or only when unambiguous against one backing type?
-- How much of Rust associated-type and generic-method complexity should be in scope for the first implementation?
-- How should privacy and visibility diagnostics be surfaced when a Rust item exists but should not be imported or called in the requested way?
-- How should Rust-origin docs be surfaced in the LSP and docs tooling when a wrapper re-exports or rebinds a member?
-
-<!-- Rename this section to "Design Decisions" once all questions have been resolved. An RFC cannot move from Draft to Planned until no unresolved questions remain. -->
+- **Rust metadata source:** The compiler must use one authoritative Rust semantic source for item resolution, member lookup, signatures, docs, and visibility. RFC 041 does not mandate whether that is implemented through rustc's own type engine, compiler queries, or another equivalent semantic integration, but the frontend, tooling, and lowering must consume the same Rust interpretation rather than inventing separate ones.
+- **Initial built-in coercion scope:** RFC 041 deliberately keeps the initial built-in interop matrix conservative. After RFC 009 lands, exact-lowering sized numeric types should be the preferred path rather than automatically broadening `int` or `float` coercions, and any additional implicit boundary targets beyond `float -> f32` and borrow-based `str` / `bytes` forms should require an explicit follow-up RFC or amendment.
+- **Migration spelling:** RFC 041 does not define a compatibility alias for direct Rust-backed declarations. `rusttype` is the direct Rust-backed declaration form, while `newtype` remains the wrapper form for existing Incan types, including wrappers over a `rusttype`.
+- **Fallible interop edges:** `try` interop edges may participate only when the expected target type is already known and there is a single unambiguous adaptation path at an explicit boundary site such as argument passing, assignment or return coercion, or Rust-boundary lowering. The compiler must not speculate with fallible adapters during ordinary inference, and failures must surface through ordinary Incan fallible-expression semantics rather than hidden panics or implicit control flow.
+- **Initial `std.rust` capability set:** The initial Rust-lowered capability set must be sufficient for real Rust-backed library authoring in pure Incan, especially async, callable, and concurrency-facing surfaces. `Send`, `Sync`, `Static`, `Fn[T]`, `FnMut[T]`, and `FnOnce[T]` are the obvious starting set, but RFC 041 is not complete if additional capability bounds are still required to make first-class Rust interop authoring viable.
+- **Short-form rebinding:** Short-form rebinding such as `send_now = try_send` should be allowed only when the name resolves unambiguously against one backing type surface. When the lookup is ambiguous, authors must use the qualified form.
+- **Initial associated-type and generic-method scope:** The first implementation must support the subset of inherent methods, associated items, generic methods, and associated-type-bearing APIs required to make real Rust-backed library authoring viable in pure Incan. Rust shapes beyond that subset may remain unsupported initially, but they must fail with explicit diagnostics rather than silently degrading the model.
+- **Privacy and visibility diagnostics:** Diagnostics must distinguish between "does not exist", "exists but is not visible here", and "exists but is not yet supported by Incan interop". Where useful, the diagnostic should include the canonical Rust path and the privacy or support boundary that caused the rejection.
+- **Docs precedence:** When wrapper or rebinding docs exist in Incan, they are the primary docs surfaced by the LSP and docs tooling. Tooling should retain Rust provenance and may append normalized Rust-origin docs as secondary or inherited context; if no Incan-authored docs exist, the normalized Rust docs should be surfaced directly.
