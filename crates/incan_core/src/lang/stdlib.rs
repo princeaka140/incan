@@ -21,6 +21,8 @@ pub const STDLIB_THIS: &str = "this";
 
 /// `std.async` module name.
 pub const STDLIB_ASYNC: &str = "async";
+/// `std.rust` module name for capability bounds (RFC 041).
+pub const STDLIB_RUST: &str = "rust";
 
 /// Check if a module path starts with `std.<module>`.
 pub fn is_stdlib_module(path: &[String], module: &str) -> bool {
@@ -51,6 +53,12 @@ pub struct StdlibNamespace {
     pub extra_crate_deps: &'static [StdlibExtraCrateDep],
     /// Known submodules for validation and LSP completion. Empty for leaf modules.
     pub submodules: &'static [&'static str],
+    /// When `true`, this namespace is handled entirely by the typechecker with no corresponding `.incn` stub file or
+    /// emitted Rust module. Items are resolved symbolically at import time.
+    ///
+    /// `std.rust` is the canonical example: `Send`, `Sync`, etc. map to native Rust traits that are already in scope
+    /// and must not be re-declared or imported in generated code.
+    pub typechecker_only: bool,
 }
 
 /// Additional crate dependency needed by a stdlib namespace.
@@ -95,42 +103,49 @@ pub const STDLIB_NAMESPACES: &[StdlibNamespace] = &[
             },
         ],
         submodules: &["app", "routing", "request", "response", "macros", "prelude"],
+        typechecker_only: false,
     },
     StdlibNamespace {
         name: "testing",
         feature: None,
         extra_crate_deps: &[],
         submodules: &[],
+        typechecker_only: false,
     },
     StdlibNamespace {
         name: "async",
         feature: Some("async"),
         extra_crate_deps: &[],
         submodules: &["time", "task", "channel", "select", "sync", "prelude"],
+        typechecker_only: false,
     },
     StdlibNamespace {
         name: "serde",
         feature: Some("json"),
         extra_crate_deps: &[],
         submodules: &["json"],
+        typechecker_only: false,
     },
     StdlibNamespace {
         name: "reflection",
         feature: None,
         extra_crate_deps: &[],
         submodules: &[],
+        typechecker_only: false,
     },
     StdlibNamespace {
         name: "derives",
         feature: None,
         extra_crate_deps: &[],
         submodules: &["string", "comparison", "copying", "collection"],
+        typechecker_only: false,
     },
     StdlibNamespace {
         name: "traits",
         feature: None,
         extra_crate_deps: &[],
         submodules: &["convert", "ops", "error", "indexing", "callable", "prelude"],
+        typechecker_only: false,
     },
     StdlibNamespace {
         name: "math",
@@ -140,6 +155,16 @@ pub const STDLIB_NAMESPACES: &[StdlibNamespace] = &[
             source: StdlibExtraCrateSource::Version("0.2"),
         }],
         submodules: &[],
+        typechecker_only: false,
+    },
+    StdlibNamespace {
+        name: "rust",
+        feature: None,
+        extra_crate_deps: &[],
+        submodules: &[],
+        // Capability bounds (Send, Sync, Static, Fn, FnMut, FnOnce) are native Rust traits already in scope in all
+        // generated code. They have no .incn stub and no emitted Rust module.
+        typechecker_only: true,
     },
 ];
 
@@ -206,17 +231,35 @@ pub fn stdlib_feature_for(path: &[String]) -> Option<&'static str> {
     find_namespace(&path[1]).and_then(|ns| ns.feature)
 }
 
+/// Returns `true` when a stdlib module path refers to a typechecker-only namespace.
+///
+/// Typechecker-only namespaces (`std.rust`) are handled entirely by the frontend: their items are resolved
+/// symbolically at import time and have no corresponding `.incn` stub file or emitted Rust module. The dependency
+/// resolver and emission layer must skip them.
+#[must_use]
+pub fn is_typechecker_only_stdlib(path: &[String]) -> bool {
+    if path.len() < 2 || path[0] != STDLIB_ROOT {
+        return false;
+    }
+    find_namespace(&path[1]).is_some_and(|ns| ns.typechecker_only)
+}
+
 /// Resolve the relative stub `.incn` file path for a stdlib module path.
 ///
 /// Uses convention-based resolution:
 /// - `std.X` (leaf, no submodules) → `stdlib/X.incn`
 /// - `std.X` (namespace with submodules) → `stdlib/X/prelude.incn`
 /// - `std.X.Y` (and deeper) → `stdlib/X/Y.incn`
+///
+/// Returns `None` for typechecker-only namespaces (e.g. `std.rust`) which have no stub file.
 pub fn stdlib_stub_path(path: &[String]) -> Option<String> {
     if path.len() < 2 || path[0] != STDLIB_ROOT {
         return None;
     }
     let ns = find_namespace(&path[1])?;
+    if ns.typechecker_only {
+        return None;
+    }
     if path.len() == 2 {
         if ns.submodules.is_empty() {
             Some(format!("stdlib/{}.incn", ns.name))
@@ -249,6 +292,7 @@ mod tests {
         assert!(is_known_stdlib_module(&segs(&["std", "async", "time"])));
         assert!(is_known_stdlib_module(&segs(&["std", "serde", "json"])));
         assert!(is_known_stdlib_module(&segs(&["std", "reflection"])));
+        assert!(is_known_stdlib_module(&segs(&["std", "rust"])));
     }
 
     #[test]
@@ -279,12 +323,22 @@ mod tests {
     }
 
     #[test]
+    fn typechecker_only_namespace_std_rust_has_no_stub_path() {
+        assert_eq!(stdlib_stub_path(&segs(&["std", "rust"])), None);
+        assert!(is_typechecker_only_stdlib(&segs(&["std", "rust"])));
+        assert!(!is_typechecker_only_stdlib(&segs(&["std", "testing"])));
+        assert!(!is_typechecker_only_stdlib(&segs(&["std", "async"])));
+        assert!(!is_typechecker_only_stdlib(&segs(&["not", "stdlib"]))); // non-stdlib path
+    }
+
+    #[test]
     fn known_modules_hint_is_registry_driven_and_sorted() {
         let hint = known_stdlib_modules_for_hint();
         assert!(hint.windows(2).all(|w| w[0] <= w[1]));
         assert!(hint.contains(&"std.derives".to_string()));
         assert!(hint.contains(&"std.web.app".to_string()));
         assert!(hint.contains(&"std.async.prelude".to_string()));
+        assert!(hint.contains(&"std.rust".to_string()));
     }
 
     #[test]
