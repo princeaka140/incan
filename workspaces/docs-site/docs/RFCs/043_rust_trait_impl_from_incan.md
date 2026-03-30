@@ -9,7 +9,7 @@
     - RFC 024 (Extensible derive protocol)
     - RFC 005 (Rust interop)
     - RFC 023 (Compilable stdlib & Rust module binding)
-- **Issue:** —
+- **Issue:** #200
 - **RFC PR:** —
 - **Written against:** v0.2
 - **Shipped in:** —
