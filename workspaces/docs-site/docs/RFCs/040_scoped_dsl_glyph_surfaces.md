@@ -3,8 +3,14 @@
 - **Status:** Draft
 - **Created:** 2026-03-08
 - **Author(s):** Danny Meijer (@dannymeijer)
-- **Related:** RFC 027 (`incan-vocab` block registration and desugaring), RFC 028 (global operator overloading)
-- **Target version:** v0.2
+- **Related:**
+    - RFC 027 (`incan-vocab` block registration and desugaring)
+    - RFC 028 (global operator overloading)
+    - RFC 045 (scoped DSL symbol surfaces — companion RFC for identifier-level scoping)
+- **Issue:** —
+- **RFC PR:** —
+- **Written against:** v0.2
+- **Shipped in:** —
 
 ## Summary
 
@@ -15,9 +21,9 @@ A registered DSL may declare scoped glyph surfaces with two layers of effect:
 - **positive meaning** inside an explicit owning block and its eligible registered positions
 - **negative misuse diagnostics** across the activating file/module outside that block
 
-Operator-like glyphs such as `>>`, `<<`, `|>`, `<|`, `->`, `<-`, or `+` can support chaining, routing, linking, or composition within a DSL block without implying that the operand types globally implement the corresponding RFC 028 operator traits. Binding-like glyphs such as `:=` are reserved for block-local alias/binding forms and are specified as a separate family from operators.
+Operator-like glyphs such as `>>`, `<<`, `|>`, `<|`, `->`, `<-`, or `+` can support chaining, routing, linking, or composition within a DSL block without implying that the operand types globally implement the corresponding RFC 028 operator traits. Binding-like glyphs such as `:=` are reserved for block-local alias/binding forms and are specified as a separate family from operators. Expression-form surfaces such as leading-dot field access (`.column`) provide implicit-receiver syntax that is valid only inside eligible DSL positions, without becoming a general Incan expression form.
 
-This RFC does **not** define a closed whitelist of legal DSL glyphs. It defines the registration, scoping, parsing-eligibility, and conflict rules that make scoped glyphs safe to use. The glyph set is open-ended as long as a DSL registers the shape explicitly and it coexists cleanly with the core grammar and tooling.
+This RFC does **not** define a closed whitelist of legal DSL surfaces. It defines the registration, scoping, parsing-eligibility, and conflict rules that make scoped surfaces safe to use. The surface set is open-ended as long as a DSL registers the shape explicitly and it coexists cleanly with the core grammar and tooling.
 
 ## Motivation
 
@@ -62,7 +68,9 @@ The immediate motivating cases are operator-like glyphs:
 
 But the same family also needs room for future binding-like surfaces such as `:=`, where the glyph is not a global walrus operator, but a block-local alias or slot-binding form.
 
-This RFC therefore covers **scoped glyph surfaces** as a broader category, split into operator-like and binding-like families.
+Beyond operators and bindings, DSLs also need **expression-form surfaces**: syntax shapes that are only valid inside eligible DSL positions. The leading example is `.column` notation — a leading-dot field access with an implicit receiver supplied by the owning block's context. Outside DSL positions, `.field` at expression start is not valid Incan syntax and must be rejected. Inside a query or relational block, `.amount` means "the `amount` field of the primary relation" without needing a named receiver.
+
+This RFC therefore covers **scoped DSL surfaces** as a broader category, split into operator-like, binding-like, and expression-form families.
 
 ### The real restriction is not the glyph, but the contract
 
@@ -83,6 +91,23 @@ That is fine. The thing the language must restrict is not *which* glyphs are ima
 - conflicts with core grammar must be explicit and tooling-safe
 
 That is the real safety boundary for this RFC.
+
+## Goals
+
+- Define the registration, scoping, parsing-eligibility, and conflict rules under which explicit DSL blocks may own position-scoped glyph surfaces.
+- Cover three surface families: operator-like glyphs (e.g. `>>`, `|>`), binding-like glyphs (e.g. `:=`), and expression-form surfaces (e.g. leading-dot `.field` access).
+- Ensure scoped glyph meaning is block-local and position-scoped: glyphs gain DSL-owned semantics only inside eligible positions of an explicit owning block, not as blanket redefinition for the whole block body.
+- Provide targeted misuse diagnostics when DSL-shaped glyphs appear outside eligible positions but inside an activating file or module.
+- Coexist cleanly with RFC 028 global operator overloading and the rest of the core grammar.
+- Keep the surface set open-ended: any glyph that satisfies the registration and conflict rules is valid, with no pre-closed whitelist.
+
+## Non-goals
+
+- Arbitrary ad-hoc punctuation with no registration or conflict policy
+- Project-wide or import-only operator redefinition
+- Hidden ambient runtime state as the source of block-local meaning
+- A global walrus operator for ordinary Incan code
+- Scoped identifier symbol semantics (e.g. `sum`, `count` gaining DSL-specific meaning by position) — that belongs to RFC 045
 
 ## Guide-level explanation
 
@@ -271,6 +296,33 @@ query totals:
 
 This RFC reserves space for binding-like glyphs inside explicit blocks. `:=` in this design is **not** a global walrus operator. It is a DSL-owned glyph family that may create aliases, named slots, or intermediate bindings according to the DSL's registration and desugaring rules.
 
+### Example: leading-dot field access (expression-form surface)
+
+```incan
+query active_orders:
+    FROM orders
+    WHERE .status == "active"
+    SELECT .customer_id, .amount
+```
+
+`.status`, `.customer_id`, and `.amount` are leading-dot field references. They resolve against the implicit primary relation supplied by the `FROM` clause. Outside this query block, `.status` at expression start is not valid Incan syntax.
+
+The same pattern applies to method-chain relational arguments:
+
+```incan
+orders.filter(.amount > 100).select(.customer_id, .region)
+```
+
+Here `.amount`, `.customer_id`, and `.region` are in relational argument positions owned by the DSL that registered the `filter` and `select` operations. The implicit receiver is the dataset value the method is called on.
+
+Conceptually, the desugared meaning of `.amount` might be:
+
+```incan
+_relation_ctx.field("amount")
+```
+
+The DSL supplies the implicit context; the leading dot is the surface syntax. Outside eligible DSL positions, `.field` at expression start must be rejected by the parser.
+
 ## Reference-level explanation
 
 ### Core rule
@@ -298,8 +350,8 @@ This RFC does **not** standardize a permanently closed glyph inventory. Instead,
 A scoped glyph is allowed if all of the following hold:
 
 - the glyph is explicitly registered by the DSL
-- the glyph is composed of lexer-recognized symbolic tokens
-- the glyph declares its family (`OperatorLike` or `BindingLike`)
+- the surface is composed of lexer-recognized tokens (symbolic for glyphs, leading-dot for expression forms)
+- the surface declares its family (`OperatorLike`, `BindingLike`, or `ExpressionForm`)
 - the glyph does not collide with a core grammar form in the same position unless the DSL also declares an explicit eligibility/disambiguation rule
 - the formatter and tooling can preserve it without ad-hoc special cases
 
@@ -323,6 +375,24 @@ Common binding-like examples include:
 
 This is a binding-shaped glyph family, not an RFC 028 global operator. A DSL may interpret it as aliasing, named slots, or block-local binding according to its own desugaring contract.
 
+### Expression-form surfaces
+
+An expression-form surface is a syntax shape that is only valid inside eligible DSL positions and relies on an implicit receiver or context supplied by the owning block. The leading example is `.field` — leading-dot field access.
+
+Expression-form surfaces follow the same scoping contract as operator-like and binding-like surfaces:
+
+- **positive scope**: inside eligible positions of an owning block, the expression form is parsed and resolved against the block-supplied implicit context.
+- **negative scope**: outside eligible positions, the form must be rejected by the parser with a targeted diagnostic.
+- **no global effect**: expression-form registration must not make the syntax form valid in ordinary Incan code.
+
+A DSL registering an expression-form surface must declare:
+
+- the syntactic shape (e.g. leading-dot followed by identifier)
+- the eligible positions where it is valid
+- how the implicit receiver/context is determined (e.g. primary relation from `FROM`, dataset value from method receiver)
+
+Expression-form surfaces do not use `chain_mode` or `inherits_core_precedence`; those fields apply only to operator-like surfaces.
+
 ### Registration model
 
 A vocab provider that registers a block keyword may also register scoped glyph surfaces for that block.
@@ -330,9 +400,10 @@ A vocab provider that registers a block keyword may also register scoped glyph s
 Conceptually:
 
 ```rust
-pub enum ScopedGlyphFamily {
+pub enum ScopedSurfaceFamily {
     OperatorLike,
     BindingLike,
+    ExpressionForm,
 }
 
 pub enum ChainMode {
@@ -341,9 +412,9 @@ pub enum ChainMode {
     NotChainable,
 }
 
-pub struct ScopedGlyphDescriptor {
-    pub glyph: String,
-    pub family: ScopedGlyphFamily,
+pub struct ScopedSurfaceDescriptor {
+    pub surface: String,
+    pub family: ScopedSurfaceFamily,
     pub owning_block: String,
     pub positive_scope: PositiveScope,
     pub misuse_scope: MisuseScope,
@@ -466,7 +537,9 @@ Required classes:
 
 These should be preferred over generic "unknown operator" or "type mismatch" messages when the compiler has enough information to recognize the scoped intent.
 
-### Boundary with RFC 028
+## Design details
+
+### Interaction with RFC 028
 
 RFC 028 defines ordinary global operator semantics.
 
@@ -479,7 +552,7 @@ That means these are different statements:
 
 Both may exist in the language, but they are not the same mechanism and must not be conflated.
 
-### Boundary with RFC 027
+### Interaction with RFC 027
 
 RFC 027 remains the substrate for:
 
@@ -490,12 +563,22 @@ RFC 027 remains the substrate for:
 
 This RFC extends that world with block-owned, position-scoped glyph surfaces. It does not replace RFC 027; it builds on it.
 
-## Non-goals
+### Compatibility / migration
 
-- Arbitrary ad-hoc punctuation with no registration or conflict policy
-- Project-wide or import-only operator redefinition
-- Hidden ambient runtime state as the source of block-local meaning
-- A global walrus operator for ordinary Incan code
+- **Non-breaking**: no existing syntax or semantics change. Scoped glyph surfaces are additive and only activate inside explicit DSL blocks that register them.
+- **No migration needed**: code that does not use scoped DSL blocks is unaffected.
+- **Library adoption**: DSL authors opt in by registering scoped surface descriptors alongside their block keywords.
+
+## Alternatives considered
+
+1. Force DSL chaining through global RFC 028 operators
+    Rejected because it makes block-local syntax pretend to be global type capability. That weakens diagnostics and blurs the boundary between ordinary operator overloading and explicit DSL context.
+
+2. Let plain global dunder methods inspect ambient block state
+    Rejected because it turns lexical language context into hidden runtime magic. Scoped glyph meaning should come from the compiler's explicit block context, similar to how method bodies get `self`, not from "look around and see where I am" behavior.
+
+3. Allow glyph semantics without explicit registration or conflict rules
+    Rejected because it would make parsing, formatting, highlighting, and language tooling much harder to keep coherent. The problem is not that a DSL wants `+` or `->`; the problem is allowing those meanings without an explicit contract about where and how they apply.
 
 ## Drawbacks
 
@@ -505,7 +588,7 @@ This RFC extends that world with block-owned, position-scoped glyph surfaces. It
 
 ## Layers affected
 
-- **Parser** — the parser must distinguish scoped-glyph occurrences in eligible DSL positions from ordinary binary expressions; `->` and other glyphs with existing core meanings must continue to parse normally outside registered positions
+- **Parser** — the parser must distinguish scoped-surface occurrences in eligible DSL positions from ordinary expressions; `->` and other glyphs with existing core meanings must continue to parse normally outside registered positions; expression-form surfaces such as leading-dot access must only be accepted in eligible DSL positions and rejected elsewhere
 - **Typechecker / Symbol resolution** — block-local glyph resolution must follow the defined order (DSL-owned first, then core, then outside-scope diagnostic); `PositiveScope` and `MisuseScope` descriptors must be tracked per active DSL in the current file/module
 - **IR Lowering** — DSL-owned glyph occurrences desugar against the implicit block context (`_pipeline_ctx.link(...)` etc.) rather than lowering to global binary operator nodes; pairwise chaining must be expanded correctly
 - **RFC 027 extension** — the vocab block registration API needs a `ScopedGlyphDescriptor` surface so DSL authors can declare glyphs alongside block keywords; RFC 027 may need a small extension for expression-position block kinds to support `race for value:` and similar forms
@@ -520,17 +603,7 @@ This RFC extends that world with block-owned, position-scoped glyph surfaces. It
 4. Should `PositiveScope` and `MisuseScope` be separate concerns, or should a single `ScopeDescriptor` express both simultaneously?
 5. How does the LSP communicate the block-local vs global semantic distinction in completions and hover? Does the language server need access to which DSL blocks are active in the current file?
 6. Does this RFC need to define how a DSL explicitly opts `->` out of core function-return-annotation parsing in a position that admits both?
+7. For expression-form surfaces, should the implicit receiver be a single well-known concept (e.g. "primary relation") or should DSLs be able to register arbitrary implicit receiver shapes?
+8. Should expression-form surfaces support chained leading-dot access (e.g. `.order.amount`) or only single-level `.field`? If chained, how does the parser distinguish DSL-owned chained access from ordinary Incan field access on the resolved value?
 
-## Alternatives considered
-
-### A. Force DSL chaining through global RFC 028 operators
-
-Rejected because it makes block-local syntax pretend to be global type capability. That weakens diagnostics and blurs the boundary between ordinary operator overloading and explicit DSL context.
-
-### B. Let plain global dunder methods inspect ambient block state
-
-Rejected because it turns lexical language context into hidden runtime magic. Scoped glyph meaning should come from the compiler's explicit block context, similar to how method bodies get `self`, not from "look around and see where I am" behavior.
-
-### C. Allow glyph semantics without explicit registration or conflict rules
-
-Rejected because it would make parsing, formatting, highlighting, and language tooling much harder to keep coherent. The problem is not that a DSL wants `+` or `->`; the problem is allowing those meanings without an explicit contract about where and how they apply.
+<!-- Rename this section to "Design Decisions" once all questions have been resolved. An RFC cannot move from Draft to Planned until no unresolved questions remain. -->
