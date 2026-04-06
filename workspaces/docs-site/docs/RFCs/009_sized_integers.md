@@ -1,408 +1,173 @@
-# RFC 009: Sized Integer Types & Builtin Type Registry
+# RFC 009: Sized integer types and builtin type registry
 
-**Status:** Planned  
-**Created:** 2024-12-11  
-**Updated:** 2024-12-23
+- **Status:** Draft
+- **Created:** 2024-12-11
+- **Author(s):** Danny Meijer (@dannymeijer)
+- **Related:** RFC 005 (Rust interop)
+- **Issue:** —
+- **RFC PR:** —
+- **Written against:** v0.1
+- **Shipped in:** —
 
 ## Summary
 
-Add explicit sized integer and float types to Incan, enabling precise control over numeric representation for FFI,
-binary protocols, and memory-sensitive applications.
-
-This RFC also introduces a **Builtin Type Registry** infrastructure (Phase 0) that allows `incan_core::lang`
-registries to be the source of truth for builtin type methods, eliminating hardcoded method lookups scattered across
-the compiler.
+This RFC introduces explicit sized numeric types such as `i8`, `u16`, `f32`, and `usize`, together with a centralized builtin-type registry. The coupling is intentional: once Incan exposes a broader builtin numeric surface, the language needs one canonical vocabulary source for builtin spellings, methods, and typing behavior rather than a growing set of scattered compiler special cases.
 
 ## Motivation
 
-Currently, Incan has only two numeric types:
+The current numeric surface is intentionally simple: `int` lowers to `i64` and `float` lowers to `f64`. That is fine for general application code, but it is too blunt for several real cases:
 
-- `int` → `i64` (64-bit signed)
-- `float` → `f64` (64-bit float)
+- Rust interop and FFI frequently require exact-width numeric types.
+- Binary protocols and file formats encode fixed-width fields.
+- Memory-sensitive workloads benefit from smaller element types.
+- Bit manipulation and hardware-facing work depend on explicit widths.
 
-This simplicity is great for general-purpose code, but insufficient for:
+The RFC also addresses a second problem that appears immediately once sized types arrive: builtin numeric behavior is currently too easy to define piecemeal. If each new builtin type adds methods, coercions, and surface spellings through disconnected compiler logic, the language contract will drift. The builtin registry is therefore not incidental implementation detail in this RFC; it is the mechanism that keeps the expanded numeric surface coherent.
 
-1. **FFI / Rust Interop** — Calling Rust functions that expect specific sizes
-2. **Binary Protocols** — Parsing network packets, file formats (PNG, MP3, etc.)
-3. **Memory Efficiency** — Large arrays where `i8` vs `i64` matters (8x difference)
-4. **Hardware Interfaces** — GPIO pins, registers, embedded systems
-5. **Cryptography** — Exact bit-width operations
+## Goals
 
-### Example Problem
+- Add exact-width signed integers, unsigned integers, and sized floats to the language surface.
+- Preserve `int` and `float` as ergonomic aliases for general-purpose code.
+- Require explicit conversion where precision or sign can change.
+- Make builtin numeric vocabulary come from a single language-owned registry rather than repeated string matching.
 
-```incan
-# Current: Can't express this cleanly
-from rust::std::net import TcpStream
+## Non-Goals
 
-# TcpStream::connect expects &str, but port is u16 internally
-# How do we work with u16 port numbers?
-```
+- Arbitrary-precision integers in this RFC.
+- SIMD/vector numeric types in this RFC.
+- Implicit numeric widening and narrowing rules beyond what this document explicitly allows.
+- Freezing the entire builtin-method catalog for every future builtin type.
 
-## Design
+## Guide-level explanation (how users think about it)
 
-### New Types
-
-| Incan Type | Rust Type | Description                    |
-| ---------- | --------- | ------------------------------ |
-| `i8`       | `i8`      | 8-bit signed (-128 to 127)     |
-| `i16`      | `i16`     | 16-bit signed                  |
-| `i32`      | `i32`     | 32-bit signed                  |
-| `i64`      | `i64`     | 64-bit signed (same as `int`)  |
-| `i128`     | `i128`    | 128-bit signed                 |
-| `u8`       | `u8`      | 8-bit unsigned (0 to 255)      |
-| `u16`      | `u16`     | 16-bit unsigned                |
-| `u32`      | `u32`     | 32-bit unsigned                |
-| `u64`      | `u64`     | 64-bit unsigned                |
-| `u128`     | `u128`    | 128-bit unsigned               |
-| `f32`      | `f32`     | 32-bit float                   |
-| `f64`      | `f64`     | 64-bit float (same as `float`) |
-| `isize`    | `isize`   | Pointer-sized signed           |
-| `usize`    | `usize`   | Pointer-sized unsigned         |
-
-### Type Aliases (Preserved)
-
-The existing `int` and `float` remain as aliases:
+### Explicit widths when they matter
 
 ```incan
-# These are equivalent
-x: int    # Preferred for general code
-x: i64    # Explicit when size matters
-
-y: float  # Preferred for general code  
-y: f64    # Explicit when size matters
+port: u16 = 8080u16
+flags: u8 = 0b1010_0001u8
+sample_rate: i32 = 44_100i32
 ```
+
+Authors continue using `int` and `float` for ordinary code, but they can opt into explicit widths when interop, protocols, or memory layout demand it.
+
+### Aliases remain
+
+```incan
+count: int = 42
+precise_count: i64 = 42
+
+ratio: float = 3.14
+precise_ratio: f64 = 3.14
+```
+
+`int` and `float` remain the default ergonomic spellings; `i64` and `f64` are the exact-width forms.
+
+### Explicit conversions
+
+```incan
+big: i64 = 1000
+small: i16 = big as i16
+safe: i16 = i16.try_from(big)?
+```
+
+The language should not silently narrow or reinterpret numbers in ways that are easy to miss.
+
+## Reference-level explanation (precise rules)
+
+### Added types
+
+The language adds these builtin numeric spellings:
+
+| Incan type                        | Meaning                                    |
+| --------------------------------- | ------------------------------------------ |
+| `i8`, `i16`, `i32`, `i64`, `i128` | Signed fixed-width integers                |
+| `u8`, `u16`, `u32`, `u64`, `u128` | Unsigned fixed-width integers              |
+| `f32`, `f64`                      | Fixed-width floating-point values          |
+| `isize`, `usize`                  | Pointer-sized signed and unsigned integers |
+
+`int` remains an alias for `i64`. `float` remains an alias for `f64`.
 
 ### Literals
 
-#### Without Suffix (Default)
+- Unsuffixed integer literals default to `int` unless a surrounding annotation or inference context requires a different numeric type.
+- Unsuffixed float literals default to `float` unless a surrounding annotation or inference context requires a different float type.
+- Suffixed literals such as `42u16`, `7i8`, and `3.14f32` must construct the explicitly named type.
+- Out-of-range suffixed literals are compile-time errors.
 
-Unsuffixed literals infer type from context, defaulting to `int`/`float`:
+### Arithmetic and conversions
 
-```incan
-let x = 42        # int (i64)
-let y = 3.14      # float (f64)
-let z: i32 = 42   # i32 (from annotation)
-```
+- Same-type arithmetic yields the same type.
+- Mixed-width arithmetic requires an explicit conversion.
+- Narrowing or sign-changing conversions must be explicit.
+- Widening conversions may be provided as named constructors or helpers, but this RFC does not permit silent widening in ordinary arithmetic expressions.
 
-#### With Suffix (Explicit)
+### Overflow behavior
 
-```incan
-let a = 42i8      # i8
-let b = 42u16     # u16
-let c = 42i32     # i32
-let d = 42u64     # u64
-let e = 3.14f32   # f32
-let f = 255u8     # u8
-```
+Sized integers follow Rust's overflow behavior:
 
-### Conversions
+- debug builds trap on overflow;
+- release builds wrap unless the program uses explicit checked, saturating, or wrapping operations.
 
-#### Explicit Casting Required
+The language surface may expose helpers such as `checked_add`, `wrapping_add`, and `saturating_add` on applicable numeric types.
 
-No implicit narrowing — all conversions are explicit:
+## Design details
 
-```incan
-let big: i64 = 1000
-let small: i16 = big as i16        # Explicit cast (may truncate)
-let safe: i16 = i16.try_from(big)? # Safe conversion (returns Result)
-```
+### Why the coupling is intentional
 
-#### Conversion Functions
+This RFC deliberately couples sized numeric types with a builtin registry because the registry is part of getting the language surface right. Without it, the feature would immediately push more builtin names, methods, and coercion rules into scattered compiler branches, which would make the spec harder to reason about and the implementation easier to drift.
 
-```incan
-# Fallible conversions (return Result)
-let x: Result[i16, ConversionError] = i16.try_from(big_value)
+The important point is the contract, not the file layout: builtin behavior should come from one coherent vocabulary source instead of repeated hardcoded matches.
 
-# Infallible widening (always safe)
-let wide: i64 = i64.from(small_value)  # i16 -> i64 always works
+### Registry-first builtin vocabulary
 
-# Truncating cast (use with caution)
-let truncated: i8 = big_value as i8    # May lose data
-```
+The implementation therefore needs a language-owned builtin registry that defines:
 
-### Arithmetic
+- builtin type spellings;
+- builtin method vocabulary;
+- stable metadata needed for typing, docs, and diagnostics.
 
-Same-type operations return the same type:
+### Interaction with existing features
 
-```incan
-let a: i32 = 10
-let b: i32 = 20
-let c: i32 = a + b  # i32
+- Rust interop benefits directly because exact-width types can map to exact-width Rust signatures.
+- Existing `int` and `float` code keeps working unchanged.
+- Container indexing becomes more important once `usize` exists, but this RFC does not silently settle every indexing coercion rule yet.
 
-# Mixed types require explicit conversion
-let x: i32 = 10
-let y: i64 = 20
-let z = x as i64 + y  # Must convert first
-```
+### Compatibility / migration
 
-### Overflow Behavior
+The feature is additive. Existing programs using `int` and `float` continue to compile. New code can opt into explicit widths incrementally.
 
-Follow Rust's behavior:
+## Alternatives considered
 
-- **Debug builds**: Panic on overflow
-- **Release builds**: Wrap (two's complement)
+1. **Expose exact widths only through Rust interop**
+   - Too indirect. These types are useful inside ordinary Incan code, not only at FFI boundaries.
 
-Explicit wrapping/saturating operations available:
+2. **Python-style arbitrary-precision `int` only**
+   - That improves some numeric ergonomics, but it does not solve fixed-width interop, protocol parsing, or explicit layout control.
 
-```incan
-let x: u8 = 255
-let y = x.wrapping_add(1)    # 0 (wrapped)
-let z = x.saturating_add(1)  # 255 (saturated)
-let w = x.checked_add(1)     # None (overflow detected)
-```
+3. **Wrapper types only**
+   - Still requires real underlying fixed-width types, so it does not remove the core problem.
 
-## Examples
+4. **C-style numeric names**
+   - Less explicit and often platform-dependent in ways that this RFC is trying to avoid.
 
-### Binary Protocol Parsing
+## Drawbacks
 
-```incan
-def parse_header(data: bytes) -> Result[Header, ParseError]:
-    if len(data) < 8:
-        return Err(ParseError.TooShort)
-    
-    let magic: u32 = u32.from_le_bytes(data[0..4])
-    let version: u16 = u16.from_le_bytes(data[4..6])
-    let flags: u8 = data[6]
-    let reserved: u8 = data[7]
-    
-    return Ok(Header(magic, version, flags))
-```
+- More builtin numeric types increase the language surface and the testing matrix.
+- `isize` and `usize` expose target-dependent widths, which slightly weakens the otherwise explicit story.
+- The registry requirement raises the implementation bar, but that is preferable to baking in more ad hoc builtin behavior.
 
-### Network Port Handling
+## Layers affected
 
-```incan
-def connect(host: str, port: u16) -> Result[Connection, IoError]:
-    let addr = f"{host}:{port}"
-    return Connection.open(addr)
+- **Lexer / parser**: must recognize the added type names and suffixed numeric literals.
+- **Typechecker**: must model exact-width numeric types, enforce explicit conversions, and diagnose out-of-range literals.
+- **Lowering / emission**: must preserve exact widths when lowering to Rust or other backend representations.
+- **Builtin surface registry**: must own the canonical spelling and method vocabulary for builtin numeric types.
+- **Docs / tooling**: should surface width-specific help, conversions, and overflow behavior consistently.
 
-# Usage
-let conn = connect("localhost", 8080u16)?
-```
+## Unresolved questions
 
-### Memory-Efficient Arrays
+1. What is the exact rule for container indexing: explicit `as usize`, a targeted compiler coercion in indexing position, or something else?
+2. Should `char` join this RFC, or remain a separate feature with its own semantics?
+3. Which sized-type helper methods are language promises in v1, and which remain stdlib conveniences that can evolve separately?
 
-```incan
-# Image pixel data - 3 bytes per pixel instead of 24
-model Pixel:
-    r: u8
-    g: u8
-    b: u8
-
-let image: List[Pixel] = load_image("photo.png")
-```
-
-### Bit Manipulation
-
-```incan
-def set_bit(value: u32, bit: u8) -> u32:
-    return value | (1u32 << bit)
-
-def clear_bit(value: u32, bit: u8) -> u32:
-    return value & ~(1u32 << bit)
-
-def test_bit(value: u32, bit: u8) -> bool:
-    return (value & (1u32 << bit)) != 0
-```
-
-## Implementation Plan
-
-### Phase 0: Builtin Type Registry
-
-Before adding new types, establish **registry-first** infrastructure so the compiler has a single source of truth for:
-
-- builtin type spellings (e.g. `i32`, `u8`)
-- builtin/surface method vocabulary (e.g. `str.upper()`, `List.append()`)
-- metadata like “introduced in RFC”, stability, and docs
-
-**Current crate layout note:** in the current workspace, canonical language vocabulary lives in:
-
-- `crates/incan_core/src/lang/types/*` for builtin type names
-- `crates/incan_core/src/lang/surface/*` for method/function/type “surface” vocabulary
-- `crates/incan_syntax` for lexer/token/parsing (syntax), consuming registries where appropriate
-
-So Phase 0 should be implemented by extending these registries and migrating compiler call sites to consult them,
-rather than parsing `incan_stdlib` source code.
-
-#### Problem
-
-Currently, builtin type methods (e.g., `str.upper()`, `List.append()`, `FrozenStr.len()`) are hardcoded in multiple places:
-
-- `src/frontend/typechecker/check_expr/access.rs` — method return types
-- `src/backend/ir/emit/mod.rs` — code generation
-- `src/backend/ir/emit/expressions/methods.rs` — method emission
-
-This creates triple maintenance burden and increases drift risk between docs/spec/compiler behavior.
-
-#### Solution
-
-1. **Define method vocab in `incan_core`** (source of truth):
-
-    - `crates/incan_core/src/lang/surface/methods.rs` (surface method vocab registries; re-exported as
-      `incan_core::lang::surface::{string_methods, list_methods, dict_methods, ...}` for stable import paths)
-    - For sized integer methods, add a new registry section within `methods.rs` (or a sibling module re-exported from
-      `crates/incan_core/src/lang/surface/mod.rs` if it grows too large)
-
-2. **Compiler consumes registries** instead of string matches:
-
-    - Typechecker consults the registries to determine allowed methods and return types.
-    - Backend/codegen consults the same registries (or enum/ID mapping derived from them) to emit method calls.
-
-3. **Guardrails**
-
-    - Add tests that ensure registry uniqueness and prevent drift with lexer/parser expectations (parity checks).
-
-#### Benefits
-
-- **Single source of truth**: `incan_core` defines the language surface vocabulary.
-- **No hardcoding**: typechecker and emitter read from registries.
-- **Extensibility**: adding a method is a single edit in `incan_core::lang::surface`.
-- **Documentation**: reference docs can be generated from registries.
-
-#### Scope
-
-Phase 0 covers:
-
-- Registry infrastructure (IDs + metadata tables + docs generation + guardrails)
-- Migration of existing hardcoded types:
-    - `str`, `bytes`
-    - `List`, `Dict`, `Set`
-    - `FrozenStr`, `FrozenBytes`
-    - `FrozenList`, `FrozenSet`, `FrozenDict`
-- Foundation for sized integer methods in Phase 5
-
-### Phase 1: Lexer
-
-Add token recognition for:
-
-- Type names: `i8`, `i16`, `i32`, `i64`, `i128`, `u8`, `u16`, `u32`, `u64`, `u128`, `f32`, `isize`, `usize`
-- Literal suffixes: `42i32`, `255u8`, `3.14f32`
-
-### Phase 2: Parser
-
-- Parse sized type annotations
-- Parse suffixed numeric literals
-
-### Phase 3: Type Checker
-
-- Add sized integer types to type system
-- Enforce explicit conversions (no implicit narrowing)
-- Type inference for unsuffixed literals
-- Use builtin registry (from Phase 0) for method lookups
-
-### Phase 4: Codegen
-
-- Map types directly to Rust equivalents
-- Emit proper literal suffixes
-- Generate conversion code
-- Use builtin registry for method emission
-
-### Phase 5: Standard Library
-
-- Add conversion methods (`try_from`, `from`, `as`) to registry
-- Add byte conversion methods (`from_le_bytes`, `to_be_bytes`, etc.) to registry
-- Add overflow-handling methods (`wrapping_add`, `saturating_sub`, etc.) to registry
-- Implement corresponding Rust methods in `incan_stdlib`
-
-## Alternatives Considered
-
-### 1. Only Add When Needed via Rust Interop
-
-```incan
-from rust::std::primitive import i16, u8
-```
-
-**Rejected**: Awkward syntax, doesn't integrate well with literals.
-
-### 2. Python-Style Arbitrary Precision
-
-Python's `int` is arbitrary precision. We could do the same.
-
-**Rejected**: Doesn't help with FFI, binary protocols, or memory efficiency. Also has performance overhead.
-
-### 3. Wrapper Types Only
-
-```incan
-newtype Port = u16  # Define in stdlib
-```
-
-**Rejected**: Still need the underlying sized types.
-
-### 4. C-Style Type Names
-
-```incan
-let x: short = 10      # i16
-let y: unsigned int = 20  # u32
-```
-
-**Rejected**: Verbose, platform-dependent sizes in C, Rust-style is clearer.
-
-## Open Questions
-
-1. **Literal inference**: Should `let x: u8 = 256` be a compile error or runtime panic?
-   - Proposal: Compile error for out-of-range literals
-
-2. **Default integer type**: Keep `int` as `i64` or make it platform-dependent like `isize`?
-   - Proposal: Keep as `i64` for predictability
-
-3. **Char type**: Add `char` as a separate type (Rust's 4-byte Unicode scalar)?
-   - Proposal: Defer to separate RFC
-
-4. **SIMD types**: Should we include `i8x16`, `f32x4` etc?
-   - Proposal: Defer to separate RFC for SIMD
-
-5. **List/array indexing**: How should `int` work with indexing?
-   - Problem: `arr[i]` where `i: int` fails in Rust (needs `usize`)
-   - Option A: Auto-coerce `int` → `usize` in indexing context (ergonomic, implicit)
-   - Option B: Require explicit cast `arr[i as usize]` (explicit, verbose)
-   - Option C: Make `range()` return `usize` (natural for loops, but breaks if used elsewhere)
-   - Proposal: Option A — compiler inserts `as usize` for indexing; matches Python's ergonomics
-
-## Checklist
-
-### Phase 0: Builtin Type Registry (checklist)
-
-- [ ] Extend `incan_core::lang::types` with sized type vocabulary (`i8`, `u16`, `f32`, `usize`, ...)
-- [ ] Extend `incan_core::lang::surface` with sized integer method vocabulary (new registry module)
-- [ ] Typechecker: consult `incan_core::lang::surface` registries for method typing
-- [ ] Backend: consult `incan_core::lang::surface` registries (or enum mapping) for method emission
-- [ ] Migrate `str` methods from hardcoded to registry
-- [ ] Migrate `bytes` methods from hardcoded to registry
-- [ ] Migrate `List` methods from hardcoded to registry
-- [ ] Migrate `Dict` methods from hardcoded to registry
-- [ ] Migrate `Set` methods from hardcoded to registry
-- [ ] Migrate `FrozenStr` methods from hardcoded to registry
-- [ ] Migrate `FrozenBytes` methods from hardcoded to registry
-- [ ] Migrate `FrozenList`/`FrozenSet`/`FrozenDict` methods from hardcoded to registry
-- [ ] Update emitter to use registry for method emission
-- [ ] Remove hardcoded method matches from `check_expr/access.rs`
-- [ ] Remove hardcoded method matches from `emit/mod.rs`
-
-### Phase 1-4: Sized Types
-
-- [ ] Lexer: recognize sized type names
-- [ ] Lexer: parse literal suffixes (`42i32`, `3.14f32`)
-- [ ] Parser: sized type annotations
-- [ ] Type checker: sized integer types in type system
-- [ ] Type checker: enforce explicit conversions
-- [ ] Type checker: literal range checking
-- [ ] Codegen: emit proper Rust types
-- [ ] Codegen: emit literal suffixes
-- [ ] Codegen: auto-coerce `int` → `usize` for list indexing
-
-### Phase 5: Standard Library Methods
-
-- [ ] Stdlib: add sized type interface traits (`I8Methods`, `U16Methods`, etc.)
-- [ ] Stdlib: conversion methods (`try_from`, `from`)
-- [ ] Stdlib: byte conversion methods (`from_le_bytes`, `to_be_bytes`, etc.)
-- [ ] Stdlib: overflow-handling methods (`wrapping_add`, `saturating_sub`, etc.)
-
-### Documentation
-
-- [ ] Documentation update
-- [ ] Examples
-
-## References
-
-- [Rust Primitive Types](https://doc.rust-lang.org/std/primitive/index.html)
-- [Rust Integer Overflow](https://doc.rust-lang.org/book/ch03-02-data-types.html#integer-overflow)
-- [Python struct module](https://docs.python.org/3/library/struct.html) (for comparison)
+<!-- Rename this section to "Design Decisions" once all questions have been resolved. An RFC cannot move from Draft to Planned until no unresolved questions remain. -->
