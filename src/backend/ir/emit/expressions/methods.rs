@@ -1,16 +1,17 @@
 //! Emit Rust code for method calls.
 //!
-//! This module handles emission of both known methods (enum-based dispatch via `MethodKind`)
-//! and unknown methods (string-based fallback).
+//! This module handles emission of both known methods (enum-based dispatch via `MethodKind`) and ordinary method calls
+//! that should remain Rust method syntax.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 use super::super::super::conversions::{ConversionContext, determine_conversion};
-use super::super::super::expr::{IrCallArg, IrExprKind, MethodKind, TypedExpr, VarRefKind};
+use super::super::super::expr::{
+    InternalMethodKind, IrCallArg, IrExprKind, MethodCallArgPolicy, MethodKind, TypedExpr, VarRefKind,
+};
 use super::super::super::types::IrType;
 use super::super::{EmitError, IrEmitter};
-use incan_core::lang::magic_methods;
 
 mod collection_methods;
 mod string_methods;
@@ -23,14 +24,11 @@ use string_methods::emit_string_method;
 /// This deduplicates the pattern of:
 /// - Detecting `FrozenStr` receivers
 /// - Unwrapping them via `.as_str()`
-/// - Computing whether the receiver is string-like for stdlib routing
 pub(super) struct ReceiverInfo {
     /// The receiver token stream (possibly wrapped in `.as_str()` for FrozenStr).
     pub(super) r: TokenStream,
     /// A borrow of the receiver: `&#r`.
     pub(super) r_borrow: TokenStream,
-    /// Whether the receiver is a string-like type (String or FrozenStr).
-    pub(super) is_stringish: bool,
 }
 
 impl ReceiverInfo {
@@ -43,16 +41,39 @@ impl ReceiverInfo {
             emitted
         };
         let r_borrow = quote! { &#r };
-        let is_stringish = matches!(receiver_ty, IrType::String | IrType::FrozenStr);
-        Self {
-            r,
-            r_borrow,
-            is_stringish,
-        }
+        Self { r, r_borrow }
     }
 }
 
 impl<'a> IrEmitter<'a> {
+    /// Strip reference wrappers from a receiver type before builtin-family or ownership-sensitive dispatch.
+    ///
+    /// Method emission cares about the underlying receiver family (`Dict`, `Struct`, `Trait`, ...) rather than whether
+    /// lowering represented the value as `T`, `&T`, or `&mut T`.
+    fn receiver_type_for_method_dispatch(receiver_ty: &IrType) -> &IrType {
+        let mut receiver_ty = receiver_ty;
+        while let IrType::Ref(inner) | IrType::RefMut(inner) = receiver_ty {
+            receiver_ty = inner.as_ref();
+        }
+        receiver_ty
+    }
+
+    /// Whether a receiver is a nominal type owned by this compilation unit rather than an external Rust surface.
+    ///
+    /// Incan-owned structs, enums, traits, and `rusttype` surface aliases use compiler-controlled argument conversion
+    /// rules. External nominal types may share the same IR shape (`Struct(name)`) but must usually preserve Rust call
+    /// semantics instead.
+    fn is_incan_owned_nominal_receiver(&self, receiver_ty: &IrType) -> bool {
+        match Self::receiver_type_for_method_dispatch(receiver_ty) {
+            IrType::Struct(name) => {
+                self.struct_field_names.contains_key(name) || self.rusttype_alias_names.contains(name)
+            }
+            IrType::Enum(name) => self.enum_variant_fields.keys().any(|(enum_name, _)| enum_name == name),
+            IrType::Trait(_) => true,
+            _ => false,
+        }
+    }
+
     /// Emit a known method call using enum-based dispatch.
     ///
     /// This handles calls that have been lowered to `IrExprKind::KnownMethodCall`.
@@ -75,51 +96,27 @@ impl<'a> IrEmitter<'a> {
         let r0 = self.emit_expr(receiver)?;
         let info = ReceiverInfo::new(&receiver.ty, r0);
         let arg_exprs: Vec<TypedExpr> = args.iter().map(|a| a.expr.clone()).collect();
-        if let Some(res) = emit_string_method(self, &receiver.ty, &info, kind, &arg_exprs) {
-            return res;
-        }
-        if let Some(res) = emit_collection_method(self, receiver, &info, kind, &arg_exprs) {
-            return res;
-        }
-
         match kind {
-            // ---- Internal/special methods ----
-            MethodKind::Slice => self.emit_runtime_str_slice(&info, &arg_exprs),
-            _ => Err(EmitError::Unsupported(format!(
-                "unexpected method kind during emission: {:?}",
-                kind
-            ))),
+            MethodKind::String(kind) => emit_string_method(self, &info, kind, &arg_exprs),
+            MethodKind::Collection(kind) => emit_collection_method(self, receiver, &info, kind, &arg_exprs),
+            MethodKind::Internal(InternalMethodKind::Slice) => self.emit_runtime_str_slice(&info, &arg_exprs),
         }
     }
 
-    /// Emit a method call expression (string-based fallback).
+    /// Emit a method call expression that remains a regular Rust method call.
     ///
-    /// This handles `IrExprKind::MethodCall` where the method name is a string.
-    /// Known methods are handled inline; unknown methods pass through as-is.
+    /// This handles `IrExprKind::MethodCall` when lowering did not classify the method as a builtin-family method.
     pub(in super::super) fn emit_method_call_expr(
         &self,
         receiver: &TypedExpr,
         method: &str,
         args: &[IrCallArg],
+        arg_policy: MethodCallArgPolicy,
     ) -> Result<TokenStream, EmitError> {
         let r0 = self.emit_expr(receiver)?;
         let info = ReceiverInfo::new(&receiver.ty, r0);
         let r = &info.r;
         let arg_exprs: Vec<TypedExpr> = args.iter().map(|a| a.expr.clone()).collect();
-
-        if let Some(kind) = MethodKind::from_name(method) {
-            if let Some(res) = emit_string_method(self, &receiver.ty, &info, &kind, &arg_exprs) {
-                return res;
-            }
-            if let Some(res) = emit_collection_method(self, receiver, &info, &kind, &arg_exprs) {
-                return res;
-            }
-        }
-
-        // Handle special methods (legacy string-based dispatch)
-        if magic_methods::from_str(method) == Some(magic_methods::MagicMethodId::Slice) {
-            return self.emit_runtime_str_slice(&info, &arg_exprs);
-        }
 
         // Check if this is an enum variant construction.
         //
@@ -144,30 +141,47 @@ impl<'a> IrEmitter<'a> {
             if Self::expr_is_type_like(receiver) {
                 let type_ident = format_ident!("{}", name);
                 let m = format_ident!("{}", method);
+                let in_return = *self.in_return_context.borrow();
+                let receiver_ref_kind = match &receiver.kind {
+                    IrExprKind::Var { ref_kind, .. } => Some(*ref_kind),
+                    _ => None,
+                };
                 // Apply Incan-style argument conversions when calling associated functions on Incan-owned types
                 // (structs/enums/traits). This is important for `str` literals which are emitted as `&'static str`,
                 // but many Incan-level signatures expect owned `String` in Rust (e.g., newtype `from_underlying(v:
                 // str)`).
                 //
+                // `VarRefKind::TypeName` covers imported Incan types like `std.web.Response` (typechecker
+                // `IdentKind::TypeName`). Those calls must use Incan arg rules — `ExternalFunctionArg`
+                // would borrow `String` as `&String` and break signatures such as
+                // `Response::html(content: String)` in generated stdlib.
+                //
                 // For external Rust types (VarRefKind::ExternalRustName), use ExternalFunctionArg conversions so that
                 // string literals get `.into()` — this lets the Rust compiler resolve the target type via the Into
                 // trait (e.g., Polars' PlSmallStr, sqlx identifiers, etc.).
-                let is_external = matches!(
-                    receiver.kind,
-                    IrExprKind::Var {
-                        ref_kind: VarRefKind::ExternalRustName,
-                        ..
+                let conversion_context = if receiver_ref_kind != Some(VarRefKind::ExternalRustName)
+                    && self.is_incan_owned_nominal_receiver(&receiver.ty)
+                {
+                    ConversionContext::IncanFunctionArg
+                } else if matches!(receiver_ref_kind, Some(VarRefKind::ExternalName | VarRefKind::TypeName)) {
+                    if in_return {
+                        ConversionContext::IncanFunctionArgInReturn
+                    } else {
+                        ConversionContext::IncanFunctionArg
                     }
-                );
-                let apply_incan_arg_conversions =
-                    !is_external && matches!(receiver.ty, IrType::Struct(_) | IrType::Enum(_) | IrType::Trait(_));
+                } else {
+                    ConversionContext::ExternalFunctionArg
+                };
 
-                let arg_tokens: Vec<TokenStream> = if apply_incan_arg_conversions {
+                let arg_tokens: Vec<TokenStream> = if matches!(
+                    conversion_context,
+                    ConversionContext::IncanFunctionArg | ConversionContext::IncanFunctionArgInReturn
+                ) {
                     arg_exprs
                         .iter()
                         .map(|a| {
                             let emitted = self.emit_expr(a)?;
-                            let conv = determine_conversion(a, None, ConversionContext::IncanFunctionArg);
+                            let conv = determine_conversion(a, None, conversion_context);
                             Ok(conv.apply(emitted))
                         })
                         .collect::<Result<_, _>>()?
@@ -179,7 +193,7 @@ impl<'a> IrEmitter<'a> {
                         .iter()
                         .map(|a| {
                             let emitted = self.emit_expr(a)?;
-                            let conv = determine_conversion(a, None, ConversionContext::ExternalFunctionArg);
+                            let conv = determine_conversion(a, None, conversion_context);
                             Ok(conv.apply(emitted))
                         })
                         .collect::<Result<_, _>>()?
@@ -190,43 +204,44 @@ impl<'a> IrEmitter<'a> {
 
         // Regular method call
         let m = format_ident!("{}", method);
-        // Apply Incan-style argument conversions for method calls on Incan-owned types (structs/enums/traits).
+        // Apply Incan-style argument conversions for methods on nominal types emitted by this compilation unit.
         // This is important for `str` literals: we often emit `"x"` as `&'static str`, but many Incan-level method
         // signatures expect owned `String` in Rust.
         //
-        // For unknown/external types, keep the previous behavior to avoid accidental conversions for Rust APIs that
-        // truly want `&str`.
-        // For regular method calls, also check if the receiver is an external Rust type.
-        let is_external_receiver = matches!(
-            receiver.kind,
-            IrExprKind::Var {
-                ref_kind: VarRefKind::ExternalRustName,
-                ..
-            }
-        );
-        let apply_incan_arg_conversions =
-            !is_external_receiver && matches!(receiver.ty, IrType::Struct(_) | IrType::Enum(_) | IrType::Trait(_));
-        let arg_tokens: Vec<TokenStream> = if apply_incan_arg_conversions {
-            arg_exprs
-                .iter()
-                .map(|a| {
-                    let emitted = self.emit_expr(a)?;
-                    let conv = determine_conversion(a, None, ConversionContext::IncanFunctionArg);
-                    Ok(conv.apply(emitted))
-                })
-                .collect::<Result<_, _>>()?
-        } else {
-            // External types: apply ExternalFunctionArg conversions so that string literals get `.into()` (resolves to
-            // the correct target type via Rust's Into trait — e.g., Polars' PlSmallStr, sqlx identifiers, etc.)
-            arg_exprs
-                .iter()
-                .map(|a| {
-                    let emitted = self.emit_expr(a)?;
-                    let conv = determine_conversion(a, None, ConversionContext::ExternalFunctionArg);
-                    Ok(conv.apply(emitted))
-                })
-                .collect::<Result<_, _>>()?
+        // Do not key this off `IrType::Struct` alone: Rust interop types such as `HashMap` also lower to nominal IR
+        // types, but they should still use Rust call semantics rather than compiler-owned cloning/to_string policies.
+        let in_return = *self.in_return_context.borrow();
+        let receiver_ref_kind = match &receiver.kind {
+            IrExprKind::Var { ref_kind, .. } => Some(*ref_kind),
+            _ => None,
         };
+        let conversion_context = if receiver_ref_kind != Some(VarRefKind::ExternalRustName)
+            && self.is_incan_owned_nominal_receiver(&receiver.ty)
+        {
+            ConversionContext::IncanFunctionArg
+        } else if receiver_ref_kind == Some(VarRefKind::ExternalName) {
+            // Module-qualified calls like `widgets.make_widget(...)` are function namespace lookups, not external Rust
+            // methods. They should keep ordinary Incan/public-function conversions instead of Rust interop coercions.
+            if in_return {
+                ConversionContext::IncanFunctionArgInReturn
+            } else {
+                ConversionContext::IncanFunctionArg
+            }
+        } else if matches!(arg_policy, MethodCallArgPolicy::PreserveShape) {
+            // Lowering recorded that this ordinary Rust method call must keep borrow-sensitive lookup semantics, so do
+            // not apply function-style coercions such as `.to_string()` / `.into()`.
+            ConversionContext::MethodArg
+        } else {
+            ConversionContext::ExternalFunctionArg
+        };
+        let arg_tokens: Vec<TokenStream> = arg_exprs
+            .iter()
+            .map(|a| {
+                let emitted = self.emit_expr(a)?;
+                let conv = determine_conversion(a, None, conversion_context);
+                Ok(conv.apply(emitted))
+            })
+            .collect::<Result<_, _>>()?;
         Ok(quote! { #r.#m(#(#arg_tokens),*) })
     }
 
