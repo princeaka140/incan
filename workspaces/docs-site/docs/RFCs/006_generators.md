@@ -1,317 +1,192 @@
-# RFC 006: Python-Style Generators
+# RFC 006: Python-style generators
 
-**Status:** Planned  
-**Created:** 2024-12-10
+- **Status:** Draft
+- **Created:** 2024-12-10
+- **Author(s):** Danny Meijer (@dannymeijer)
+- **Related:** RFC 016 (loop and break value), RFC 019 (runner testing)
+- **Issue:** —
+- **RFC PR:** —
+- **Written against:** v0.1
+- **Shipped in:** —
 
 ## Summary
 
-Add Python-style generator functions to Incan, compiled to Rust 2024's `gen` blocks,
-enabling lazy iteration with familiar `yield` syntax.
+This RFC introduces Python-style generators to Incan in two connected forms: generator functions that use `yield` inside `def`, and generator expressions that produce lazy generator values inline. Both forms describe the same underlying language model: a resumable producer of `T` exposed as `Generator[T]`.
 
 ## Motivation
 
-Python developers expect generator functions for:
+Incan currently has eager collections and iterator-shaped loops, but it does not have a first-class way to express lazy, stateful iteration in the language surface itself. That hurts several common cases:
 
-1. **Lazy evaluation** - Process large/infinite sequences without loading all into memory
-2. **Streaming pipelines** - Chain transformations without intermediate allocations
-3. **Stateful iteration** - Encapsulate complex iteration logic elegantly
-4. **Familiarity** - `yield` in a function is a well-understood Python pattern
+- large or unbounded sequences that should not be materialized eagerly;
+- streaming transformations that would otherwise allocate intermediate lists;
+- recursive traversals where the natural shape is "produce one value, suspend, resume";
+- portability for authors coming from Python, where `yield` and generator expressions are familiar ways to express lazy iteration.
 
-With Rust 2024's `gen` blocks now stable, Incan can offer Python-style generators with zero-cost abstractions.
+The feature also fits Incan's backend well. Rust already has generator machinery, so Incan does not need to invent a bespoke runtime model just to support this control-flow shape.
 
-## Design
+## Goals
 
-### Basic Syntax
+- Add a first-class generator model based on `yield` and `Generator[T]`.
+- Support both generator functions and generator expressions as part of that model.
+- Make lazy iteration explicit in type signatures instead of inferring it from incidental usage.
+- Preserve ordinary `for`-loop ergonomics over generator results.
+- Distinguish generator `yield` clearly from fixture `yield`.
 
-A function becomes a generator when it:
+## Non-Goals
 
-1. Contains `yield` expressions
-2. Returns `Iterator[T]`
+- Async generators in this RFC.
+- Bidirectional coroutine features such as Python-style `send()`.
+- A wholesale redesign of comprehensions or iterator combinators beyond generator support itself.
+- Standardizing every possible `Generator` helper method in the initial draft.
+
+## Guide-level explanation (how users think about it)
+
+### Generator functions
 
 ```incan
-# Python-style generator function
-def count_up(start: int, end: int) -> Iterator[int]:
+def count_up(start: int, end: int) -> Generator[int]:
     mut i = start
     while i < end:
         yield i
         i += 1
 
-# Usage: lazy iteration
 for n in count_up(0, 1_000_000):
     if n > 100:
         break
     println(n)
 ```
 
-### Infinite Generators
+The function above does not build a list. Each `yield` produces one element for the surrounding iteration and then suspends the function until the next value is requested.
+
+### Generator expressions
 
 ```incan
-def fibonacci() -> Iterator[int]:
+squares = (x * x for x in range(10))
+
+for sq in squares:
+    println(sq)
+```
+
+Generator expressions are the expression form of the same idea: they produce a lazy `Generator[T]` instead of an eager list.
+
+### Infinite generators
+
+```incan
+def fibonacci() -> Generator[int]:
     mut a, b = 0, 1
     while true:
         yield a
         a, b = b, a + b
 
-# Take first 10 Fibonacci numbers
-let fibs = fibonacci().take(10).collect()
+fibs = fibonacci().take(10).collect()
 ```
 
-### Generators with Filtering
+This is the core value proposition: the generator can describe an unbounded stream, while the consumer decides how much to realize.
+
+### Recursive traversal
 
 ```incan
-def even_numbers() -> Iterator[int]:
-    mut n = 0
-    while true:
-        yield n
-        n += 2
-
-def primes() -> Iterator[int]:
-    mut n = 2
-    while true:
-        if is_prime(n):
-            yield n
-        n += 1
-```
-
-### Generator Expressions (Comprehension-like)
-
-```incan
-# Existing comprehension (eager, collects to List)
-squares = [x * x for x in range(10)]
-
-# Generator expression (lazy, returns Iterator)
-squares_lazy = (x * x for x in range(10))
-```
-
-## Distinction from Fixtures
-
-The `yield` keyword is already used for test fixtures (RFC 001). The distinction:
-
-| Context             | Return Type   | Behavior                        |
-| ------------------- | ------------- | ------------------------------- |
-| `@fixture` function | Any `T`       | Setup → yield value → teardown  |
-| Generator function  | `Iterator[T]` | Lazy iteration, multiple yields |
-
-```incan
-# FIXTURE: yield once for setup/teardown
-@fixture
-def database() -> Database:
-    db = Database.connect("test.db")
-    yield db        # Single yield: test runs here
-    db.close()      # Teardown
-
-# GENERATOR: yield multiple values lazily
-def read_lines(path: str) -> Iterator[str]:
-    let file = File.open(path)?
-    for line in file.lines():
-        yield line  # Multiple yields: lazy iteration
-```
-
-The compiler distinguishes by:
-
-- `@fixture` decorator → fixture semantics
-- `Iterator[T]` return type (no `@fixture`) → generator semantics
-
-## Compilation Strategy
-
-Incan generators compile to Rust 2024 `gen` blocks:
-
-**Incan:**
-
-```incan
-def count_up(start: int, end: int) -> Iterator[int]:
-    mut i = start
-    while i < end:
-        yield i
-        i += 1
-```
-
-**Generated Rust:**
-
-```rust
-fn count_up(start: i64, end: i64) -> impl Iterator<Item = i64> {
-    gen {
-        let mut i = start;
-        while i < end {
-            yield i;
-            i += 1;
-        }
-    }
-}
-```
-
-### Key Points
-
-1. **`gen` block** wraps the function body
-2. **`impl Iterator<Item = T>`** return type
-3. **State machine** generated automatically by rustc
-4. **Zero allocation** for the iterator itself
-
-## Iterator Methods
-
-Generators return standard iterators, so all iterator methods work:
-
-```incan
-def naturals() -> Iterator[int]:
-    mut n = 0
-    while true:
-        yield n
-        n += 1
-
-# Chaining works naturally
-result = (
-    naturals()
-    .filter((n) => (n % 2) == 0)  # filter even numbers
-    .map((n) => n * n)            # square the numbers
-    .take(5)
-    .collect()
-) # result = [0, 4, 16, 36, 64]
-```
-
-## Implementation Plan
-
-### Phase 1: Parser Changes
-
-1. Detect `yield` in function body
-2. Check return type is `Iterator[T]`
-3. Mark function as generator in AST
-
-```rust
-// AST addition
-pub struct FunctionDecl {
-    // ... existing fields ...
-    pub is_generator: bool,  // NEW: detected from yield + Iterator return
-}
-```
-
-### Phase 2: Type Checker
-
-1. Verify `yield` expressions match `Iterator[T]` element type
-2. Error if `yield` used without `Iterator` return type (unless `@fixture`)
-3. Error if `Iterator` return type without `yield`
-
-### Phase 3: Codegen
-
-1. Wrap generator function bodies in `gen { }`
-2. Transform `yield expr` to Rust `yield expr`
-3. Return type → `impl Iterator<Item = T>`
-
-### Phase 4: Generator Expressions
-
-Lower `(expr for x in iter)` to anonymous generator:
-
-```incan
-squares = (x * x for x in range(10))
-```
-
-Becomes:
-
-```rust
-squares = gen {
-    for x in (0..10) {
-        yield x * x;
-    }
-};
-```
-
-## Examples
-
-### File Processing
-
-```incan
-def read_csv_rows(path: str) -> Iterator[List[str]]:
-    """Lazily read CSV rows without loading entire file."""
-    file = File.open(path)?
-    for line in file.lines():
-        yield line.split(",")
-
-# Process million-row CSV with constant memory
-for row in read_csv_rows("huge.csv"):
-    process(row)
-```
-
-### Pagination
-
-```incan
-def paginate(items: List[T], page_size: int) -> Iterator[List[T]]:
-    """Yield pages of items."""
-    mut start = 0
-    while start < len(items):
-        let end = min(start + page_size, len(items))
-        yield items[start..end]
-        start = end
-
-for page in paginate(users, 10):
-    display_page(page)
-```
-
-### Tree Traversal
-
-```incan
-def walk_tree(node: Node) -> Iterator[Node]:
-    """Depth-first traversal."""
+def walk_tree(node: Node) -> Generator[Node]:
     yield node
     for child in node.children:
         for descendant in walk_tree(child):
             yield descendant
 ```
 
-## Alternatives Considered
+Generators are useful when the control flow is naturally incremental instead of collection-oriented.
 
-### 1. Explicit `gen` Keyword
+## Reference-level explanation (precise rules)
 
-```incan
-def fibonacci() -> Iterator[int]:
-    return gen:
-        mut a, b = 0, 1
-        while true:
-            yield a
-            a, b = b, a + b
-```
+### Generator functions reference
 
-**Rejected**: More verbose, less Pythonic. The `Iterator[T]` return type already signals generator intent.
+- A function is a generator function when its body contains `yield` and its declared return type is `Generator[T]`.
+- `yield expr` produces one element of type `T` for the surrounding generator.
+- `yield` must not appear in ordinary functions, except where another RFC explicitly gives `yield` special meaning for a distinct construct such as fixtures.
+- A generator function may use `return` to terminate iteration early, but `return value` is not part of this RFC.
 
-### 2. Separate `generator` Keyword
+### Generator expressions reference
 
-```incan
-generator fibonacci() -> int:  # Note: no Iterator wrapper
-    mut a, b = 0, 1
-    while true:
-        yield a
-        a, b = b, a + b
-```
+- A generator expression has the form `(expr for binding in iterable)` and yields a `Generator[T]`, where `T` is the type of `expr`.
+- The iterable source is consumed lazily as the resulting generator is advanced.
+- A generator expression is semantically equivalent to an anonymous generator that iterates the source and yields `expr` for each bound element.
+- Generator expressions are lazy; the list-comprehension surface remains the eager collection form.
 
-**Rejected**: Deviates from Python, which uses regular `def` for generators.
+### Typing
 
-### 3. No Generators (Comprehensions Only)
+- Every yielded expression must type-check against the element type `T` in `Generator[T]`.
+- Declaring `Generator[T]` without any reachable `yield` is a compile-time error.
+- Using `yield` without a `Generator[T]` return type is a compile-time error unless another construct has already claimed `yield` semantics for that context.
 
-Rely on list comprehensions and explicit iterator construction.
+### Consumption
 
-**Rejected**: Forces eager evaluation, no good story for infinite sequences.
+- `for` loops must accept generator values anywhere they accept iterable values.
+- Generator values may expose chainable helper methods such as `.map()`, `.filter()`, `.take()`, and `.collect()`, but this RFC does not yet freeze the full helper surface.
+- Exhausting a generator ends iteration normally.
 
-## Open Questions
+## Design details
 
-1. **Send/receive**: Should generators support `yield` receiving values (like Python's `gen.send()`)?
-    Likely deferred — Rust's `gen` blocks don't support this yet.
+### One generator model, two surfaces
 
-2. **Async generators**: `async def foo() -> AsyncIterator[T]` with `yield`.
-    Requires `async gen` blocks (not yet in Rust). Defer to future RFC.
+Generator functions and generator expressions are not separate features stitched together for convenience. They are two surfaces over the same language model:
 
-3. **Early return**: What happens with `return` inside a generator? Propose: terminates iteration (like Python).
+- generator functions are statement-oriented and better for named, reusable, stateful producers;
+- generator expressions are expression-oriented and better for inline lazy transforms.
 
-## Checklist
+This RFC treats both as first-class parts of Python-style generator support rather than as rollout stages.
 
-- [ ] Parser: detect `yield` + `Iterator[T]` return type → mark as generator
-- [ ] Type checker: validate yield types match Iterator element type
-- [ ] Codegen: wrap body in `gen { }`, emit `impl Iterator<Item = T>`
-- [ ] Generator expressions: `(expr for x in iter)` syntax
-- [ ] Iterator methods work on generators (`.map()`, `.filter()`, `.take()`, etc.)
-- [ ] Error messages for common mistakes (yield without Iterator, etc.)
-- [ ] Examples and documentation
-- [ ] Integration with existing comprehensions
+### Distinction from fixtures
 
-## References
+The language already uses `yield` in fixture-oriented testing flows. That overlap is tolerable only if the surrounding declaration makes the meaning unambiguous:
 
-- [Python Generators](https://docs.python.org/3/howto/functional.html#generators)
-- [Rust RFC 3513: gen blocks](https://rust-lang.github.io/rfcs/3513-gen-blocks.html)
-- [Rust 1.85 gen blocks stabilization](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0.html)
+- fixture declarations keep fixture lifecycle semantics;
+- ordinary functions returning `Generator[T]` use lazy iteration semantics.
+
+This RFC therefore treats the declaration context, not the token alone, as the source of truth for `yield` meaning.
+
+### Lowering model
+
+The intended implementation strategy is to lower generator functions and generator expressions through Rust generator machinery such as `gen` blocks or an equivalent compiler-owned state-machine transformation. That lowering choice is not the language definition; the language contract is only that generators behave as lazy, resumable producers of `T`.
+
+### Interaction with existing features
+
+- `for` loops consume generators the same way they consume other iterable sources.
+- Recursive generators are valid as long as the yielded element type remains consistent.
+- Generator expressions are the lazy counterpart to eager list-comprehension syntax rather than a separate collection feature.
+
+### Compatibility / migration
+
+The feature is additive. Existing functions, loops, and comprehensions keep their meaning.
+
+## Alternatives considered
+
+1. **Explicit `gen` keyword**
+   - Clear, but more Rust-shaped than Incan needs. Requiring `Generator[T]` plus `yield` already communicates intent.
+
+2. **Dedicated `generator` declaration form**
+   - Avoids overloading ordinary `def`, but splits the function surface for a feature that is still "a function producing values over time."
+
+3. **Functions only, expressions later**
+   - Not actually more principled. It would make the RFC weaker while still aiming at the same north-star generator model.
+
+## Drawbacks
+
+- `yield` now carries two meanings in the language, so diagnostics must be explicit.
+- Generators introduce suspension semantics that users must learn alongside ordinary function control flow.
+- Generator expressions add grammar and precedence surface that the parser and formatter must handle carefully.
+
+## Layers affected
+
+- **Parser**: must accept `yield` in generator function bodies and parse generator-expression syntax.
+- **Typechecker**: must enforce that yielded expressions match `Generator[T]` and that generator declarations are internally consistent.
+- **Lowering / IR emission**: must preserve suspension points and lazy iteration semantics for both named and anonymous generator forms.
+- **Stdlib / surface vocabulary**: must define the `Generator` type and any stable helper methods promised by the language.
+- **Formatter / tooling**: should format multi-line generators predictably and explain generator-specific diagnostics clearly.
+
+## Unresolved questions
+
+1. Should generator expressions support the full comprehension clause surface immediately, including multiple `for` clauses and trailing `if` filters, or should this RFC only normatively require the single-`for` core form?
+2. What is the minimum `Generator` helper surface that Incan wants to standardize rather than inheriting opportunistically from backend details?
+3. Should `return value` inside a generator be rejected outright, or reserved for a future coroutine-oriented extension?
+4. How much of the fixture/generator `yield` distinction should be surfaced in linting or style guidance so that mixed mental models do not leak into user code?
+
+<!-- Rename this section to "Design Decisions" once all questions have been resolved. An RFC cannot move from Draft to Planned until no unresolved questions remain. -->
