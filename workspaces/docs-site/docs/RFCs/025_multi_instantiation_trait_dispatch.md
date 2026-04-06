@@ -6,7 +6,8 @@
 - **RFC PR**: —
 - **Created**: 2026-02-17
 - **Related**:
-    - [RFC 012] (JsonValue & enum methods)
+    - RFC 050 (enum methods & trait adoption)
+    - RFC 051 (`JsonValue`)
     - [RFC 023] (compilable stdlib & rust.module binding)
     - [RFC 024] (extensible derive protocol)
 
@@ -102,7 +103,7 @@ value["users"][0]["name"].as_str()
 
 Each `[]` resolves independently based on its argument type.
 
-> Note: see [RFC 012] for the full `JsonValue` type definition and indexing support.
+> Note: RFC 051 covers the draft `JsonValue` surface, while RFC 050 covers the enum-language features that make an enum-backed design possible.
 
 ### Works for any generic trait
 
@@ -410,7 +411,8 @@ doesn't scale — every type with the same need would require its own compiler s
 
 ## References
 
-- [RFC 012] — `JsonValue` Type, Enum Methods, and Enum Trait Adoption
+- RFC 050 — Enum Methods and Enum Trait Adoption
+- RFC 051 — `JsonValue` for `std.json`
 - [RFC 023] — Compilable Stdlib & Rust Module Binding
 - [RFC 024] — Extensible Derive Protocol
 - Rust trait system — multiple `impl Trait<T> for Type` blocks
