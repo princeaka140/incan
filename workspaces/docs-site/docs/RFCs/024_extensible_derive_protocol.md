@@ -6,7 +6,8 @@
 - RFC PR: —
 - Created: 2026-02-17
 - Related:
-    - [RFC 012] (JsonValue & enum methods)
+    - RFC 050 (enum methods & trait adoption)
+    - RFC 051 (`JsonValue`)
     - [RFC 021] (field metadata & aliases)
     - [RFC 023] (compilable stdlib & rust.module binding)
     - [RFC 025] (multi-instantiation trait dispatch)
@@ -78,7 +79,7 @@ def export[T with json.Serialize](data: T) -> str:
 
 - **Implementing specific format libraries.** This RFC uses YAML, Protobuf, Avro, SQL DDL, and others as illustrative
   examples of what the protocol *enables*. It does not propose adding those libraries to the stdlib. Each format would
-  be introduced by its own RFC or feature issue (e.g., [RFC 012] for `JsonValue`).
+  be introduced by its own RFC or feature issue (for example RFC 051 for `JsonValue`).
 - **Migrating built-in derives** (`Eq`, `Clone`, `Debug`, etc.) to the `__derives__` protocol. These remain compiler
   intrinsics handled by the `DeriveId` registry.
   See [Interaction with existing features](#interaction-with-existing-features) for details.
@@ -654,7 +655,8 @@ The following questions were considered during design and are recorded here for 
 ## References
 
 - [RFC 005] — Rust Interop
-- [RFC 012] — `JsonValue` Type and Enum Methods
+- RFC 050 — Enum Methods and Enum Trait Adoption
+- RFC 051 — `JsonValue` for `std.json`
 - [RFC 025] — Multi-Instantiation Trait Dispatch
 - [RFC 021] — Model field metadata and schema-safe aliases
 - [RFC 023] — Compilable Stdlib & Rust Module Binding
