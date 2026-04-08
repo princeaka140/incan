@@ -1,6 +1,6 @@
 # RFC 052: Module Static Storage
 
-- **Status:** In Progress
+- **Status:** Implemented
 - **Created:** 2026-04-07
 - **Author(s):** Danny Meijer (@dannymeijer)
 - **Related:**
@@ -9,9 +9,9 @@
     - RFC 023 (compilable stdlib and Rust module binding)
     - RFC 033 (ctx keyword)
 - **Issue:** https://github.com/dannys-code-corner/incan/issues/242
-- **RFC PR:** —
+- **RFC PR:** https://github.com/dannys-code-corner/incan/pull/243
 - **Written against:** v0.2
-- **Shipped in:** —
+- **Shipped in:** v0.2
 
 ## Summary
 
@@ -260,7 +260,7 @@ This RFC does not require one specific backend storage strategy. It only require
 - Extend library export manifests and `pub::` import resolution so `pub static` shares the same storage cell across modules.
 - Cover the feature with parser, typechecker, codegen snapshot, and end-to-end runtime tests, then update language docs and release notes.
 
-## Progress Checklist
+## Implementation log
 
 - [x] Parser/AST/formatter support for `static` / `pub static`
 - [x] Typechecker support for module-scope placement, required annotation/initializer, declaration-order rules, cycle rejection, and imported-static rebinding diagnostics
@@ -269,7 +269,7 @@ This RFC does not require one specific backend storage strategy. It only require
 - [x] Library manifest / `pub::` support for exported statics
 - [x] Language docs and release notes updated
 - [x] Targeted parser, typechecker, codegen snapshot, and runtime tests added
-- [ ] Full repository verification gate (`mkdocs build --strict`, `make fmt`, `make pre-commit-full`, `make smoke-test`)
+- [x] Full repository verification gate (`mkdocs build --strict`, `make fmt`, `make pre-commit-full`, `make smoke-test`)
 
 ## Design Decisions
 
