@@ -165,7 +165,7 @@ impl Formatter {
     fn decl_group(decl: &Declaration) -> DeclGroup {
         match decl {
             Declaration::Import(_) => DeclGroup::Import,
-            Declaration::Const(_) => DeclGroup::Const,
+            Declaration::Const(_) | Declaration::Static(_) => DeclGroup::Const,
             Declaration::Docstring(_) => DeclGroup::Docstring,
             Declaration::Model(_)
             | Declaration::Class(_)

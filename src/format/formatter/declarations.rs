@@ -10,6 +10,7 @@ impl Formatter {
         match decl {
             Declaration::Import(import) => self.format_import(import),
             Declaration::Const(konst) => self.format_const(konst),
+            Declaration::Static(static_decl) => self.format_static(static_decl),
             Declaration::Model(model) => self.format_model(model),
             Declaration::Class(class) => self.format_class(class),
             Declaration::Trait(tr) => self.format_trait(tr),
@@ -31,6 +32,17 @@ impl Formatter {
         }
         self.writer.write(" = ");
         self.format_expr(&konst.value.node);
+        self.writer.newline();
+    }
+
+    fn format_static(&mut self, static_decl: &StaticDecl) {
+        self.write_visibility(static_decl.visibility);
+        self.writer.write("static ");
+        self.writer.write(&static_decl.name);
+        self.writer.write(": ");
+        self.format_type(&static_decl.ty.node);
+        self.writer.write(" = ");
+        self.format_expr(&static_decl.value.node);
         self.writer.newline();
     }
 
