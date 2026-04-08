@@ -99,8 +99,12 @@ pub enum IrStmtKind {
 pub enum AssignTarget {
     /// Simple variable
     Var(String),
+    /// Local binding wrapper created from a module static.
+    StaticBinding(String),
+    /// Direct assignment into a compiler-managed module static storage cell.
+    Static(String),
     /// Field access (obj.field)
     Field { object: Box<IrExpr>, field: String },
-    /// Index access (list[i])
+    /// Index access (`list[i]`)
     Index { object: Box<IrExpr>, index: Box<IrExpr> },
 }

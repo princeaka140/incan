@@ -1,6 +1,6 @@
 //! Method lowering: model methods, class methods, trait impl methods, and general method lowering.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use super::super::super::decl::{FunctionParam, IrFunction, IrImpl, Visibility};
 use super::super::super::types::IrType;
@@ -197,7 +197,7 @@ impl AstLowering {
         m: &ast::MethodDecl,
         type_param_names: Option<&std::collections::HashSet<&str>>,
     ) -> Result<IrFunction, LoweringError> {
-        self.scopes.push(HashMap::new());
+        self.push_scope();
         let mut hidden_type_params = Vec::new();
         let mut hidden_counter = 0usize;
 
@@ -257,7 +257,7 @@ impl AstLowering {
         let rust_attributes = self.extract_passthrough_attributes(&m.decorators);
         let mut all_type_params = hidden_type_params;
 
-        self.scopes.pop();
+        self.pop_scope();
 
         Ok(IrFunction {
             name: m.name.clone(),
@@ -304,7 +304,7 @@ impl AstLowering {
         m: &ast::MethodDecl,
         type_param_names: Option<&std::collections::HashSet<&str>>,
     ) -> Result<IrFunction, LoweringError> {
-        self.scopes.push(HashMap::new());
+        self.push_scope();
         let mut hidden_type_params = Vec::new();
         let mut hidden_counter = 0usize;
 
@@ -325,9 +325,7 @@ impl AstLowering {
                 default: None,
             });
             // Add self to scope
-            if let Some(scope) = self.scopes.last_mut() {
-                scope.insert("self".to_string(), IrType::Unknown);
-            }
+            self.define_local_binding("self".to_string(), IrType::Unknown, false);
         }
 
         // Add regular parameters
@@ -347,9 +345,7 @@ impl AstLowering {
                 } else {
                     base_ty.clone()
                 };
-                if let Some(scope) = self.scopes.last_mut() {
-                    scope.insert(p.node.name.clone(), ty.clone());
-                }
+                self.define_local_binding(p.node.name.clone(), ty.clone(), false);
                 // Track mutable parameters
                 if p.node.is_mut {
                     self.mutable_vars.insert(p.node.name.clone(), true);
@@ -379,7 +375,7 @@ impl AstLowering {
             // Abstract method with no body
             vec![]
         };
-        self.scopes.pop();
+        self.pop_scope();
 
         // Incan methods are part of the type's public surface. Trait-impl methods are handled separately in
         // `lower_impl_method_for_trait`, so inherent methods can be emitted as public here.

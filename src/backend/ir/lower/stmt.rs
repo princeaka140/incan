@@ -15,6 +15,37 @@ use crate::frontend::ast::{self, Spanned};
 use incan_semantics_core::SurfaceStmtLoweringAction;
 
 impl AstLowering {
+    fn resolve_named_assign_target(&self, name: &str) -> AssignTarget {
+        let direct_static = self
+            .type_info
+            .as_ref()
+            .and_then(|info| info.static_binding(name))
+            .is_some();
+
+        for (scope_idx, scope) in self.scopes.iter().enumerate().rev() {
+            if !scope.contains_key(name) {
+                continue;
+            }
+            if self.is_static_binding(name) {
+                return AssignTarget::StaticBinding(name.to_string());
+            }
+            if scope_idx == 0 && direct_static {
+                return AssignTarget::Static(name.to_string());
+            }
+            return AssignTarget::Var(name.to_string());
+        }
+
+        if direct_static {
+            AssignTarget::Static(name.to_string())
+        } else {
+            AssignTarget::Var(name.to_string())
+        }
+    }
+
+    fn make_static_binding_expr(&self, name: String, ty: IrType) -> TypedExpr {
+        TypedExpr::new(IrExprKind::StaticBinding { name }, ty)
+    }
+
     /// Lower a list of statements to IR.
     ///
     /// # Parameters
@@ -76,18 +107,23 @@ impl AstLowering {
             ast::Statement::Expr(e) => IrStmtKind::Expr(self.lower_expr_spanned(e)?),
 
             ast::Statement::Assignment(a) => {
-                let value = self.lower_expr_spanned(&a.value)?;
+                let rhs_direct_static = self.is_direct_static_ident(&a.value);
+                let lowered_value = self.lower_expr_spanned(&a.value)?;
                 let ty =
                     a.ty.as_ref()
                         .map(|t| self.lower_type(&t.node))
-                        .unwrap_or_else(|| value.ty.clone());
+                        .unwrap_or_else(|| lowered_value.ty.clone());
 
                 match a.binding {
                     ast::BindingKind::Reassign => {
-                        return Ok(IrStmt::new(IrStmtKind::Assign {
-                            target: AssignTarget::Var(a.name.clone()),
-                            value,
-                        }));
+                        let target = self.resolve_named_assign_target(&a.name);
+                        let value = match (&target, rhs_direct_static.clone()) {
+                            (AssignTarget::StaticBinding(_), Some(static_name)) => {
+                                self.make_static_binding_expr(static_name, ty.clone())
+                            }
+                            _ => lowered_value.clone(),
+                        };
+                        return Ok(IrStmt::new(IrStmtKind::Assign { target, value }));
                     }
                     ast::BindingKind::Inferred => {
                         // Check if the variable exists in ANY scope (innermost to outermost).
@@ -95,12 +131,22 @@ impl AstLowering {
                         let var_exists_in_scope = self.scopes.iter().rev().any(|s| s.contains_key(&a.name));
 
                         if var_exists_in_scope {
+                            let target = self.resolve_named_assign_target(&a.name);
+                            if matches!(target, AssignTarget::Static(_)) {
+                                return Ok(IrStmt::new(IrStmtKind::Assign {
+                                    target,
+                                    value: lowered_value.clone(),
+                                }));
+                            }
                             let is_mut = self.mutable_vars.get(&a.name).copied().unwrap_or(false);
                             if is_mut {
-                                return Ok(IrStmt::new(IrStmtKind::Assign {
-                                    target: AssignTarget::Var(a.name.clone()),
-                                    value,
-                                }));
+                                let value = match (&target, rhs_direct_static.clone()) {
+                                    (AssignTarget::StaticBinding(_), Some(static_name)) => {
+                                        self.make_static_binding_expr(static_name, ty.clone())
+                                    }
+                                    _ => lowered_value.clone(),
+                                };
+                                return Ok(IrStmt::new(IrStmtKind::Assign { target, value }));
                             } else {
                                 return Err(LoweringError {
                                     message: format!("Cannot reassign immutable variable '{}'", a.name),
@@ -108,10 +154,17 @@ impl AstLowering {
                                 });
                             }
                         }
-                        // Otherwise, create a new immutable binding in the current scope.
-                        if let Some(scope) = self.scopes.last_mut() {
-                            scope.insert(a.name.clone(), ty.clone());
+                        if rhs_direct_static.is_some() {
+                            self.define_local_binding(a.name.clone(), ty.clone(), true);
+                        } else {
+                            self.define_local_binding(a.name.clone(), ty.clone(), false);
                         }
+                        let value = if let Some(static_name) = rhs_direct_static.clone() {
+                            self.make_static_binding_expr(static_name, ty.clone())
+                        } else {
+                            lowered_value.clone()
+                        };
+                        // Otherwise, create a new immutable binding in the current scope.
                         IrStmtKind::Let {
                             name: a.name.clone(),
                             ty,
@@ -122,9 +175,12 @@ impl AstLowering {
                     ast::BindingKind::Mutable => {
                         // New mutable binding
                         self.mutable_vars.insert(a.name.clone(), true);
-                        if let Some(scope) = self.scopes.last_mut() {
-                            scope.insert(a.name.clone(), ty.clone());
-                        }
+                        self.define_local_binding(a.name.clone(), ty.clone(), rhs_direct_static.is_some());
+                        let value = if let Some(static_name) = rhs_direct_static.clone() {
+                            self.make_static_binding_expr(static_name, ty.clone())
+                        } else {
+                            lowered_value.clone()
+                        };
                         IrStmtKind::Let {
                             name: a.name.clone(),
                             ty,
@@ -134,9 +190,12 @@ impl AstLowering {
                     }
                     ast::BindingKind::Let => {
                         // New immutable binding
-                        if let Some(scope) = self.scopes.last_mut() {
-                            scope.insert(a.name.clone(), ty.clone());
-                        }
+                        self.define_local_binding(a.name.clone(), ty.clone(), rhs_direct_static.is_some());
+                        let value = if let Some(static_name) = rhs_direct_static.clone() {
+                            self.make_static_binding_expr(static_name, ty.clone())
+                        } else {
+                            lowered_value
+                        };
                         IrStmtKind::Let {
                             name: a.name.clone(),
                             ty,
@@ -175,18 +234,18 @@ impl AstLowering {
                         .else_body
                         .as_ref()
                         .map(|b| {
-                            self.scopes.push(HashMap::new());
+                            self.push_scope();
                             let result = self.lower_statements(b);
-                            self.scopes.pop();
+                            self.pop_scope();
                             result
                         })
                         .transpose()?;
 
                     // Build elif chain from end to start.
                     for (elif_cond, elif_body) in i.elif_branches.iter().rev() {
-                        self.scopes.push(HashMap::new());
+                        self.push_scope();
                         let elif_then = self.lower_statements(elif_body)?;
-                        self.scopes.pop();
+                        self.pop_scope();
                         let elif_stmt = IrStmtKind::If {
                             condition: self.lower_expr_spanned(elif_cond)?,
                             then_branch: elif_then,
@@ -196,9 +255,9 @@ impl AstLowering {
                     }
 
                     let condition = self.lower_expr_spanned(&i.condition)?;
-                    self.scopes.push(HashMap::new());
+                    self.push_scope();
                     let then_branch = self.lower_statements(&i.then_body)?;
-                    self.scopes.pop();
+                    self.pop_scope();
 
                     Ok(IrStmtKind::If {
                         condition,
@@ -211,7 +270,7 @@ impl AstLowering {
 
             ast::Statement::While(w) => {
                 // Push a new scope for the while-loop body
-                self.scopes.push(HashMap::new());
+                self.push_scope();
                 self.non_linear_context_depth += 1;
                 let loop_parts = (|| -> Result<(TypedExpr, Vec<IrStmt>), LoweringError> {
                     let condition = self.lower_expr_spanned(&w.condition)?;
@@ -219,7 +278,7 @@ impl AstLowering {
                     Ok((condition, body))
                 })();
                 self.non_linear_context_depth -= 1;
-                self.scopes.pop();
+                self.pop_scope();
                 let (condition, body) = loop_parts?;
                 IrStmtKind::While {
                     label: None,
@@ -233,7 +292,7 @@ impl AstLowering {
                 let iterable = self.lower_expr_spanned(&f.iter)?;
 
                 // Push a new scope for the for-loop body
-                self.scopes.push(HashMap::new());
+                self.push_scope();
 
                 // Infer loop variable type from iterable and add to scope
                 let loop_var_ty = match &iterable.ty {
@@ -242,15 +301,13 @@ impl AstLowering {
                     IrType::String => IrType::String,
                     _ => IrType::Unknown,
                 };
-                if let Some(scope) = self.scopes.last_mut() {
-                    scope.insert(f.var.clone(), loop_var_ty);
-                }
+                self.define_local_binding(f.var.clone(), loop_var_ty, false);
 
                 self.non_linear_context_depth += 1;
                 let body_result = self.lower_statements(&f.body);
                 self.non_linear_context_depth -= 1;
                 let body = body_result?;
-                self.scopes.pop();
+                self.pop_scope();
 
                 IrStmtKind::For {
                     label: None,
@@ -277,15 +334,30 @@ impl AstLowering {
 
             ast::Statement::CompoundAssignment(ca) => {
                 // Desugar `x <op>= y` into `x = x <op> y`
+                let assign_target = self.resolve_named_assign_target(&ca.name);
                 let lhs_ty = self.lookup_var(&ca.name);
-                let lhs_expr = TypedExpr::new(
-                    IrExprKind::Var {
-                        name: ca.name.clone(),
-                        access: VarAccess::Move,
-                        ref_kind: VarRefKind::Value,
-                    },
-                    lhs_ty.clone(),
-                );
+                let lhs_expr = match &assign_target {
+                    AssignTarget::Static(_) => {
+                        TypedExpr::new(IrExprKind::StaticRead { name: ca.name.clone() }, lhs_ty.clone())
+                    }
+                    AssignTarget::StaticBinding(_) => TypedExpr::new(
+                        IrExprKind::Var {
+                            name: ca.name.clone(),
+                            access: VarAccess::Move,
+                            ref_kind: VarRefKind::StaticBinding,
+                        },
+                        lhs_ty.clone(),
+                    ),
+                    AssignTarget::Var(_) => TypedExpr::new(
+                        IrExprKind::Var {
+                            name: ca.name.clone(),
+                            access: VarAccess::Move,
+                            ref_kind: VarRefKind::Value,
+                        },
+                        lhs_ty.clone(),
+                    ),
+                    AssignTarget::Field { .. } | AssignTarget::Index { .. } => unreachable!(),
+                };
                 let rhs_expr = self.lower_expr_spanned(&ca.value)?;
 
                 // Determine result type using the same policy as binary ops.
@@ -309,7 +381,7 @@ impl AstLowering {
                 );
 
                 IrStmtKind::Assign {
-                    target: AssignTarget::Var(ca.name.clone()),
+                    target: assign_target,
                     value: binop_expr,
                 }
             }
@@ -322,9 +394,7 @@ impl AstLowering {
                     _ => Mutability::Immutable,
                 };
 
-                if let Some(scope) = self.scopes.last_mut() {
-                    scope.insert(temp_name.clone(), value.ty.clone());
-                }
+                self.define_local_binding(temp_name.clone(), value.ty.clone(), false);
 
                 let mut stmts = vec![IrStmt::new(IrStmtKind::Let {
                     name: temp_name.clone(),
@@ -349,9 +419,7 @@ impl AstLowering {
                         IrType::Unknown,
                     );
 
-                    if let Some(scope) = self.scopes.last_mut() {
-                        scope.insert(name.clone(), IrType::Unknown);
-                    }
+                    self.define_local_binding(name.clone(), IrType::Unknown, false);
                     if matches!(mutability, Mutability::Mutable) {
                         self.mutable_vars.insert(name.clone(), true);
                     }
@@ -400,9 +468,7 @@ impl AstLowering {
                 };
 
                 // Record the last target in scope
-                if let Some(scope) = self.scopes.last_mut() {
-                    scope.insert(last_target.clone(), ty.clone());
-                }
+                self.define_local_binding(last_target.clone(), ty.clone(), false);
 
                 // Create the first assignment statement
                 let mut stmts = vec![IrStmt::new(IrStmtKind::Let {
@@ -417,9 +483,7 @@ impl AstLowering {
                     let target = &ca.targets[i];
                     let source = &ca.targets[i + 1];
 
-                    if let Some(scope) = self.scopes.last_mut() {
-                        scope.insert(target.clone(), ty.clone());
-                    }
+                    self.define_local_binding(target.clone(), ty.clone(), false);
 
                     let source_expr = TypedExpr::new(
                         IrExprKind::Var {

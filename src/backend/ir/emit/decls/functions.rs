@@ -66,6 +66,7 @@ impl<'a> IrEmitter<'a> {
         } else {
             quote! {}
         };
+        let static_init_stmt = self.emit_module_static_init_call();
 
         let zen_stmt = if is_main && self.emit_zen_in_main {
             quote! { println!(#ZEN_TEXT); }
@@ -82,6 +83,7 @@ impl<'a> IrEmitter<'a> {
             return Ok(quote! {
                 #(#rust_attrs)*
                 #vis fn #name #generics (#(#params),*) {
+                    #static_init_stmt
                     #zen_stmt
                     if let Err(error) = incan_stdlib::r#async::runtime::block_on(async move {
                         #(#body_stmts)*
@@ -98,6 +100,7 @@ impl<'a> IrEmitter<'a> {
             Ok(quote! {
                 #(#rust_attrs)*
                 #vis #async_kw fn #name #generics (#(#params),*) {
+                    #static_init_stmt
                     #zen_stmt
                     #(#body_stmts)*
                 }
@@ -107,6 +110,7 @@ impl<'a> IrEmitter<'a> {
             Ok(quote! {
                 #(#rust_attrs)*
                 #vis #async_kw fn #name #generics (#(#params),*) -> #ret_ty {
+                    #static_init_stmt
                     #(#body_stmts)*
                 }
             })
@@ -171,6 +175,7 @@ impl<'a> IrEmitter<'a> {
         } else {
             quote! {}
         };
+        let static_init_stmt = self.emit_module_static_init_call();
 
         // Proc-macro crates expose macros, not callable Rust functions. Keep decorator marker declarations compilable
         // by emitting a panic stub instead of a delegation call.
@@ -225,6 +230,7 @@ impl<'a> IrEmitter<'a> {
         if ret_ty_is_unit {
             Ok(quote! {
                 #vis #async_kw fn #name #generics (#(#params),*) {
+                    #static_init_stmt
                     #call_path #turbofish (#(#args),*) #await_kw
                 }
             })
@@ -232,6 +238,7 @@ impl<'a> IrEmitter<'a> {
             let ret_ty = self.emit_type(&func.return_type);
             Ok(quote! {
                 #vis #async_kw fn #name #generics (#(#params),*) -> #ret_ty {
+                    #static_init_stmt
                     #call_path #turbofish (#(#args),*) #await_kw
                 }
             })
@@ -292,6 +299,7 @@ impl<'a> IrEmitter<'a> {
         } else {
             quote! {}
         };
+        let static_init_stmt = self.emit_module_static_init_call();
 
         *self.current_function_return_type.borrow_mut() = Some(func.return_type.clone());
         let body_stmts: Vec<TokenStream> = func.body.iter().map(|s| self.emit_stmt(s)).collect::<Result<_, _>>()?;
@@ -301,6 +309,7 @@ impl<'a> IrEmitter<'a> {
         Ok(quote! {
             #(#rust_attrs)*
             #vis #async_kw fn #name #generics (#(#params),*) #ret {
+                #static_init_stmt
                 #(#body_stmts)*
             }
         })
@@ -379,6 +388,7 @@ impl<'a> IrEmitter<'a> {
         } else {
             quote! {}
         };
+        let static_init_stmt = self.emit_module_static_init_call();
         let await_kw = if func.is_async {
             quote! { .await }
         } else {
@@ -405,6 +415,7 @@ impl<'a> IrEmitter<'a> {
         if ret_ty_is_unit {
             Ok(quote! {
                 #vis #async_kw fn #name #generics (#(#params),*) {
+                    #static_init_stmt
                     #call_path #turbofish (#(#args),*) #await_kw
                 }
             })
@@ -412,6 +423,7 @@ impl<'a> IrEmitter<'a> {
             let ret_ty = self.emit_type(&func.return_type);
             Ok(quote! {
                 #vis #async_kw fn #name #generics (#(#params),*) -> #ret_ty {
+                    #static_init_stmt
                     #call_path #turbofish (#(#args),*) #await_kw
                 }
             })

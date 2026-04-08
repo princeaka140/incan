@@ -207,7 +207,7 @@ pub enum Conversion {
     MutBorrow,
     /// Clone with .clone()
     Clone,
-    /// Convert Vec<&str> to Vec<String>
+    /// Convert `Vec<&str>` to `Vec<String>`.
     VecStringConversion,
 }
 

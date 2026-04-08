@@ -73,6 +73,19 @@ impl AstLowering {
                     value,
                 }
             }
+            ast::Declaration::Static(s) => {
+                let value = self.lower_expr_spanned(&s.value)?;
+                let visibility = match s.visibility {
+                    ast::Visibility::Public => Visibility::Public,
+                    ast::Visibility::Private => Visibility::Private,
+                };
+                IrDeclKind::Static {
+                    visibility,
+                    name: s.name.clone(),
+                    ty: self.lower_type(&s.ty.node),
+                    value,
+                }
+            }
             ast::Declaration::Model(m) => {
                 let struct_ir = self.lower_model(m)?;
                 // Register struct name for constructor detection

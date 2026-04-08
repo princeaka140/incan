@@ -13,19 +13,19 @@ impl AstLowering {
         &mut self,
         comp: &ast::ListComp,
     ) -> Result<(IrExprKind, IrType), LoweringError> {
-        let iter_expr = self.lower_expr(&comp.iter.node)?;
+        let iter_expr = self.lower_expr_spanned(&comp.iter)?;
         let var_name = comp.var.clone();
 
         // Build the filter predicate if present
         self.non_linear_context_depth += 1;
         let filter_tokens_result: Result<Option<Box<TypedExpr>>, LoweringError> = if let Some(filter) = &comp.filter {
-            Ok(Some(Box::new(self.lower_expr(&filter.node)?)))
+            Ok(Some(Box::new(self.lower_expr_spanned(filter)?)))
         } else {
             Ok(None)
         };
 
         // Build the map expression
-        let map_expr_result = self.lower_expr(&comp.expr.node);
+        let map_expr_result = self.lower_expr_spanned(&comp.expr);
         self.non_linear_context_depth -= 1;
         let filter_tokens = filter_tokens_result?;
         let map_expr = map_expr_result?;
@@ -49,18 +49,18 @@ impl AstLowering {
         &mut self,
         comp: &ast::DictComp,
     ) -> Result<(IrExprKind, IrType), LoweringError> {
-        let iter_expr = self.lower_expr(&comp.iter.node)?;
+        let iter_expr = self.lower_expr_spanned(&comp.iter)?;
         let var_name = comp.var.clone();
 
         self.non_linear_context_depth += 1;
         let filter_tokens_result: Result<Option<Box<TypedExpr>>, LoweringError> = if let Some(filter) = &comp.filter {
-            Ok(Some(Box::new(self.lower_expr(&filter.node)?)))
+            Ok(Some(Box::new(self.lower_expr_spanned(filter)?)))
         } else {
             Ok(None)
         };
 
-        let key_expr_result = self.lower_expr(&comp.key.node);
-        let value_expr_result = self.lower_expr(&comp.value.node);
+        let key_expr_result = self.lower_expr_spanned(&comp.key);
+        let value_expr_result = self.lower_expr_spanned(&comp.value);
         self.non_linear_context_depth -= 1;
         let filter_tokens = filter_tokens_result?;
         let key_expr = key_expr_result?;

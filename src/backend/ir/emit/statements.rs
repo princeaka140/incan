@@ -40,6 +40,8 @@ fn for_body_needs_mut_iteration(pattern: &Pattern, body: &[IrStmt]) -> bool {
     fn target_mutates_var(target: &AssignTarget, var: &str) -> bool {
         match target {
             AssignTarget::Var(name) => name == var,
+            AssignTarget::StaticBinding(name) => name == var,
+            AssignTarget::Static(_) => false,
             AssignTarget::Field { object, .. } => root_var_name(object).is_some_and(|n| n == var),
             AssignTarget::Index { object, .. } => root_var_name(object).is_some_and(|n| n == var),
         }
@@ -83,6 +85,76 @@ fn for_body_needs_mut_iteration(pattern: &Pattern, body: &[IrStmt]) -> bool {
 }
 
 impl<'a> IrEmitter<'a> {
+    /// Emit assignment to a local `StaticBinding` variable.
+    ///
+    /// Plain values are wrapped into `StaticBinding::from_value(...)` so subsequent storage-aware field/index
+    /// operations can treat the binding uniformly as a storage handle.
+    fn emit_static_binding_assignment(
+        &self,
+        name: &str,
+        value: &super::super::expr::IrExpr,
+    ) -> Result<TokenStream, EmitError> {
+        let n = Self::rust_ident(name);
+        let v = if matches!(value.kind, IrExprKind::StaticBinding { .. }) {
+            self.emit_expr(value)?
+        } else {
+            let emitted = self.emit_expr(value)?;
+            quote! { incan_stdlib::storage::StaticBinding::from_value((#emitted).into()) }
+        };
+        Ok(quote! { #n = #v; })
+    }
+
+    /// Emit assignment through a storage-rooted field or index path.
+    ///
+    /// This rewrites the target to use the `with_mut` temporary binding and evaluates the RHS once before entering the
+    /// mutation closure.
+    fn emit_storage_rooted_assignment(
+        &self,
+        target: &AssignTarget,
+        value: &super::super::expr::IrExpr,
+    ) -> Result<TokenStream, EmitError> {
+        let local_name = "__incan_static_value";
+        let rhs_name = "__incan_static_rhs";
+        let rewritten_target = match target {
+            AssignTarget::Field { object, field } => AssignTarget::Field {
+                object: Box::new(Self::rewrite_storage_root_expr(object, local_name)),
+                field: field.clone(),
+            },
+            AssignTarget::Index { object, index } => AssignTarget::Index {
+                object: Box::new(Self::rewrite_storage_root_expr(object, local_name)),
+                index: index.clone(),
+            },
+            _ => {
+                return Err(EmitError::Unsupported(
+                    "expected field or index assignment for storage-rooted target".to_string(),
+                ));
+            }
+        };
+        let rhs_expr = super::super::expr::TypedExpr::new(
+            IrExprKind::Var {
+                name: rhs_name.to_string(),
+                access: super::super::expr::VarAccess::Move,
+                ref_kind: super::super::expr::VarRefKind::Value,
+            },
+            value.ty.clone(),
+        );
+        let inner_stmt = IrStmt::new(IrStmtKind::Assign {
+            target: rewritten_target,
+            value: rhs_expr,
+        });
+        let inner = self.emit_stmt(&inner_stmt)?;
+        let storage_expr = match target {
+            AssignTarget::Field { object, .. } | AssignTarget::Index { object, .. } => object.as_ref(),
+            _ => unreachable!("guarded above"),
+        };
+        let emitted_value = self.emit_expr(value)?;
+        let wrapped = self.emit_storage_with_mut(storage_expr, inner)?;
+        Ok(quote! {
+            let #rhs_name = #emitted_value;
+            #wrapped
+        })
+    }
+
     /// Emit a statement as Rust tokens.
     pub(super) fn emit_stmt(&self, stmt: &IrStmt) -> Result<TokenStream, EmitError> {
         match &stmt.kind {
@@ -110,13 +182,38 @@ impl<'a> IrEmitter<'a> {
                 let conversion = determine_conversion(value, Some(ty), ConversionContext::Assignment);
                 let converted_v = conversion.apply(v);
 
-                if matches!(mutability, Mutability::Mutable) {
+                if matches!(mutability, Mutability::Mutable) || matches!(value.kind, IrExprKind::StaticBinding { .. }) {
                     Ok(quote! { let mut #n = #converted_v; })
                 } else {
                     Ok(quote! { let #n = #converted_v; })
                 }
             }
             IrStmtKind::Assign { target, value } => {
+                if let AssignTarget::Static(name) = target {
+                    let n = Self::rust_ident(name);
+                    let v = self.emit_expr(value)?;
+                    return Ok(quote! {
+                        let __incan_static_rhs = #v;
+                        #n.with_mut(|__incan_static_value| {
+                            *__incan_static_value = __incan_static_rhs.into();
+                        });
+                    });
+                }
+
+                if let AssignTarget::StaticBinding(name) = target {
+                    return self.emit_static_binding_assignment(name, value);
+                }
+
+                let storage_rooted_target = match target {
+                    AssignTarget::Field { object, .. } | AssignTarget::Index { object, .. } => {
+                        Self::expr_is_storage_rooted(object)
+                    }
+                    _ => false,
+                };
+                if storage_rooted_target {
+                    return self.emit_storage_rooted_assignment(target, value);
+                }
+
                 // For Dict index assignment, use .insert() instead of []=
                 // because HashMap's IndexMut doesn't work with owned keys
                 if let AssignTarget::Index { object, index } = target

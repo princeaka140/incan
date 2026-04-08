@@ -57,14 +57,119 @@ use super::super::expr::{IrExprKind, IrInteropCoercionKind, Literal as IrLiteral
 use super::super::types::IrType;
 use super::{EmitError, IrEmitter};
 
+#[derive(Debug, Clone)]
+pub(super) enum StorageRoot {
+    Static(String),
+    Binding(String),
+}
+
 impl<'a> IrEmitter<'a> {
     /// Check whether an expression is a type-like identifier that should use Rust path syntax.
     ///
     /// This covers Incan type names, enum variants, module placeholders, and external Rust imports.
     pub(super) fn expr_is_type_like(expr: &TypedExpr) -> bool {
         match &expr.kind {
-            IrExprKind::Var { ref_kind, .. } => !matches!(ref_kind, VarRefKind::Value),
+            IrExprKind::Var { ref_kind, .. } => {
+                matches!(
+                    ref_kind,
+                    VarRefKind::TypeName | VarRefKind::ExternalName | VarRefKind::ExternalRustName
+                )
+            }
             _ => false,
+        }
+    }
+
+    pub(super) fn expr_storage_root(expr: &TypedExpr) -> Option<StorageRoot> {
+        match &expr.kind {
+            IrExprKind::StaticRead { name } => Some(StorageRoot::Static(name.clone())),
+            IrExprKind::Var {
+                name,
+                ref_kind: VarRefKind::StaticBinding,
+                ..
+            } => Some(StorageRoot::Binding(name.clone())),
+            IrExprKind::Field { object, .. } | IrExprKind::Index { object, .. } => Self::expr_storage_root(object),
+            _ => None,
+        }
+    }
+
+    pub(super) fn expr_is_storage_rooted(expr: &TypedExpr) -> bool {
+        Self::expr_storage_root(expr).is_some()
+    }
+
+    pub(super) fn rewrite_storage_root_expr(expr: &TypedExpr, local_name: &str) -> TypedExpr {
+        let replacement = || {
+            TypedExpr::new(
+                IrExprKind::Var {
+                    name: local_name.to_string(),
+                    access: super::super::expr::VarAccess::Read,
+                    ref_kind: VarRefKind::Value,
+                },
+                expr.ty.clone(),
+            )
+        };
+
+        let mut rewritten = match &expr.kind {
+            IrExprKind::StaticRead { .. } => replacement(),
+            IrExprKind::Var {
+                ref_kind: VarRefKind::StaticBinding,
+                ..
+            } => replacement(),
+            IrExprKind::Field { object, field } => TypedExpr::new(
+                IrExprKind::Field {
+                    object: Box::new(Self::rewrite_storage_root_expr(object, local_name)),
+                    field: field.clone(),
+                },
+                expr.ty.clone(),
+            ),
+            IrExprKind::Index { object, index } => TypedExpr::new(
+                IrExprKind::Index {
+                    object: Box::new(Self::rewrite_storage_root_expr(object, local_name)),
+                    index: index.clone(),
+                },
+                expr.ty.clone(),
+            ),
+            _ => expr.clone(),
+        };
+        rewritten.ownership = expr.ownership;
+        rewritten.span = expr.span;
+        rewritten
+    }
+
+    pub(super) fn emit_storage_with_ref(&self, expr: &TypedExpr, body: TokenStream) -> Result<TokenStream, EmitError> {
+        let local_name = format_ident!("__incan_static_value");
+        match Self::expr_storage_root(expr) {
+            Some(StorageRoot::Static(name)) => {
+                let ident = Self::rust_ident(&name);
+                let init_call = self.emit_module_static_init_call();
+                Ok(quote! {{
+                    #init_call
+                    #ident.with_ref(|#local_name| { #body })
+                }})
+            }
+            Some(StorageRoot::Binding(name)) => {
+                let ident = Self::rust_ident(&name);
+                Ok(quote! { #ident.with_ref(|#local_name| { #body }) })
+            }
+            None => Err(EmitError::Unsupported("expected storage-rooted expression".to_string())),
+        }
+    }
+
+    pub(super) fn emit_storage_with_mut(&self, expr: &TypedExpr, body: TokenStream) -> Result<TokenStream, EmitError> {
+        let local_name = format_ident!("__incan_static_value");
+        match Self::expr_storage_root(expr) {
+            Some(StorageRoot::Static(name)) => {
+                let ident = Self::rust_ident(&name);
+                let init_call = self.emit_module_static_init_call();
+                Ok(quote! {{
+                    #init_call
+                    #ident.with_mut(|#local_name| { #body })
+                }})
+            }
+            Some(StorageRoot::Binding(name)) => {
+                let ident = Self::rust_ident(&name);
+                Ok(quote! { #ident.with_mut(|#local_name| { #body }) })
+            }
+            None => Err(EmitError::Unsupported("expected storage-rooted expression".to_string())),
         }
     }
 
@@ -113,9 +218,43 @@ impl<'a> IrEmitter<'a> {
                 Ok(lit.to_token_stream())
             }
 
+            IrExprKind::Var {
+                name,
+                access: _,
+                ref_kind: VarRefKind::StaticBinding,
+            } => {
+                let n = Self::rust_ident(name);
+                Ok(quote! { #n.get() })
+            }
             IrExprKind::Var { name, access: _, .. } => {
                 let n = Self::rust_ident(name);
                 Ok(quote! { #n })
+            }
+
+            IrExprKind::StaticRead { name } => {
+                let n = Self::rust_ident(name);
+                if *self.in_static_initializer.borrow() {
+                    Ok(quote! { #n.get() })
+                } else {
+                    let init_call = self.emit_module_static_init_call();
+                    Ok(quote! {{
+                        #init_call
+                        #n.get()
+                    }})
+                }
+            }
+
+            IrExprKind::StaticBinding { name } => {
+                let n = Self::rust_ident(name);
+                if *self.in_static_initializer.borrow() {
+                    Ok(quote! { incan_stdlib::storage::StaticBinding::from_static(&#n) })
+                } else {
+                    let init_call = self.emit_module_static_init_call();
+                    Ok(quote! {{
+                        #init_call
+                        incan_stdlib::storage::StaticBinding::from_static(&#n)
+                    }})
+                }
             }
 
             IrExprKind::BinOp { op, left, right } => self.emit_binop_expr(op, left, right),

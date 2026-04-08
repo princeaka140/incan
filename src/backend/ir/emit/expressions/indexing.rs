@@ -29,6 +29,25 @@ impl<'a> IrEmitter<'a> {
         object: &TypedExpr,
         index: &TypedExpr,
     ) -> Result<TokenStream, EmitError> {
+        if Self::expr_is_storage_rooted(object) {
+            let rewritten = Self::rewrite_storage_root_expr(
+                &TypedExpr::new(
+                    IrExprKind::Index {
+                        object: Box::new(object.clone()),
+                        index: Box::new(index.clone()),
+                    },
+                    match &object.ty {
+                        IrType::List(elem) => (**elem).clone(),
+                        IrType::Dict(_, value) => (**value).clone(),
+                        _ => IrType::Unknown,
+                    },
+                ),
+                "__incan_static_value",
+            );
+            let inner = self.emit_expr(&rewritten)?;
+            return self.emit_storage_with_ref(object, inner);
+        }
+
         let o = self.emit_expr(object)?;
         let obj_ty = match &object.ty {
             IrType::Ref(inner) | IrType::RefMut(inner) => inner.as_ref(),
@@ -148,6 +167,21 @@ impl<'a> IrEmitter<'a> {
     /// - Tuple field access (`tuple.0` → `tuple.0`)
     /// - Regular struct field access (`obj.field` → `obj.field`)
     pub(in super::super) fn emit_field_expr(&self, object: &TypedExpr, field: &str) -> Result<TokenStream, EmitError> {
+        if Self::expr_is_storage_rooted(object) {
+            let rewritten = Self::rewrite_storage_root_expr(
+                &TypedExpr::new(
+                    IrExprKind::Field {
+                        object: Box::new(object.clone()),
+                        field: field.to_string(),
+                    },
+                    IrType::Unknown,
+                ),
+                "__incan_static_value",
+            );
+            let inner = self.emit_expr(&rewritten)?;
+            return self.emit_storage_with_ref(object, inner);
+        }
+
         let o = self.emit_expr(object)?;
 
         // Check if this is an enum variant access using the actual enum registry, not capitalization heuristics

@@ -26,6 +26,7 @@ use quote::{format_ident, quote};
 use incan_core::lang::derives::{self, DeriveId};
 use incan_core::lang::stdlib;
 
+use super::super::conversions::{ConversionContext, determine_conversion};
 use super::super::decl::{IrDecl, IrDeclKind, IrImportOrigin, IrImportQualifier};
 use super::super::expr::IrExprKind;
 use super::super::types::IrType;
@@ -74,6 +75,12 @@ impl<'a> IrEmitter<'a> {
                 ty,
                 value,
             } => self.emit_const(visibility, name, ty, value),
+            IrDeclKind::Static {
+                visibility,
+                name,
+                ty,
+                value,
+            } => self.emit_static(visibility, name, ty, value),
             IrDeclKind::Import {
                 origin,
                 qualifier,
@@ -84,6 +91,29 @@ impl<'a> IrEmitter<'a> {
             IrDeclKind::Impl(impl_block) => self.emit_impl(impl_block),
             IrDeclKind::Trait(trait_decl) => self.emit_trait(trait_decl),
         }
+    }
+
+    fn emit_static(
+        &self,
+        visibility: &super::super::decl::Visibility,
+        name: &str,
+        ty: &IrType,
+        value: &super::super::TypedExpr,
+    ) -> Result<TokenStream, EmitError> {
+        let vis = self.emit_visibility(visibility);
+        let name_ident = format_ident!("{}", name);
+        let ty_tokens = self.emit_type(ty);
+        let previous = self.in_static_initializer.replace(true);
+        let emitted_value = self.emit_expr(value);
+        self.in_static_initializer.replace(previous);
+        let emitted_value = emitted_value?;
+        let conversion = determine_conversion(value, Some(ty), ConversionContext::Assignment);
+        let converted_value = conversion.apply(emitted_value);
+
+        Ok(quote! {
+            #vis static #name_ident: std::sync::LazyLock<incan_stdlib::storage::StaticCell<#ty_tokens>> =
+                std::sync::LazyLock::new(|| incan_stdlib::storage::StaticCell::new(#converted_value));
+        })
     }
 
     // ---- Const emission (RFC 008) ----

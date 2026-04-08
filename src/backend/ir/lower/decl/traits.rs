@@ -52,7 +52,7 @@ impl AstLowering {
             .methods
             .iter()
             .map(|m| {
-                self.scopes.push(std::collections::HashMap::new());
+                self.push_scope();
                 let mut hidden_type_params = Vec::new();
                 let mut hidden_counter = 0usize;
 
@@ -108,7 +108,7 @@ impl AstLowering {
                 // methods like `self.name`.
                 let body = vec![];
 
-                self.scopes.pop();
+                self.pop_scope();
 
                 Ok(IrFunction {
                     name: m.node.name.clone(),

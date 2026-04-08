@@ -45,6 +45,7 @@ impl ImportTracker {
     fn scan_decl(&mut self, decl: &IrDecl) {
         match &decl.kind {
             IrDeclKind::Function(f) => self.scan_function(f),
+            IrDeclKind::Static { value, .. } => self.scan_expr(value),
             IrDeclKind::Impl(impl_block) => {
                 for method in &impl_block.methods {
                     self.scan_function(method);
@@ -277,6 +278,15 @@ impl<'a> IrEmitter<'a> {
     /// Emit a program to TokenStream (without formatting).
     pub fn emit_program_tokens(&self, program: &IrProgram) -> Result<TokenStream, EmitError> {
         let mut items = Vec::new();
+        let static_names: Vec<String> = program
+            .declarations
+            .iter()
+            .filter_map(|decl| match &decl.kind {
+                IrDeclKind::Static { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        *self.module_has_local_statics.borrow_mut() = !static_names.is_empty();
 
         if self.add_clippy_allows {
             items.push(quote! {
@@ -301,6 +311,39 @@ impl<'a> IrEmitter<'a> {
 
         if *self.needs_serde.borrow() {
             items.push(quote! { use serde::{Serialize, Deserialize}; });
+        }
+
+        // RFC 052: force declaration-order static initialization once per module before any static access helper call.
+        if !static_names.is_empty() {
+            let force_calls: Vec<TokenStream> = static_names
+                .iter()
+                .map(|name| {
+                    let ident = Self::rust_ident(name);
+                    quote! { std::sync::LazyLock::force(&#ident); }
+                })
+                .collect();
+            items.push(quote! {
+                #[inline(always)]
+                fn __incan_init_module_statics() {
+                    static __INCAN_STATIC_INIT_RUNNING: std::sync::atomic::AtomicBool =
+                        std::sync::atomic::AtomicBool::new(false);
+                    if __INCAN_STATIC_INIT_RUNNING.load(std::sync::atomic::Ordering::Acquire) {
+                        return;
+                    }
+                    static __INCAN_STATIC_INIT_ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+                    __INCAN_STATIC_INIT_ONCE.get_or_init(|| {
+                        struct __IncanStaticInitGuard<'a>(&'a std::sync::atomic::AtomicBool);
+                        impl Drop for __IncanStaticInitGuard<'_> {
+                            fn drop(&mut self) {
+                                self.0.store(false, std::sync::atomic::Ordering::Release);
+                            }
+                        }
+                        __INCAN_STATIC_INIT_RUNNING.store(true, std::sync::atomic::Ordering::Release);
+                        let _guard = __IncanStaticInitGuard(&__INCAN_STATIC_INIT_RUNNING);
+                        #(#force_calls)*
+                    });
+                }
+            });
         }
 
         // Emit all declarations.

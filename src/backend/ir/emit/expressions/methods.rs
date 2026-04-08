@@ -8,7 +8,8 @@ use quote::{format_ident, quote};
 
 use super::super::super::conversions::{ConversionContext, determine_conversion};
 use super::super::super::expr::{
-    InternalMethodKind, IrCallArg, IrExprKind, MethodCallArgPolicy, MethodKind, TypedExpr, VarRefKind,
+    CollectionMethodKind, InternalMethodKind, IrCallArg, IrExprKind, MethodCallArgPolicy, MethodKind, TypedExpr,
+    VarAccess, VarRefKind,
 };
 use super::super::super::types::IrType;
 use super::super::{EmitError, IrEmitter};
@@ -46,6 +47,38 @@ impl ReceiverInfo {
 }
 
 impl<'a> IrEmitter<'a> {
+    /// Materialize method-call arguments before entering a static storage lock.
+    ///
+    /// This prevents lock reentry when argument expressions also read/write static-backed values.
+    fn materialize_storage_rooted_args(
+        &self,
+        args: &[IrCallArg],
+    ) -> Result<(Vec<TokenStream>, Vec<IrCallArg>), EmitError> {
+        let mut bindings = Vec::with_capacity(args.len());
+        let mut rewritten = Vec::with_capacity(args.len());
+        for (idx, arg) in args.iter().enumerate() {
+            let name = format!("__incan_static_arg_{idx}");
+            let ident = format_ident!("{}", name);
+            let emitted = self.emit_expr(&arg.expr)?;
+            bindings.push(quote! { let #ident = #emitted; });
+            let rewritten_expr = TypedExpr::new(
+                IrExprKind::Var {
+                    name,
+                    access: VarAccess::Read,
+                    ref_kind: VarRefKind::Value,
+                },
+                arg.expr.ty.clone(),
+            )
+            .with_ownership(arg.expr.ownership)
+            .with_span(arg.expr.span);
+            rewritten.push(IrCallArg {
+                name: arg.name.clone(),
+                expr: rewritten_expr,
+            });
+        }
+        Ok((bindings, rewritten))
+    }
+
     /// Strip reference wrappers from a receiver type before builtin-family or ownership-sensitive dispatch.
     ///
     /// Method emission cares about the underlying receiver family (`Dict`, `Struct`, `Trait`, ...) rather than whether
@@ -93,6 +126,44 @@ impl<'a> IrEmitter<'a> {
         kind: &MethodKind,
         args: &[IrCallArg],
     ) -> Result<TokenStream, EmitError> {
+        if Self::expr_is_storage_rooted(receiver) {
+            let (arg_bindings, rewritten_args) = self.materialize_storage_rooted_args(args)?;
+            if matches!(kind, MethodKind::Collection(CollectionMethodKind::Get)) {
+                let rewritten_receiver = Self::rewrite_storage_root_expr(receiver, "__incan_static_value");
+                let arg_exprs: Vec<TypedExpr> = rewritten_args.iter().map(|a| a.expr.clone()).collect();
+                let inner = self.emit_static_collection_get(&rewritten_receiver, &arg_exprs)?;
+                let wrapped = self.emit_storage_with_ref(receiver, inner)?;
+                return Ok(quote! {
+                    #(#arg_bindings)*
+                    #wrapped
+                });
+            }
+
+            let rewritten_receiver = Self::rewrite_storage_root_expr(receiver, "__incan_static_value");
+            let inner = self.emit_known_method_call(&rewritten_receiver, kind, &rewritten_args)?;
+            let use_mut = matches!(
+                kind,
+                MethodKind::Collection(
+                    CollectionMethodKind::Insert
+                        | CollectionMethodKind::Remove
+                        | CollectionMethodKind::Append
+                        | CollectionMethodKind::Pop
+                        | CollectionMethodKind::Swap
+                        | CollectionMethodKind::Reserve
+                        | CollectionMethodKind::ReserveExact
+                )
+            );
+            let wrapped = if use_mut {
+                self.emit_storage_with_mut(receiver, inner)
+            } else {
+                self.emit_storage_with_ref(receiver, inner)
+            }?;
+            return Ok(quote! {
+                #(#arg_bindings)*
+                #wrapped
+            });
+        }
+
         let r0 = self.emit_expr(receiver)?;
         let info = ReceiverInfo::new(&receiver.ty, r0);
         let arg_exprs: Vec<TypedExpr> = args.iter().map(|a| a.expr.clone()).collect();
@@ -113,6 +184,21 @@ impl<'a> IrEmitter<'a> {
         args: &[IrCallArg],
         arg_policy: MethodCallArgPolicy,
     ) -> Result<TokenStream, EmitError> {
+        if Self::expr_is_storage_rooted(receiver) {
+            let (arg_bindings, rewritten_args) = self.materialize_storage_rooted_args(args)?;
+            let rewritten_receiver = Self::rewrite_storage_root_expr(receiver, "__incan_static_value");
+            let inner = self.emit_method_call_expr(&rewritten_receiver, method, &rewritten_args, arg_policy)?;
+            let wrapped = if matches!(arg_policy, MethodCallArgPolicy::PreserveShape) {
+                self.emit_storage_with_ref(receiver, inner)
+            } else {
+                self.emit_storage_with_mut(receiver, inner)
+            }?;
+            return Ok(quote! {
+                #(#arg_bindings)*
+                #wrapped
+            });
+        }
+
         let r0 = self.emit_expr(receiver)?;
         let info = ReceiverInfo::new(&receiver.ty, r0);
         let r = &info.r;
@@ -271,6 +357,32 @@ impl<'a> IrEmitter<'a> {
         };
 
         Ok(quote! { incan_stdlib::strings::str_slice(#r_borrow, #start_tokens, #end_tokens, None) })
+    }
+
+    fn emit_static_collection_get(&self, receiver: &TypedExpr, args: &[TypedExpr]) -> Result<TokenStream, EmitError> {
+        let r = self.emit_expr(receiver)?;
+        let Some(arg) = args.first() else {
+            return Ok(quote! { None });
+        };
+        let emitted_arg = self.emit_expr(arg)?;
+        match &receiver.ty {
+            IrType::Dict(_, value_ty) => {
+                let key = collection_methods::emit_dict_lookup_key(receiver, arg, emitted_arg);
+                if value_ty.is_copy() {
+                    Ok(quote! { #r.get(#key).copied() })
+                } else {
+                    Ok(quote! { #r.get(#key).cloned() })
+                }
+            }
+            IrType::List(elem_ty) => {
+                if elem_ty.is_copy() {
+                    Ok(quote! { #r.get((#emitted_arg) as usize).copied() })
+                } else {
+                    Ok(quote! { #r.get((#emitted_arg) as usize).cloned() })
+                }
+            }
+            _ => Ok(quote! { #r.get(#emitted_arg).cloned() }),
+        }
     }
 
     /// Emit an enum variant construction call (Type.Variant(...) -> Type::Variant(...)).

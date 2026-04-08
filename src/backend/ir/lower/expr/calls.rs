@@ -225,7 +225,7 @@ impl AstLowering {
             let ast::CallArg::Positional(value) = &args[0] else {
                 unreachable!("checked by matches! above")
             };
-            let lowered_value = self.lower_expr(&value.node)?;
+            let lowered_value = self.lower_expr_spanned(value)?;
             let ctor = self
                 .newtype_checked_ctor
                 .get(name)
@@ -279,7 +279,7 @@ impl AstLowering {
             .iter()
             .map(|arg| match arg {
                 ast::CallArg::Named(field_name, value) => {
-                    let lowered_value = self.lower_expr(&value.node)?;
+                    let lowered_value = self.lower_expr_spanned(value)?;
                     // RFC 021: map alias → canonical field name
                     let canonical = self.resolve_field_alias(&struct_name, field_name);
                     Ok((canonical, lowered_value))
@@ -287,7 +287,7 @@ impl AstLowering {
                 ast::CallArg::Positional(value) => {
                     // Positional args - use empty string for field name
                     // (emitter will detect this and use tuple-style construction)
-                    let lowered_value = self.lower_expr(&value.node)?;
+                    let lowered_value = self.lower_expr_spanned(value)?;
                     Ok((String::new(), lowered_value))
                 }
             })

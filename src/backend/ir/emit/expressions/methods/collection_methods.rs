@@ -22,7 +22,7 @@ fn emit_dict_key_arg(arg: &TypedExpr, emitted: TokenStream) -> TokenStream {
 /// For `Dict[str, V]`-like receivers, owned string probes are lowered through `AsRef<str>` so emitted Rust matches the
 /// standard library's borrowed lookup surface without adding an extra `&str` layer. Non-string-key dictionaries fall
 /// back to [`emit_dict_key_arg`].
-fn emit_dict_lookup_key(receiver: &TypedExpr, arg: &TypedExpr, emitted: TokenStream) -> TokenStream {
+pub(super) fn emit_dict_lookup_key(receiver: &TypedExpr, arg: &TypedExpr, emitted: TokenStream) -> TokenStream {
     match &receiver.ty {
         IrType::Dict(key_ty, _)
             if matches!(

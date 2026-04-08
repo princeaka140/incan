@@ -104,6 +104,16 @@ pub enum IrExprKind {
         ref_kind: VarRefKind,
     },
 
+    /// Read from a compiler-managed module static storage cell.
+    StaticRead {
+        name: String,
+    },
+
+    /// Create a live local binding wrapper from a compiler-managed module static.
+    StaticBinding {
+        name: String,
+    },
+
     // Binary operations
     BinOp {
         op: BinOp,
@@ -334,6 +344,8 @@ pub enum VarRefKind {
     /// A value binding (local/param/field), i.e. should behave like `value.method(...)`.
     #[default]
     Value,
+    /// A local binding wrapper that may point at a module static storage cell.
+    StaticBinding,
     /// A type name (models/classes/enums/newtypes) in expression position, i.e. `Type.method(...)`.
     TypeName,
     /// A non-local imported/module name that behaves namespace-like in emitted Rust.

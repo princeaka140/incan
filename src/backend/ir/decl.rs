@@ -60,6 +60,14 @@ pub enum IrDeclKind {
         value: super::IrExpr,
     },
 
+    /// Runtime-initialized module storage cell.
+    Static {
+        visibility: Visibility,
+        name: String,
+        ty: IrType,
+        value: super::IrExpr,
+    },
+
     /// Import (preserved for codegen)
     Import {
         origin: IrImportOrigin,

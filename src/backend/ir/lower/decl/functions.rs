@@ -1,7 +1,5 @@
 //! Function declaration lowering.
 
-use std::collections::HashMap;
-
 use super::super::super::Mutability;
 use super::super::super::decl::{FunctionParam, IrFunction};
 use super::super::super::types::IrType;
@@ -23,7 +21,7 @@ impl AstLowering {
         &mut self,
         f: &ast::FunctionDecl,
     ) -> Result<IrFunction, LoweringError> {
-        self.scopes.push(HashMap::new());
+        self.push_scope();
 
         let type_param_names: std::collections::HashSet<&str> =
             f.type_params.iter().map(|tp| tp.name.as_str()).collect();
@@ -46,9 +44,7 @@ impl AstLowering {
                 } else {
                     base_ty.clone()
                 };
-                if let Some(scope) = self.scopes.last_mut() {
-                    scope.insert(p.node.name.clone(), ty.clone());
-                }
+                self.define_local_binding(p.node.name.clone(), ty.clone(), false);
                 // Track mutable parameters
                 if p.node.is_mut {
                     self.mutable_vars.insert(p.node.name.clone(), true);
@@ -72,7 +68,7 @@ impl AstLowering {
 
         let return_type = self.lower_callable_return_type(&f.return_type.node, Some(&type_param_names));
         let body = self.lower_statements(&f.body)?;
-        self.scopes.pop();
+        self.pop_scope();
 
         // RFC 023: detect @rust.extern decorator to mark this function as externally-backed.
         let is_extern = Self::has_rust_extern_decorator(&f.decorators);

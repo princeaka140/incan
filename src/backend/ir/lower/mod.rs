@@ -32,7 +32,7 @@ mod expr;
 mod stmt;
 mod types;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::decl::{FunctionParam, IrDecl, IrDeclKind};
 use super::expr::VarAccess;
@@ -68,6 +68,8 @@ pub use errors::{LoweringError, LoweringErrors};
 pub struct AstLowering {
     /// Scope chain for variable type lookups (innermost last)
     pub(super) scopes: Vec<HashMap<String, IrType>>,
+    /// Scope chain for local bindings that preserve RFC 052 live static semantics.
+    pub(super) static_binding_scopes: Vec<std::collections::HashSet<String>>,
     /// Track declared structs/models/classes for constructor detection
     pub(super) struct_names: HashMap<String, IrType>,
     /// Track declared enums for type resolution
@@ -194,6 +196,7 @@ impl AstLowering {
     pub fn new() -> Self {
         Self {
             scopes: vec![HashMap::new()],
+            static_binding_scopes: vec![HashSet::new()],
             struct_names: HashMap::new(),
             enum_names: HashMap::new(),
             mutable_vars: HashMap::new(),
@@ -293,6 +296,44 @@ impl AstLowering {
         }
 
         VarAccess::Move
+    }
+
+    pub(super) fn push_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+        self.static_binding_scopes.push(HashSet::new());
+    }
+
+    pub(super) fn pop_scope(&mut self) {
+        let _ = self.scopes.pop();
+        let _ = self.static_binding_scopes.pop();
+    }
+
+    pub(super) fn define_local_binding(&mut self, name: String, ty: IrType, is_static_binding: bool) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name.clone(), ty);
+        }
+        if is_static_binding && let Some(scope) = self.static_binding_scopes.last_mut() {
+            scope.insert(name);
+        }
+    }
+
+    pub(super) fn is_static_binding(&self, name: &str) -> bool {
+        self.static_binding_scopes
+            .iter()
+            .rev()
+            .any(|scope| scope.contains(name))
+    }
+
+    pub(super) fn is_direct_static_ident(&self, expr: &ast::Spanned<ast::Expr>) -> Option<String> {
+        let ast::Expr::Ident(name) = &expr.node else {
+            return None;
+        };
+
+        self.type_info
+            .as_ref()
+            .and_then(|info| info.ident_kind(expr.span))
+            .filter(|kind| matches!(kind, crate::frontend::typechecker::IdentKind::Static))
+            .map(|_| name.clone())
     }
 
     /// RFC 021: Resolve a field name through alias mapping.
@@ -468,6 +509,11 @@ impl AstLowering {
                 };
                 if let Some(scope) = self.scopes.first_mut() {
                     scope.insert(c.name.clone(), ty);
+                }
+            } else if let ast::Declaration::Static(ref s) = decl.node {
+                let ty = self.lower_type(&s.ty.node);
+                if let Some(scope) = self.scopes.first_mut() {
+                    scope.insert(s.name.clone(), ty);
                 }
             }
         }

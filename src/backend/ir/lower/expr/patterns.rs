@@ -24,9 +24,9 @@ impl AstLowering {
         arms.iter()
             .map(|a| {
                 let pattern = self.lower_pattern(&a.node.pattern.node);
-                let guard = a.node.guard.as_ref().map(|g| self.lower_expr(&g.node)).transpose()?;
+                let guard = a.node.guard.as_ref().map(|g| self.lower_expr_spanned(g)).transpose()?;
                 let body = match &a.node.body {
-                    ast::MatchBody::Expr(e) => self.lower_expr(&e.node)?,
+                    ast::MatchBody::Expr(e) => self.lower_expr_spanned(e)?,
                     ast::MatchBody::Block(stmts) => {
                         let ir_stmts = self.lower_statements(stmts)?;
                         TypedExpr::new(

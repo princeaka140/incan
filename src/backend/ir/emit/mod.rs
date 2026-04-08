@@ -10,12 +10,12 @@
 //!
 //! ## See also
 //! - [`crate::backend::ir::conversions`]: conversion policy for emitted Rust
-//! - [`program`]: program-level emission and formatting
-//! - [`decls`]: item/declaration emission
-//! - [`statements`]: statement emission
-//! - [`expressions`]: expression emission
-//! - [`types`]: type/pattern/operator helpers
-//! - [`consts`]: RFC-008 const validation and const-friendly helpers
+//! - `program`: program-level emission and formatting
+//! - `decls`: item/declaration emission
+//! - `statements`: statement emission
+//! - `expressions`: expression emission
+//! - `types`: type/pattern/operator helpers
+//! - `consts`: RFC-008 const validation and const-friendly helpers
 
 mod consts;
 mod decls;
@@ -29,6 +29,9 @@ pub use errors::EmitError;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+
+use proc_macro2::TokenStream;
+use quote::quote;
 
 use super::FunctionRegistry;
 use super::decl::VariantFields;
@@ -99,6 +102,12 @@ pub struct IrEmitter<'a> {
     /// Used by derive passthrough and newtype emission to locate the original Rust crate path for
     /// imported types.
     rust_import_paths: RefCell<std::collections::HashMap<String, Vec<String>>>,
+    /// Whether the currently emitted module contains any local `static` declarations.
+    module_has_local_statics: RefCell<bool>,
+    /// Whether expression emission is currently inside a static initializer.
+    ///
+    /// Used to avoid recursively forcing the module-wide static init helper while generating static initializer code.
+    in_static_initializer: RefCell<bool>,
 }
 
 impl<'a> IrEmitter<'a> {
@@ -129,6 +138,17 @@ impl<'a> IrEmitter<'a> {
             internal_module_roots: HashSet::new(),
             rust_module_path: None,
             rust_import_paths: RefCell::new(std::collections::HashMap::new()),
+            module_has_local_statics: RefCell::new(false),
+            in_static_initializer: RefCell::new(false),
+        }
+    }
+
+    pub(super) fn emit_module_static_init_call(&self) -> TokenStream {
+        if *self.module_has_local_statics.borrow() {
+            let init_fn = Self::rust_ident("__incan_init_module_statics");
+            quote! { #init_fn(); }
+        } else {
+            quote! {}
         }
     }
 

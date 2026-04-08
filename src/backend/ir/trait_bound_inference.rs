@@ -573,6 +573,8 @@ fn scan_expr_for_bounds(
 
         // ---- Leaf nodes: no sub-expressions to scan ----
         IrExprKind::Var { .. }
+        | IrExprKind::StaticRead { .. }
+        | IrExprKind::StaticBinding { .. }
         | IrExprKind::Unit
         | IrExprKind::None
         | IrExprKind::Bool(_)
