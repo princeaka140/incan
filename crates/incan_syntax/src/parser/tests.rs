@@ -49,6 +49,46 @@ mod tests {
         }
     }
 
+    fn require_model_decl(decl: &Spanned<Declaration>) -> Result<&ModelDecl, Vec<CompileError>> {
+        match &decl.node {
+            Declaration::Model(m) => Ok(m),
+            _ => Err(vec![CompileError::new(
+                "parser test internal error: expected model declaration".to_string(),
+                decl.span,
+            )]),
+        }
+    }
+
+    fn require_class_decl(decl: &Spanned<Declaration>) -> Result<&ClassDecl, Vec<CompileError>> {
+        match &decl.node {
+            Declaration::Class(c) => Ok(c),
+            _ => Err(vec![CompileError::new(
+                "parser test internal error: expected class declaration".to_string(),
+                decl.span,
+            )]),
+        }
+    }
+
+    fn require_enum_decl(decl: &Spanned<Declaration>) -> Result<&EnumDecl, Vec<CompileError>> {
+        match &decl.node {
+            Declaration::Enum(e) => Ok(e),
+            _ => Err(vec![CompileError::new(
+                "parser test internal error: expected enum declaration".to_string(),
+                decl.span,
+            )]),
+        }
+    }
+
+    fn require_function_decl(decl: &Spanned<Declaration>) -> Result<&FunctionDecl, Vec<CompileError>> {
+        match &decl.node {
+            Declaration::Function(f) => Ok(f),
+            _ => Err(vec![CompileError::new(
+                "parser test internal error: expected function declaration".to_string(),
+                decl.span,
+            )]),
+        }
+    }
+
     #[test]
     fn test_unexpected_indent_at_toplevel_is_single_clear_error() {
         // We intentionally allow the lexer to emit INDENT/DEDENT tokens at the top-level.
@@ -74,14 +114,10 @@ model User:
 "#;
         let program = parse_str(source)?;
         assert_eq!(program.declarations.len(), 1);
-        match &program.declarations[0].node {
-            Declaration::Model(m) => {
-                assert_eq!(m.name, "User");
-                assert_eq!(m.fields.len(), 2);
-                assert!(m.traits.is_empty());
-            }
-            _ => panic!("Expected model"),
-        }
+        let m = require_model_decl(&program.declarations[0])?;
+        assert_eq!(m.name, "User");
+        assert_eq!(m.fields.len(), 2);
+        assert!(m.traits.is_empty());
         Ok(())
     }
 
@@ -97,14 +133,80 @@ class FieldInfo:
 "#;
         let program = parse_str(source)?;
         assert_eq!(program.declarations.len(), 1);
-        match &program.declarations[0].node {
-            Declaration::Class(c) => {
-                assert_eq!(c.name, "FieldInfo");
-                assert_eq!(c.fields.len(), 1);
-                assert_eq!(c.fields[0].node.name, "name");
-            }
-            _ => panic!("Expected class"),
-        }
+        let c = require_class_decl(&program.declarations[0])?;
+        assert_eq!(c.name, "FieldInfo");
+        assert_eq!(
+            c.docstring.as_deref(),
+            Some(
+                "\n  Compiler-provided field metadata returned by __fields__().\n  Instances are immutable and read-only.\n  "
+            )
+        );
+        assert_eq!(c.fields.len(), 1);
+        assert_eq!(c.fields[0].node.name, "name");
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_model_leading_docstring_stored_on_ast() -> Result<(), Vec<CompileError>> {
+        let source = r#"
+model Widget:
+  """Model-level narrative for tooling."""
+  id: int
+"#;
+        let program = parse_str(source)?;
+        let m = require_model_decl(&program.declarations[0])?;
+        assert_eq!(m.docstring.as_deref(), Some("Model-level narrative for tooling."));
+        assert_eq!(m.fields.len(), 1);
+        assert_eq!(m.fields[0].node.name, "id");
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_enum_leading_docstring_stored_on_ast() -> Result<(), Vec<CompileError>> {
+        let source = r#"
+enum Color:
+  """Semantic colors for UI."""
+  Red
+  Green
+"#;
+        let program = parse_str(source)?;
+        let en = require_enum_decl(&program.declarations[0])?;
+        assert_eq!(en.docstring.as_deref(), Some("Semantic colors for UI."));
+        assert_eq!(en.variants.len(), 2);
+        assert_eq!(en.variants[0].node.name, "Red");
+        assert_eq!(en.variants[1].node.name, "Green");
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_block_leading_blank_lines_single_empty_line() -> Result<(), Vec<CompileError>> {
+        let source = r#"def f() -> int:
+    a = 1
+
+    b = 2
+"#;
+        let program = parse_str(source)?;
+        let func = require_function_decl(&program.declarations[0])?;
+        assert_eq!(func.body.len(), 2, "expected two statements");
+        assert_eq!(func.body[0].leading_blank_lines, 0);
+        assert_eq!(func.body[1].leading_blank_lines, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_block_leading_blank_lines_collapses_multiple_empty_lines() -> Result<(), Vec<CompileError>> {
+        let source = r#"def f() -> int:
+    a = 1
+
+
+
+    b = 2
+"#;
+        let program = parse_str(source)?;
+        let func = require_function_decl(&program.declarations[0])?;
+        assert_eq!(func.body.len(), 2);
+        assert_eq!(func.body[0].leading_blank_lines, 0);
+        assert_eq!(func.body[1].leading_blank_lines, 1);
         Ok(())
     }
 
@@ -532,11 +634,9 @@ trait Debug:
     def __repr__(self) -> str: ...
 "#;
         let program = parse_str(source)?;
-        let tr = match &program.declarations[0].node {
-            Declaration::Trait(t) => t,
-            _ => panic!("Expected trait declaration"),
-        };
+        let tr = require_trait_decl(&program.declarations[0])?;
         assert_eq!(tr.name, "Debug");
+        assert_eq!(tr.docstring.as_deref(), Some("Debug representation."));
         assert_eq!(tr.methods.len(), 1);
         assert_eq!(tr.methods[0].node.name, "__repr__");
         Ok(())

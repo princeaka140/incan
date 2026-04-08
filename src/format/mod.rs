@@ -457,6 +457,85 @@ pub fn format_diff(source: &str) -> Result<Option<String>, FormatError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frontend::ast::{Declaration, Program};
+    use crate::frontend::{lexer, parser};
+
+    fn program_from_source(source: &str) -> Result<Program, FormatError> {
+        let tokens = lexer::lex(source).map_err(|errs| {
+            FormatError::SyntaxError(errs.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("\n"))
+        })?;
+        parser::parse(&tokens).map_err(|errs| {
+            FormatError::SyntaxError(errs.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("\n"))
+        })
+    }
+
+    fn assert_decl_block_docstring_markers(doc: Option<&str>, context: &str) -> Result<(), FormatError> {
+        let Some(doc) = doc else {
+            return Err(FormatError::SyntaxError(format!(
+                "{context}: expected declaration body docstring for API/tooling extraction"
+            )));
+        };
+        let trimmed = doc.trim();
+        if !trimmed.contains("Line A documents the class API.") {
+            return Err(FormatError::SyntaxError(format!(
+                "{context}: docstring missing marker line A: {trimmed:?}"
+            )));
+        }
+        if !trimmed.contains("Line B keeps interior newlines after trim().") {
+            return Err(FormatError::SyntaxError(format!(
+                "{context}: docstring missing marker line B: {trimmed:?}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn assert_first_class_decl_has_marker_docstring(program: &Program, context: &str) -> Result<(), FormatError> {
+        let class = match &program.declarations[0].node {
+            Declaration::Class(c) => c,
+            other => {
+                return Err(FormatError::SyntaxError(format!(
+                    "{context}: expected class declaration, got {other:?}"
+                )));
+            }
+        };
+        assert_decl_block_docstring_markers(class.docstring.as_deref(), context)
+    }
+
+    fn assert_first_model_decl_has_marker_docstring(program: &Program, context: &str) -> Result<(), FormatError> {
+        let model = match &program.declarations[0].node {
+            Declaration::Model(m) => m,
+            other => {
+                return Err(FormatError::SyntaxError(format!(
+                    "{context}: expected model declaration, got {other:?}"
+                )));
+            }
+        };
+        assert_decl_block_docstring_markers(model.docstring.as_deref(), context)
+    }
+
+    fn assert_first_enum_decl_has_marker_docstring(program: &Program, context: &str) -> Result<(), FormatError> {
+        let en = match &program.declarations[0].node {
+            Declaration::Enum(e) => e,
+            other => {
+                return Err(FormatError::SyntaxError(format!(
+                    "{context}: expected enum declaration, got {other:?}"
+                )));
+            }
+        };
+        assert_decl_block_docstring_markers(en.docstring.as_deref(), context)
+    }
+
+    fn assert_first_trait_decl_has_marker_docstring(program: &Program, context: &str) -> Result<(), FormatError> {
+        let tr = match &program.declarations[0].node {
+            Declaration::Trait(t) => t,
+            other => {
+                return Err(FormatError::SyntaxError(format!(
+                    "{context}: expected trait declaration, got {other:?}"
+                )));
+            }
+        };
+        assert_decl_block_docstring_markers(tr.docstring.as_deref(), context)
+    }
 
     // ========================================
     // format_source tests
@@ -519,6 +598,47 @@ mod tests {
         assert_eq!(
             trailing_nl, 1,
             "expected exactly one trailing newline at EOF; got {trailing_nl}: {formatted:?}"
+        );
+        Ok(())
+    }
+
+    /// Single empty line between statements in a block must round-trip through the formatter.
+    #[test]
+    fn test_format_source_preserves_single_blank_line_in_function_body() -> Result<(), FormatError> {
+        let source = r#"# example
+def function() -> int:
+    """Line one.
+    Line two."""
+    foo = 1
+
+    bar = 2
+"#;
+        let formatted = format_source(source)?;
+        assert!(
+            formatted.contains("foo = 1\n\n    bar"),
+            "expected one blank line between assignments; got:\n{formatted}"
+        );
+        Ok(())
+    }
+
+    /// Multiple empty lines between statements collapse to a single blank line.
+    #[test]
+    fn test_format_source_collapses_multiple_blank_lines_in_block() -> Result<(), FormatError> {
+        let source = r#"def f() -> int:
+    foo = 1
+
+
+
+    bar = 2
+"#;
+        let formatted = format_source(source)?;
+        assert!(
+            !formatted.contains("\n\n\n    bar"),
+            "expected at most one blank line before bar; got:\n{formatted}"
+        );
+        assert!(
+            formatted.contains("foo = 1\n\n    bar"),
+            "expected one blank line between statements; got:\n{formatted}"
         );
         Ok(())
     }
@@ -619,6 +739,218 @@ const B: int = 2
 "#;
         let formatted = format_source(source)?;
         assert_eq!(formatted, source);
+        Ok(())
+    }
+
+    /// Regression (GitHub #247): class body docstrings must round-trip for several body shapes **and** stay attached
+    /// on [`ClassDecl::docstring`] after lex+parse of the formatted source (tooling / API extraction path).
+    ///
+    /// Covers decorators, `extends`, `with` bounds, fields-only, methods-only, multiple methods, and mixed
+    /// field+method layouts. Omits `pass`-only class bodies: unlike traits, class bodies do not parse a bare
+    /// `pass` statement today.
+    ///
+    /// Model, enum, and trait body docstrings use the same AST and formatter rules (see
+    /// `test_format_source_preserves_model_enum_body_docstrings_ast` and
+    /// `test_format_source_preserves_trait_body_docstring_ast` below).
+    ///
+    /// Two non-empty lines so `trim()` retains an interior newline; `format_docstring` keeps multi-line form (same
+    /// constraint as newtype docstring tests).
+    #[test]
+    fn test_format_source_preserves_class_docstring_common_shapes() -> Result<(), FormatError> {
+        const DOC: &str = r#"    """
+    Line A documents the class API.
+    Line B keeps interior newlines after trim().
+    """"#;
+
+        let cases: &[(&str, String)] = &[
+            (
+                "decorator_generic_field",
+                format!(
+                    r#"@derive(Clone)
+pub class WithDecorator[T]:
+{DOC}
+
+    pub cell: T
+"#
+                ),
+            ),
+            (
+                "generic_with_trait_bound_fields_and_method",
+                format!(
+                    r#"pub class PrismCursor[T with Clone]:
+{DOC}
+
+    pub row_schema_marker: T
+
+    def clone(self) -> Self:
+        """Method doc."""
+        pass
+"#
+                ),
+            ),
+            (
+                "fields_only",
+                format!(
+                    r#"pub class FieldBucket[T]:
+{DOC}
+
+    pub first: T
+    pub second: int
+"#
+                ),
+            ),
+            (
+                "private_class_private_fields",
+                format!(
+                    r#"class InternalState:
+{DOC}
+
+    x: int
+    y: int
+"#
+                ),
+            ),
+            (
+                "methods_only",
+                format!(
+                    r#"class MethodsOnly:
+{DOC}
+
+    def one(self) -> int:
+        return 1
+"#
+                ),
+            ),
+            (
+                "two_methods",
+                format!(
+                    r#"class TwoMethods:
+{DOC}
+
+    def a(self) -> None:
+        pass
+
+    def b(self) -> None:
+        pass
+"#
+                ),
+            ),
+            (
+                "extends_and_field",
+                format!(
+                    r#"class Pup extends Animal:
+{DOC}
+
+    tag: str
+"#
+                ),
+            ),
+        ];
+
+        for (label, source) in cases {
+            let formatted = format_source(source)?;
+            assert_eq!(formatted, *source, "class docstring round-trip ({label})");
+            let program = program_from_source(&formatted)?;
+            assert_first_class_decl_has_marker_docstring(&program, &format!("formatted source, case {label}"))?;
+        }
+        Ok(())
+    }
+
+    /// Body docstrings on `model` and `enum` use the same storage and formatting path as `class` (GitHub #247).
+    #[test]
+    fn test_format_source_preserves_model_enum_body_docstrings_ast() -> Result<(), FormatError> {
+        const DOC: &str = r#"    """
+    Line A documents the class API.
+    Line B keeps interior newlines after trim().
+    """"#;
+
+        let model_src = format!(
+            r#"model LedgerEntry:
+{DOC}
+
+    id: int
+    name: str
+"#
+        );
+        let formatted_model = format_source(&model_src)?;
+        assert_eq!(formatted_model, model_src);
+        let prog_m = program_from_source(&formatted_model)?;
+        assert_first_model_decl_has_marker_docstring(&prog_m, "model + fields after format")?;
+
+        let enum_src = format!(
+            r#"enum JobState:
+{DOC}
+
+    Pending
+    Running
+    Done
+"#
+        );
+        let formatted_enum = format_source(&enum_src)?;
+        assert_eq!(formatted_enum, enum_src);
+        let prog_e = program_from_source(&formatted_enum)?;
+        assert_first_enum_decl_has_marker_docstring(&prog_e, "enum + variants after format")?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_format_source_preserves_trait_body_docstring_ast() -> Result<(), FormatError> {
+        const DOC: &str = r#"    """
+    Line A documents the class API.
+    Line B keeps interior newlines after trim().
+    """"#;
+        let source = format!(
+            r#"trait Described:
+{DOC}
+
+    def tag(self) -> str: ...
+"#
+        );
+        let formatted = format_source(&source)?;
+        assert_eq!(formatted, source);
+        let prog = program_from_source(&formatted)?;
+        assert_first_trait_decl_has_marker_docstring(&prog, "trait + method after format")?;
+        Ok(())
+    }
+
+    /// `const` / `static` have no inline body docstring field; module-level `"""..."""` is a separate
+    /// [`Declaration::Docstring`] and must round-trip before those items.
+    #[test]
+    fn test_format_source_preserves_module_docstring_before_const_and_static() -> Result<(), FormatError> {
+        let source = r#""""Module-level API notes."""
+
+const ANSWER: int = 42
+static COUNTER: int = 0
+"#;
+        let formatted = format_source(source)?;
+        assert_eq!(formatted, source);
+        let prog = program_from_source(&formatted)?;
+        let doc = match &prog.declarations[0].node {
+            Declaration::Docstring(doc) => doc,
+            other => {
+                return Err(FormatError::SyntaxError(format!(
+                    "expected leading module docstring declaration, got {other:?}"
+                )));
+            }
+        };
+        if !doc.contains("Module-level API notes.") {
+            return Err(FormatError::SyntaxError(format!("docstring text lost: {doc:?}")));
+        }
+        let c = match &prog.declarations[1].node {
+            Declaration::Const(c) => c,
+            other => {
+                return Err(FormatError::SyntaxError(format!("expected const: {other:?}")));
+            }
+        };
+        assert_eq!(c.name, "ANSWER");
+        let s = match &prog.declarations[2].node {
+            Declaration::Static(s) => s,
+            other => {
+                return Err(FormatError::SyntaxError(format!("expected static: {other:?}")));
+            }
+        };
+        assert_eq!(s.name, "COUNTER");
         Ok(())
     }
 
@@ -742,14 +1074,17 @@ type Second = newtype int
     }
 
     #[test]
-    fn test_format_diff_trailing_newline_only_is_actionable() {
+    fn test_format_diff_trailing_newline_only_is_actionable() -> Result<(), FormatError> {
         let source = "def foo() -> int:\n    return 42";
-        let result = format_diff(source).expect("format_diff should succeed");
-        let diff = result.expect("diff should be present for trailing-newline change");
+        let result = format_diff(source)?;
+        let diff = result.ok_or_else(|| {
+            FormatError::SyntaxError("diff should be present for trailing-newline change".to_string())
+        })?;
         assert!(
             diff.contains("trailing-newline"),
             "expected trailing newline hint in diff, got: {diff}"
         );
+        Ok(())
     }
 
     // ========================================
@@ -758,29 +1093,31 @@ type Second = newtype int
 
     /// A short import that fits on one line should be kept (or collapsed to) single-line form.
     #[test]
-    fn test_format_import_short_stays_single_line() {
+    fn test_format_import_short_stays_single_line() -> Result<(), FormatError> {
         let source = "from db import (CategoryId, TagId)\n";
         let config = FormatConfig::new().with_line_length(120);
-        let result = format_source_with_config(source, config).expect("format should succeed");
+        let result = format_source_with_config(source, config)?;
         assert_eq!(result.trim_end(), "from db import CategoryId, TagId");
+        Ok(())
     }
 
     /// A comma-separated import that already fits on one line is unchanged.
     #[test]
-    fn test_format_import_bare_short_unchanged() {
+    fn test_format_import_bare_short_unchanged() -> Result<(), FormatError> {
         let source = "from db import CategoryId, TagId\n";
         let config = FormatConfig::new().with_line_length(120);
-        let result = format_source_with_config(source, config).expect("format should succeed");
+        let result = format_source_with_config(source, config)?;
         assert_eq!(result.trim_end(), "from db import CategoryId, TagId");
+        Ok(())
     }
 
     /// A long multi-item import that exceeds the line length should be wrapped.
     #[test]
-    fn test_format_import_long_wraps_to_parens() {
+    fn test_format_import_long_wraps_to_parens() -> Result<(), FormatError> {
         // Use a very short limit so the list definitely overflows.
         let source = "from db import CategoryId, TagId, OtherId\n";
         let config = FormatConfig::new().with_line_length(20).with_trailing_commas(true);
-        let result = format_source_with_config(source, config).expect("format should succeed");
+        let result = format_source_with_config(source, config)?;
         assert!(
             result.contains('('),
             "expected parenthesized output for long import; got: {result}"
@@ -789,23 +1126,25 @@ type Second = newtype int
             result.contains("CategoryId,\n"),
             "expected each item on its own line; got: {result}"
         );
+        Ok(())
     }
 
     /// A multi-line parenthesized import that fits on one line is collapsed to single-line.
     #[test]
-    fn test_format_import_multiline_parens_collapses_when_fits() {
+    fn test_format_import_multiline_parens_collapses_when_fits() -> Result<(), FormatError> {
         let source = "from db import (\n    CategoryId,\n    TagId,\n)\n";
         let config = FormatConfig::new().with_line_length(120);
-        let result = format_source_with_config(source, config).expect("format should succeed");
+        let result = format_source_with_config(source, config)?;
         assert_eq!(result.trim_end(), "from db import CategoryId, TagId");
+        Ok(())
     }
 
     /// Trailing comma in parenthesized output is controlled by the `trailing_commas` config.
     #[test]
-    fn test_format_import_no_trailing_comma_when_disabled() {
+    fn test_format_import_no_trailing_comma_when_disabled() -> Result<(), FormatError> {
         let source = "from db import CategoryId, TagId, OtherId\n";
         let config = FormatConfig::new().with_line_length(20).with_trailing_commas(false);
-        let result = format_source_with_config(source, config).expect("format should succeed");
+        let result = format_source_with_config(source, config)?;
         // Last item should not have a trailing comma.
         assert!(
             !result.contains("OtherId,\n"),
@@ -815,6 +1154,7 @@ type Second = newtype int
             result.contains("OtherId\n"),
             "expected last item without comma; got: {result}"
         );
+        Ok(())
     }
 
     #[test]

@@ -12,10 +12,12 @@ impl<'a> Parser<'a> {
 
     fn block(&mut self) -> Result<Vec<Spanned<Statement>>, CompileError> {
         let mut stmts = Vec::new();
-        self.skip_newlines();
+        let mut next_leading = self.consume_inter_statement_blank_prefix();
         while !self.check(&TokenKind::Dedent) && !self.is_at_end() {
-            stmts.push(self.statement()?);
-            self.skip_newlines();
+            let mut stmt = self.statement()?;
+            stmt.leading_blank_lines = next_leading;
+            stmts.push(stmt);
+            next_leading = self.consume_inter_statement_blank_prefix();
         }
         Ok(stmts)
     }

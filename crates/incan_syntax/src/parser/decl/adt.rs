@@ -13,13 +13,7 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Newline, "Expected newline after ':'")?;
         self.expect(&TokenKind::Indent, "Expected indented block")?;
 
-        // Skip optional docstring at the start of the enum body
-        self.skip_newlines();
-        if let TokenKind::String(_) = &self.peek().kind {
-            // Consume the docstring (we don't store it for now, but allow it syntactically)
-            self.advance();
-            self.skip_newlines();
-        }
+        let docstring = self.optional_leading_block_docstring();
 
         let mut variants = Vec::new();
         while !self.check(&TokenKind::Dedent) && !self.is_at_end() {
@@ -34,6 +28,7 @@ impl<'a> Parser<'a> {
             decorators,
             name,
             type_params,
+            docstring,
             variants,
         })
     }

@@ -5,7 +5,11 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use incan::frontend::module::{ExportedTypeLikeDoc, ExportedTypeLikeKind, exported_type_like_docs};
 use incan::frontend::{lexer, parser, typechecker};
+
+/// Shared with `src/frontend/module.rs` tests (`exported_type_like_docs`) for GitHub #247.
+const BLOCK_DOCSTRING_PUBLIC_TYPE_LIKE: &str = include_str!("fixtures/block_docstring_public_type_like.incn");
 
 /// Helper to run full pipeline on a source file
 fn compile_file(path: &Path) -> Result<(), Vec<String>> {
@@ -68,6 +72,79 @@ fn make_temp_test_dir() -> std::path::PathBuf {
         panic!("failed to create temp test dir");
     };
     dir
+}
+
+/// Regression (GitHub #247): `incan fmt` on disk must preserve body docstrings for all public block-like type
+/// declarations, and [`exported_type_like_docs`] must still see them after the CLI round-trip.
+///
+/// `format_files` delegates to [`incan::format::format_source`]; this still covers subprocess + I/O if those paths
+/// diverge from in-process formatting.
+#[test]
+fn test_cli_fmt_preserves_block_decl_docstrings_and_export_doc_surface() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = make_temp_test_dir();
+    let path = dir.join("block_docstrings_cli.incn");
+    fs::write(&path, BLOCK_DOCSTRING_PUBLIC_TYPE_LIKE)?;
+    let status = Command::new(incan_debug_binary()).arg("fmt").arg(&path).status()?;
+    assert!(status.success(), "incan fmt failed");
+
+    let formatted = fs::read_to_string(&path)?;
+    let tokens = lexer::lex(&formatted)
+        .map_err(|errs| std::io::Error::other(errs.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("\n")))?;
+    let ast = parser::parse(&tokens)
+        .map_err(|errs| std::io::Error::other(errs.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("\n")))?;
+
+    fn assert_markers(doc: Option<&str>, ctx: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(doc) = doc else {
+            return Err(std::io::Error::other(format!("{ctx}: missing docstring after CLI fmt")).into());
+        };
+        let t = doc.trim();
+        if !t.contains("Line A documents the class API.") {
+            return Err(std::io::Error::other(format!("{ctx}: missing marker A in {t:?}")).into());
+        }
+        if !t.contains("Line B keeps interior newlines after trim().") {
+            return Err(std::io::Error::other(format!("{ctx}: missing marker B in {t:?}")).into());
+        }
+        Ok(())
+    }
+
+    let docs = exported_type_like_docs(&ast);
+    assert_eq!(docs.len(), 5, "expected five public type-like exports with docs");
+    let mut by_name: std::collections::HashMap<String, ExportedTypeLikeDoc> = std::collections::HashMap::new();
+    for d in docs {
+        by_name.insert(d.name.clone(), d);
+    }
+
+    let m = by_name
+        .get("CliModelProbe")
+        .ok_or_else(|| std::io::Error::other("missing CliModelProbe"))?;
+    assert_eq!(m.kind, ExportedTypeLikeKind::Model);
+    assert_markers(m.docstring.as_deref(), "model")?;
+
+    let c = by_name
+        .get("CliClassProbe")
+        .ok_or_else(|| std::io::Error::other("missing CliClassProbe"))?;
+    assert_eq!(c.kind, ExportedTypeLikeKind::Class);
+    assert_markers(c.docstring.as_deref(), "class")?;
+
+    let e = by_name
+        .get("CliEnumProbe")
+        .ok_or_else(|| std::io::Error::other("missing CliEnumProbe"))?;
+    assert_eq!(e.kind, ExportedTypeLikeKind::Enum);
+    assert_markers(e.docstring.as_deref(), "enum")?;
+
+    let t = by_name
+        .get("CliTraitProbe")
+        .ok_or_else(|| std::io::Error::other("missing CliTraitProbe"))?;
+    assert_eq!(t.kind, ExportedTypeLikeKind::Trait);
+    assert_markers(t.docstring.as_deref(), "trait")?;
+
+    let n = by_name
+        .get("CliNewtypeProbe")
+        .ok_or_else(|| std::io::Error::other("missing CliNewtypeProbe"))?;
+    assert_eq!(n.kind, ExportedTypeLikeKind::Newtype);
+    assert_markers(n.docstring.as_deref(), "newtype")?;
+
+    Ok(())
 }
 
 /// Regression: float compound-assign with int RHS should typecheck (Python-like / promotion).
