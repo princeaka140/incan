@@ -328,6 +328,41 @@ def main() -> None:
 }
 
 #[test]
+fn test_rfc052_static_initializer_runs_before_main_without_static_reads() {
+    let source = r#"
+def init_counter() -> int:
+  println("init")
+  return 1
+
+static counter: int = init_counter()
+
+def main() -> None:
+  println("main")
+"#;
+    let Ok(output) = Command::new(incan_debug_binary())
+        .args(["run", "-c", source])
+        .env("CARGO_NET_OFFLINE", "true")
+        .output()
+    else {
+        panic!("failed to run incan with eager static initializer source");
+    };
+
+    assert!(
+        output.status.success(),
+        "expected eager static initializer program to run.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+    assert!(
+        lines.len() >= 2 && lines[0] == "init" && lines[1] == "main",
+        "expected initializer output before main output.\nstdout:\n{}",
+        stdout
+    );
+}
+
+#[test]
 fn test_rfc052_static_alias_mutation_runs() {
     let source = r#"
 static items: list[int] = []

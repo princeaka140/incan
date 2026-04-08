@@ -1,7 +1,7 @@
-from pub::widgets import shared_items
+from pub::widgets import SHARED_ITEMS
 
 def main() -> None:
-  shared_items.append(1)
-  let live = shared_items
+  SHARED_ITEMS.append(1)
+  let live = SHARED_ITEMS
   live.append(2)
-  println(len(shared_items))
+  println(len(SHARED_ITEMS))

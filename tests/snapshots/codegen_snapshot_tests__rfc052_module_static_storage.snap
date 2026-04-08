@@ -11,25 +11,72 @@ expression: rust_code
 incan_stdlib::__incan_stdlib_version_check!("<INCAN_STDLIB_VERSION>");
 use incan_stdlib::prelude::*;
 use incan_derive::{FieldInfo, IncanClass};
-static COUNTER: std::sync::LazyLock<incan_stdlib::storage::StaticCell<i64>> = std::sync::LazyLock::new(||
+#[inline(always)]
+fn __incan_init_module_statics() {
+    static __INCAN_STATIC_INIT_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(
+        false,
+    );
+    if __INCAN_STATIC_INIT_RUNNING.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    static __INCAN_STATIC_INIT_ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    __INCAN_STATIC_INIT_ONCE
+        .get_or_init(|| {
+            struct __IncanStaticInitGuard<'a>(&'a std::sync::atomic::AtomicBool);
+            impl Drop for __IncanStaticInitGuard<'_> {
+                fn drop(&mut self) {
+                    self.0.store(false, std::sync::atomic::Ordering::Release);
+                }
+            }
+            __INCAN_STATIC_INIT_RUNNING
+                .store(true, std::sync::atomic::Ordering::Release);
+            let _guard = __IncanStaticInitGuard(&__INCAN_STATIC_INIT_RUNNING);
+            std::sync::LazyLock::force(&counter);
+            std::sync::LazyLock::force(&items);
+        });
+}
+static counter: std::sync::LazyLock<incan_stdlib::storage::StaticCell<i64>> = std::sync::LazyLock::new(||
 incan_stdlib::storage::StaticCell::new(0));
-static ITEMS: std::sync::LazyLock<incan_stdlib::storage::StaticCell<Vec<i64>>> = std::sync::LazyLock::new(||
+static items: std::sync::LazyLock<incan_stdlib::storage::StaticCell<Vec<i64>>> = std::sync::LazyLock::new(||
 incan_stdlib::storage::StaticCell::new(vec![]));
 fn main() {
-    let __incan_static_rhs = COUNTER.get() + 1;
-    COUNTER
+    __incan_init_module_statics();
+    let __incan_static_rhs = {
+        __incan_init_module_statics();
+        counter.get()
+    } + 1;
+    counter
         .with_mut(|__incan_static_value| {
             *__incan_static_value = __incan_static_rhs.into();
         });
-    let __incan_static_rhs = COUNTER.get() + 2;
-    COUNTER
+    let __incan_static_rhs = {
+        __incan_init_module_statics();
+        counter.get()
+    } + 2;
+    counter
         .with_mut(|__incan_static_value| {
             *__incan_static_value = __incan_static_rhs.into();
         });
-    ITEMS.with_mut(|__incan_static_value| { __incan_static_value.push(COUNTER.get()) });
-    let mut live = incan_stdlib::storage::StaticBinding::from_static(&ITEMS);
-    live.with_mut(|__incan_static_value| { __incan_static_value.push(4) });
-    println!("{}", COUNTER.get());
-    println!("{}", ITEMS.get().len() as i64);
+    let __incan_static_arg_0 = {
+        __incan_init_module_statics();
+        counter.get()
+    };
+    {
+        __incan_init_module_statics();
+        items
+            .with_mut(|__incan_static_value| {
+                __incan_static_value.push(__incan_static_arg_0)
+            })
+    };
+    let mut live = {
+        __incan_init_module_statics();
+        incan_stdlib::storage::StaticBinding::from_static(&items)
+    };
+    let __incan_static_arg_0 = 4;
+    live.with_mut(|__incan_static_value| {
+        __incan_static_value.push(__incan_static_arg_0)
+    });
+    println!("{}", { __incan_init_module_statics(); counter.get() });
+    println!("{}", { __incan_init_module_statics(); items.get() } .len() as i64);
     println!("{}", live.get().len() as i64);
 }
