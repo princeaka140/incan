@@ -164,7 +164,7 @@ pub enum Command {
         /// Enable library mode precondition checks (`src/lib.incn` required)
         #[arg(long = "lib")]
         lib_mode: bool,
-        /// Output directory (default: target/incan/<name>)
+        /// Output directory (default: `target/incan/<name>`)
         #[arg(value_name = "OUTPUT_DIR")]
         output_dir: Option<PathBuf>,
         /// Require up-to-date incan.lock and pass --locked to Cargo

@@ -254,6 +254,7 @@ fn rename_checked_export(export: &CheckedNamedExport, exported_name: &str) -> Ch
         CheckedExportKind::Enum(enum_export) => enum_export.name = exported_name.to_string(),
         CheckedExportKind::Newtype(newtype_export) => newtype_export.name = exported_name.to_string(),
         CheckedExportKind::Const(const_export) => const_export.name = exported_name.to_string(),
+        CheckedExportKind::Static(static_export) => static_export.name = exported_name.to_string(),
     }
 
     renamed
