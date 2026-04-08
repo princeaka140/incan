@@ -221,6 +221,13 @@ impl IncanLanguageServer {
             {
                 const_types.insert(konst.name.clone(), var.ty.to_string());
             }
+            if let Declaration::Static(static_decl) = &decl.node
+                && let Some(id) = checker.symbols.lookup(&static_decl.name)
+                && let Some(sym) = checker.symbols.get(id)
+                && let crate::frontend::symbols::SymbolKind::Static(info) = &sym.kind
+            {
+                const_types.insert(static_decl.name.clone(), info.ty.to_string());
+            }
             if let Declaration::Newtype(nt) = &decl.node
                 && nt.is_rusttype
                 && let Some(id) = checker.symbols.lookup(&nt.name)
@@ -471,6 +478,14 @@ impl IncanLanguageServer {
                     span,
                 });
             }
+            Declaration::Static(static_decl) if span.start <= offset && offset < span.end => {
+                return Some(SymbolInfo {
+                    name: static_decl.name.clone(),
+                    kind: "static".to_string(),
+                    detail: format!("static {}: {}", static_decl.name, format_type(&static_decl.ty.node)),
+                    span,
+                });
+            }
             Declaration::Function(func) if span.start <= offset && offset < span.end => {
                 return Some(SymbolInfo {
                     name: func.name.clone(),
@@ -539,6 +554,9 @@ impl IncanLanguageServer {
         for decl in &ast.declarations {
             match &decl.node {
                 Declaration::Const(konst) if konst.name == name => {
+                    return Some(decl.span);
+                }
+                Declaration::Static(static_decl) if static_decl.name == name => {
                     return Some(decl.span);
                 }
                 Declaration::Function(func) if func.name == name => {
@@ -1065,7 +1083,7 @@ fn rust_member_completions(line_prefix: &str, symbols: &[RustOriginSymbol]) -> O
 
 fn lsp_symbol_kind_for_decl(decl: &Declaration) -> Option<SymbolKind> {
     match decl {
-        Declaration::Const(_) => Some(SymbolKind::CONSTANT),
+        Declaration::Const(_) | Declaration::Static(_) => Some(SymbolKind::CONSTANT),
         Declaration::Function(_) => Some(SymbolKind::FUNCTION),
         Declaration::Model(_) => Some(SymbolKind::STRUCT),
         Declaration::Class(_) => Some(SymbolKind::CLASS),
@@ -1086,6 +1104,10 @@ fn lsp_document_symbol_name_and_detail(decl: &Declaration) -> Option<(String, St
             } else {
                 format!("const {}", konst.name)
             },
+        )),
+        Declaration::Static(static_decl) => Some((
+            static_decl.name.clone(),
+            format!("static {}: {}", static_decl.name, format_type(&static_decl.ty.node)),
         )),
         Declaration::Function(func) => Some((func.name.clone(), format_function_signature(func))),
         Declaration::Model(model) => Some((model.name.clone(), format!("model {}", model.name))),
@@ -1468,6 +1490,20 @@ impl LanguageServer for IncanLanguageServer {
                             } else {
                                 format!("const {}", konst.name)
                             }),
+                            None,
+                        );
+                    }
+                    Declaration::Static(static_decl) => {
+                        push_completion(
+                            &mut items,
+                            &mut seen,
+                            &static_decl.name,
+                            CompletionItemKind::CONSTANT,
+                            Some(format!(
+                                "static {}: {}",
+                                static_decl.name,
+                                format_type(&static_decl.ty.node)
+                            )),
                             None,
                         );
                     }

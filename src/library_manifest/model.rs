@@ -9,8 +9,8 @@ use super::wire::RawLibraryManifest;
 use super::{DslSurface, LIBRARY_MANIFEST_FORMAT, VocabKeywordRegistration, VocabProviderManifest};
 use crate::frontend::library_exports::{
     CheckedClassExport, CheckedConstExport, CheckedEnumExport, CheckedExportKind, CheckedFunctionExport,
-    CheckedModelExport, CheckedNamedExport, CheckedNewtypeExport, CheckedTraitExport, CheckedTypeAliasExport,
-    CheckedTypeBound, CheckedTypeParam,
+    CheckedModelExport, CheckedNamedExport, CheckedNewtypeExport, CheckedStaticExport, CheckedTraitExport,
+    CheckedTypeAliasExport, CheckedTypeBound, CheckedTypeParam,
 };
 use crate::frontend::symbols::ResolvedType;
 
@@ -68,6 +68,7 @@ pub struct LibraryExports {
     pub type_aliases: Vec<TypeAliasExport>,
     pub newtypes: Vec<NewtypeExport>,
     pub consts: Vec<ConstExport>,
+    pub statics: Vec<StaticExport>,
 }
 
 /// Soft keywords that become active when the library is imported.
@@ -304,6 +305,13 @@ pub struct ConstExport {
     pub ty: TypeRef,
 }
 
+/// Exported static metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StaticExport {
+    pub name: String,
+    pub ty: TypeRef,
+}
+
 impl LibraryManifest {
     /// Create a new manifest seeded with the current compiler version and format version.
     pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
@@ -398,6 +406,9 @@ impl LibraryExports {
                 CheckedExportKind::Const(const_export) => {
                     model.consts.push(const_export_from_checked(const_export));
                 }
+                CheckedExportKind::Static(static_export) => {
+                    model.statics.push(static_export_from_checked(static_export));
+                }
             }
         }
 
@@ -414,6 +425,7 @@ impl LibraryExports {
         self.type_aliases.sort_by(|left, right| left.name.cmp(&right.name));
         self.newtypes.sort_by(|left, right| left.name.cmp(&right.name));
         self.consts.sort_by(|left, right| left.name.cmp(&right.name));
+        self.statics.sort_by(|left, right| left.name.cmp(&right.name));
     }
 }
 
@@ -559,6 +571,13 @@ fn newtype_export_from_checked(export: &CheckedNewtypeExport) -> NewtypeExport {
 
 fn const_export_from_checked(export: &CheckedConstExport) -> ConstExport {
     ConstExport {
+        name: export.name.clone(),
+        ty: type_ref_from_resolved(&export.ty),
+    }
+}
+
+fn static_export_from_checked(export: &CheckedStaticExport) -> StaticExport {
+    StaticExport {
         name: export.name.clone(),
         ty: type_ref_from_resolved(&export.ty),
     }

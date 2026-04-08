@@ -33,6 +33,10 @@ impl TypeChecker {
                 self.validate_root_namespace(&konst.name, decl.span);
                 self.collect_const(konst, decl.span);
             }
+            Declaration::Static(static_decl) => {
+                self.validate_root_namespace(&static_decl.name, decl.span);
+                self.collect_static(static_decl, decl.span);
+            }
             Declaration::Model(model) => {
                 self.validate_root_namespace(&model.name, decl.span);
                 self.collect_model(model, decl.span);
@@ -95,6 +99,31 @@ impl TypeChecker {
             kind: SymbolKind::Variable(VariableInfo {
                 ty,
                 is_mutable: false,
+                is_used: false,
+            }),
+            span,
+            scope: 0,
+        });
+    }
+
+    /// Register a module-level static binding (first pass).
+    fn collect_static(&mut self, static_decl: &StaticDecl, span: Span) {
+        let decl_index = self.static_decls.len();
+        self.static_decl_positions.insert(static_decl.name.clone(), decl_index);
+        self.static_decls.push((static_decl.clone(), span));
+
+        let ty = self.resolve_type_checked(&static_decl.ty);
+        self.type_info.static_bindings.insert(
+            static_decl.name.clone(),
+            crate::frontend::typechecker::StaticBindingInfo { is_imported: false },
+        );
+
+        self.symbols.define(Symbol {
+            name: static_decl.name.clone(),
+            kind: SymbolKind::Static(StaticInfo {
+                ty,
+                is_public: matches!(static_decl.visibility, Visibility::Public),
+                is_imported: false,
                 is_used: false,
             }),
             span,
@@ -481,6 +510,7 @@ impl TypeChecker {
     fn collect_function(&mut self, func: &FunctionDecl, span: Span) {
         // Local declaration shadows any imported marker binding with the same name.
         self.testing_marker_import_bindings.remove(&func.name);
+        self.local_function_decls.insert(func.name.clone(), func.clone());
         let type_params: Vec<String> = func.type_params.iter().map(|tp| tp.name.clone()).collect();
         let type_param_bounds: HashMap<String, Vec<String>> = func
             .type_params

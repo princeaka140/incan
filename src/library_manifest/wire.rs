@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use super::ClassExport;
 use super::{
     ConstExport, DslSurface, EnumExport, FunctionExport, LibraryExports, LibraryManifest, LibraryManifestError,
-    ModelExport, NewtypeExport, SoftKeywordActivation, SoftKeywordExports, TraitExport, TypeAliasExport,
+    ModelExport, NewtypeExport, SoftKeywordActivation, SoftKeywordExports, StaticExport, TraitExport, TypeAliasExport,
     VocabDesugarerArtifact, VocabExports, VocabKeywordRegistration, VocabProviderManifest,
 };
 
@@ -42,6 +42,8 @@ pub(super) struct RawLibraryExports {
     pub(super) newtypes: Vec<NewtypeExport>,
     #[serde(default)]
     pub(super) consts: Vec<ConstExport>,
+    #[serde(default)]
+    pub(super) statics: Vec<StaticExport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -80,6 +82,7 @@ impl RawLibraryManifest {
                 type_aliases: semantic.exports.type_aliases.clone(),
                 newtypes: semantic.exports.newtypes.clone(),
                 consts: semantic.exports.consts.clone(),
+                statics: semantic.exports.statics.clone(),
             },
             vocab: semantic.vocab.as_ref().map(|vocab| RawVocabExports {
                 crate_path: vocab.crate_path.clone(),
@@ -110,6 +113,7 @@ impl RawLibraryManifest {
                 type_aliases: self.exports.type_aliases,
                 newtypes: self.exports.newtypes,
                 consts: self.exports.consts,
+                statics: self.exports.statics,
             },
             vocab: self.vocab.map(|vocab| VocabExports {
                 crate_path: vocab.crate_path,

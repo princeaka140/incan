@@ -336,6 +336,11 @@ pub fn exported_symbols(ast: &Program) -> Vec<ExportedSymbol> {
                     exports.push(ExportedSymbol::Const(c.name.clone()));
                 }
             }
+            Declaration::Static(s) => {
+                if matches!(s.visibility, Visibility::Public) {
+                    exports.push(ExportedSymbol::Static(s.name.clone()));
+                }
+            }
             Declaration::Model(m) => {
                 if matches!(m.visibility, Visibility::Public) {
                     exports.push(ExportedSymbol::Type(m.name.clone()));
@@ -408,6 +413,7 @@ pub enum ExportedSymbol {
     Trait(String),
     Function(String),
     Const(String),
+    Static(String),
     Reexported(String),
     Variant { enum_name: String, variant_name: String },
 }
@@ -417,7 +423,8 @@ mod tests {
     use super::*;
     use crate::frontend::ast::{
         ClassDecl, ConstDecl, Declaration, EnumDecl, Expr, FunctionDecl, ImportDecl, ImportItem, ImportKind,
-        ImportPath, Literal, ModelDecl, NewtypeDecl, Program, Span, Spanned, TraitDecl, Type, VariantDecl, Visibility,
+        ImportPath, Literal, ModelDecl, NewtypeDecl, Program, Span, Spanned, StaticDecl, TraitDecl, Type, VariantDecl,
+        Visibility,
     };
 
     fn make_spanned<T>(node: T) -> Spanned<T> {
@@ -833,6 +840,27 @@ source-root = "library"
         match &exports[0] {
             ExportedSymbol::Const(name) => assert_eq!(name, "X"),
             _ => panic!("Expected Const export"),
+        }
+    }
+
+    #[test]
+    fn test_exported_symbols_static() {
+        let static_decl = StaticDecl {
+            visibility: crate::frontend::ast::Visibility::Public,
+            name: "COUNTER".to_string(),
+            ty: make_spanned(Type::Simple("int".to_string())),
+            value: make_spanned(Expr::Literal(Literal::Int(0))),
+        };
+        let program = Program {
+            declarations: vec![make_spanned(Declaration::Static(static_decl))],
+            rust_module_path: None,
+            warnings: vec![],
+        };
+        let exports = exported_symbols(&program);
+        assert_eq!(exports.len(), 1);
+        match &exports[0] {
+            ExportedSymbol::Static(name) => assert_eq!(name, "COUNTER"),
+            _ => panic!("Expected Static export"),
         }
     }
 

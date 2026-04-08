@@ -362,6 +362,8 @@ pub struct RustItemInfo {
 pub enum SymbolKind {
     /// Variable/binding
     Variable(VariableInfo),
+    /// Module static storage cell.
+    Static(StaticInfo),
     /// Function
     Function(FunctionInfo),
     /// Type (class, model, newtype, enum, builtin)
@@ -383,6 +385,15 @@ pub enum SymbolKind {
 pub struct VariableInfo {
     pub ty: ResolvedType,
     pub is_mutable: bool,
+    pub is_used: bool,
+}
+
+/// Module static storage metadata.
+#[derive(Debug, Clone)]
+pub struct StaticInfo {
+    pub ty: ResolvedType,
+    pub is_public: bool,
+    pub is_imported: bool,
     pub is_used: bool,
 }
 

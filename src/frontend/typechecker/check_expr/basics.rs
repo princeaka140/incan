@@ -24,6 +24,7 @@ impl TypeChecker {
 
         let (kind, ty) = match &sym.kind {
             SymbolKind::Variable(info) => (IdentKind::Value, info.ty.clone()),
+            SymbolKind::Static(info) => (IdentKind::Static, info.ty.clone()),
             SymbolKind::Function(info) => {
                 if !info.type_params.is_empty() {
                     self.errors.push(errors::generic_function_reference(name, span));

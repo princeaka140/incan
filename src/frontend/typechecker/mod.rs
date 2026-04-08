@@ -137,6 +137,8 @@ pub struct TypeCheckInfo {
     /// Keyed by `(receiver_span.start, receiver_span.end, method_name)` so lowering can preserve borrow-sensitive
     /// lookup calls like `HashMap.get(key)` without re-querying rust metadata in the backend.
     pub regular_method_arg_shape_preserving_calls: HashSet<(usize, usize, String)>,
+    /// Module-visible static bindings keyed by local name for lowering/runtime emission.
+    pub static_bindings: HashMap<String, StaticBindingInfo>,
 }
 
 /// How an identifier expression resolved in the symbol table.
@@ -144,6 +146,8 @@ pub struct TypeCheckInfo {
 pub enum IdentKind {
     /// A value binding (variable/field), or a callable value (function).
     Value,
+    /// A module static binding.
+    Static,
     /// A type name (models/classes/enums/newtypes).
     TypeName,
     /// An enum variant constructor identifier.
@@ -178,6 +182,13 @@ pub struct RustArgCoercionInfo {
     pub kind: RustArgCoercionKind,
 }
 
+/// Lowering metadata for a visible static binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaticBindingInfo {
+    /// `true` when this name came from `from pub::... import NAME`.
+    pub is_imported: bool,
+}
+
 impl TypeCheckInfo {
     /// Return the resolved type recorded for the expression at `span`, if any.
     pub fn expr_type(&self, span: Span) -> Option<&ResolvedType> {
@@ -187,6 +198,11 @@ impl TypeCheckInfo {
     /// Return how the identifier expression at `span` resolved in the symbol table.
     pub fn ident_kind(&self, span: Span) -> Option<IdentKind> {
         self.ident_kinds.get(&(span.start, span.end)).copied()
+    }
+
+    /// Return static-binding metadata for `name`, if the checker recorded one.
+    pub fn static_binding(&self, name: &str) -> Option<&StaticBindingInfo> {
+        self.static_bindings.get(name)
     }
 
     /// Return the computed const value for `name`, when const evaluation succeeded.
@@ -251,6 +267,12 @@ pub struct TypeChecker {
     pub(crate) current_trait_missing_requires_emitted: Option<HashSet<String>>,
     /// Collected module-level const declarations (for rich const-eval + cycle detection).
     pub(crate) const_decls: HashMap<String, (ConstDecl, Span)>,
+    /// Collected module-level static declarations in source order.
+    pub(crate) static_decls: Vec<(StaticDecl, Span)>,
+    /// Collected module-level function declarations for static dependency analysis.
+    pub(crate) local_function_decls: HashMap<String, FunctionDecl>,
+    /// Declaration-order index for each local static binding.
+    pub(crate) static_decl_positions: HashMap<String, usize>,
     /// Const evaluation state machine.
     pub(crate) const_eval_state: HashMap<String, const_eval::ConstEvalState>,
     /// Cached const evaluation results.
@@ -318,6 +340,9 @@ impl TypeChecker {
             current_trait_name: None,
             current_trait_missing_requires_emitted: None,
             const_decls: HashMap::new(),
+            static_decls: Vec::new(),
+            local_function_decls: HashMap::new(),
+            static_decl_positions: HashMap::new(),
             const_eval_state: HashMap::new(),
             const_eval_cache: HashMap::new(),
             type_info: TypeCheckInfo::default(),
@@ -814,6 +839,15 @@ impl TypeChecker {
         }
     }
 
+    /// Look up a module static binding by name (in any scope) and return its [`StaticInfo`].
+    pub(crate) fn lookup_static_info(&self, name: &str) -> Option<&StaticInfo> {
+        let sym = self.lookup_symbol(name)?;
+        match &sym.kind {
+            SymbolKind::Static(info) => Some(info),
+            _ => None,
+        }
+    }
+
     /// Look up a variable binding by name **in the current scope only** and return its [`VariableInfo`].
     ///
     /// Returns `None` if the symbol is missing, not local, or isn't a variable.
@@ -853,6 +887,719 @@ impl TypeChecker {
                     .trait_type_params
                     .insert(sym.name.clone(), info.type_params.clone());
             }
+        }
+    }
+
+    /// Validate local static dependencies before declaration checking.
+    ///
+    /// `static` initializers may only reference earlier local statics, and dependency cycles are rejected.
+    fn validate_static_dependencies(&mut self) {
+        if self.static_decls.is_empty() {
+            return;
+        }
+
+        let mut graph: HashMap<String, Vec<String>> = HashMap::new();
+        let static_spans: HashMap<String, Span> = self
+            .static_decls
+            .iter()
+            .map(|(static_decl, span)| (static_decl.name.clone(), *span))
+            .collect();
+
+        for (static_decl, _) in self.static_decls.clone() {
+            let mut deps = HashSet::new();
+            let mut visiting_functions = HashSet::new();
+            self.collect_static_dependencies_from_expr(&static_decl.value.node, &mut deps, &mut visiting_functions);
+            self.collect_static_initializer_static_writes_from_expr(
+                &static_decl.value,
+                &static_decl.name,
+                &mut HashSet::new(),
+            );
+
+            if let Some(current_idx) = self.static_decl_positions.get(&static_decl.name).copied() {
+                for dep in &deps {
+                    if let Some(dep_idx) = self.static_decl_positions.get(dep).copied()
+                        && dep_idx >= current_idx
+                    {
+                        self.errors.push(errors::static_initializer_requires_earlier_static(
+                            dep,
+                            &static_decl.name,
+                            static_decl.value.span,
+                        ));
+                    }
+                }
+            }
+
+            graph.insert(static_decl.name.clone(), deps.into_iter().collect());
+        }
+
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum VisitState {
+            Visiting,
+            Done,
+        }
+
+        fn visit(
+            name: &str,
+            graph: &HashMap<String, Vec<String>>,
+            spans: &HashMap<String, Span>,
+            state: &mut HashMap<String, VisitState>,
+            stack: &mut Vec<String>,
+            collected_errors: &mut Vec<CompileError>,
+        ) {
+            match state.get(name).copied() {
+                Some(VisitState::Done) => return,
+                Some(VisitState::Visiting) => {
+                    if let Some(start_idx) = stack.iter().position(|item| item == name) {
+                        let mut cycle = stack[start_idx..].to_vec();
+                        cycle.push(name.to_string());
+                        collected_errors.push(errors::static_dependency_cycle(
+                            &cycle.join(" -> "),
+                            spans.get(name).copied().unwrap_or_default(),
+                        ));
+                    }
+                    return;
+                }
+                None => {}
+            }
+
+            state.insert(name.to_string(), VisitState::Visiting);
+            stack.push(name.to_string());
+            if let Some(deps) = graph.get(name) {
+                for dep in deps {
+                    visit(dep, graph, spans, state, stack, collected_errors);
+                }
+            }
+            stack.pop();
+            state.insert(name.to_string(), VisitState::Done);
+        }
+
+        let mut state: HashMap<String, VisitState> = HashMap::new();
+        let mut stack = Vec::new();
+        for name in graph.keys() {
+            visit(name, &graph, &static_spans, &mut state, &mut stack, &mut self.errors);
+        }
+    }
+
+    /// Recursively collect the names of local static dependencies from `expr` into `deps`.
+    fn collect_static_dependencies_from_expr(
+        &self,
+        expr: &Expr,
+        deps: &mut HashSet<String>,
+        visiting_functions: &mut HashSet<String>,
+    ) {
+        match expr {
+            Expr::Ident(name) => {
+                if self.static_decl_positions.contains_key(name) {
+                    deps.insert(name.clone());
+                }
+            }
+            Expr::Literal(_) | Expr::SelfExpr => {}
+            Expr::Binary(left, _, right) => {
+                self.collect_static_dependencies_from_expr(&left.node, deps, visiting_functions);
+                self.collect_static_dependencies_from_expr(&right.node, deps, visiting_functions);
+            }
+            Expr::Unary(_, inner) | Expr::Try(inner) | Expr::Paren(inner) | Expr::Yield(Some(inner)) => {
+                self.collect_static_dependencies_from_expr(&inner.node, deps, visiting_functions);
+            }
+            Expr::Yield(None) => {}
+            Expr::Call(func, args) => {
+                self.collect_static_dependencies_from_expr(&func.node, deps, visiting_functions);
+                self.collect_static_dependencies_from_call_args(args, deps, visiting_functions);
+                if let Expr::Ident(function_name) = &func.node
+                    && let Some(function_decl) = self.local_function_decls.get(function_name)
+                    && visiting_functions.insert(function_name.clone())
+                {
+                    for stmt in &function_decl.body {
+                        self.collect_static_dependencies_from_statement(&stmt.node, deps, visiting_functions);
+                    }
+                    visiting_functions.remove(function_name);
+                }
+            }
+            Expr::Index(object, index) => {
+                self.collect_static_dependencies_from_expr(&object.node, deps, visiting_functions);
+                self.collect_static_dependencies_from_expr(&index.node, deps, visiting_functions);
+            }
+            Expr::Slice(target, slice) => {
+                self.collect_static_dependencies_from_expr(&target.node, deps, visiting_functions);
+                if let Some(start) = &slice.start {
+                    self.collect_static_dependencies_from_expr(&start.node, deps, visiting_functions);
+                }
+                if let Some(end) = &slice.end {
+                    self.collect_static_dependencies_from_expr(&end.node, deps, visiting_functions);
+                }
+                if let Some(step) = &slice.step {
+                    self.collect_static_dependencies_from_expr(&step.node, deps, visiting_functions);
+                }
+            }
+            Expr::Field(object, _) => {
+                self.collect_static_dependencies_from_expr(&object.node, deps, visiting_functions);
+            }
+            Expr::MethodCall(object, _, args) => {
+                self.collect_static_dependencies_from_expr(&object.node, deps, visiting_functions);
+                self.collect_static_dependencies_from_call_args(args, deps, visiting_functions);
+            }
+            Expr::Match(scrutinee, arms) => {
+                self.collect_static_dependencies_from_expr(&scrutinee.node, deps, visiting_functions);
+                for arm in arms {
+                    if let Some(guard) = &arm.node.guard {
+                        self.collect_static_dependencies_from_expr(&guard.node, deps, visiting_functions);
+                    }
+                    match &arm.node.body {
+                        MatchBody::Expr(expr) => {
+                            self.collect_static_dependencies_from_expr(&expr.node, deps, visiting_functions);
+                        }
+                        MatchBody::Block(stmts) => {
+                            for stmt in stmts {
+                                self.collect_static_dependencies_from_statement(&stmt.node, deps, visiting_functions);
+                            }
+                        }
+                    }
+                }
+            }
+            Expr::If(if_expr) => {
+                self.collect_static_dependencies_from_expr(&if_expr.condition.node, deps, visiting_functions);
+                for stmt in &if_expr.then_body {
+                    self.collect_static_dependencies_from_statement(&stmt.node, deps, visiting_functions);
+                }
+                if let Some(else_body) = &if_expr.else_body {
+                    for stmt in else_body {
+                        self.collect_static_dependencies_from_statement(&stmt.node, deps, visiting_functions);
+                    }
+                }
+            }
+            Expr::ListComp(list_comp) => {
+                self.collect_static_dependencies_from_expr(&list_comp.expr.node, deps, visiting_functions);
+                self.collect_static_dependencies_from_expr(&list_comp.iter.node, deps, visiting_functions);
+                if let Some(filter) = &list_comp.filter {
+                    self.collect_static_dependencies_from_expr(&filter.node, deps, visiting_functions);
+                }
+            }
+            Expr::DictComp(dict_comp) => {
+                self.collect_static_dependencies_from_expr(&dict_comp.key.node, deps, visiting_functions);
+                self.collect_static_dependencies_from_expr(&dict_comp.value.node, deps, visiting_functions);
+                self.collect_static_dependencies_from_expr(&dict_comp.iter.node, deps, visiting_functions);
+                if let Some(filter) = &dict_comp.filter {
+                    self.collect_static_dependencies_from_expr(&filter.node, deps, visiting_functions);
+                }
+            }
+            Expr::Closure(_, _) => {}
+            Expr::Tuple(items) | Expr::List(items) | Expr::Set(items) => {
+                for item in items {
+                    self.collect_static_dependencies_from_expr(&item.node, deps, visiting_functions);
+                }
+            }
+            Expr::Dict(items) => {
+                for (key, value) in items {
+                    self.collect_static_dependencies_from_expr(&key.node, deps, visiting_functions);
+                    self.collect_static_dependencies_from_expr(&value.node, deps, visiting_functions);
+                }
+            }
+            Expr::Constructor(_, args) => {
+                self.collect_static_dependencies_from_call_args(args, deps, visiting_functions);
+            }
+            Expr::FString(parts) => {
+                for part in parts {
+                    if let FStringPart::Expr(expr) = part {
+                        self.collect_static_dependencies_from_expr(&expr.node, deps, visiting_functions);
+                    }
+                }
+            }
+            Expr::Range { start, end, .. } => {
+                self.collect_static_dependencies_from_expr(&start.node, deps, visiting_functions);
+                self.collect_static_dependencies_from_expr(&end.node, deps, visiting_functions);
+            }
+            Expr::Surface(surface) => match &surface.payload {
+                SurfaceExprPayload::PrefixUnary(expr) => {
+                    self.collect_static_dependencies_from_expr(&expr.node, deps, visiting_functions);
+                }
+            },
+        }
+    }
+
+    /// Recursively collect the names of local static dependencies from `args` into `deps`.
+    fn collect_static_dependencies_from_call_args(
+        &self,
+        args: &[CallArg],
+        deps: &mut HashSet<String>,
+        visiting_functions: &mut HashSet<String>,
+    ) {
+        for arg in args {
+            match arg {
+                CallArg::Positional(expr) | CallArg::Named(_, expr) => {
+                    self.collect_static_dependencies_from_expr(&expr.node, deps, visiting_functions);
+                }
+            }
+        }
+    }
+
+    /// Validate RFC 052 "no static assignment in static initializers" by walking expression-driven call graphs.
+    ///
+    /// This intentionally follows local helper function calls reachable from the initializer expression so hidden
+    /// `static` writes in helper bodies are rejected before runtime emission.
+    fn collect_static_initializer_static_writes_from_expr(
+        &mut self,
+        expr: &Spanned<Expr>,
+        current_static: &str,
+        visiting_functions: &mut HashSet<String>,
+    ) {
+        match &expr.node {
+            Expr::Literal(_) | Expr::Ident(_) | Expr::SelfExpr | Expr::Yield(None) => {}
+            Expr::Binary(left, _, right) => {
+                self.collect_static_initializer_static_writes_from_expr(left, current_static, visiting_functions);
+                self.collect_static_initializer_static_writes_from_expr(right, current_static, visiting_functions);
+            }
+            Expr::Unary(_, inner) | Expr::Try(inner) | Expr::Paren(inner) | Expr::Yield(Some(inner)) => {
+                self.collect_static_initializer_static_writes_from_expr(inner, current_static, visiting_functions);
+            }
+            Expr::Call(func, args) => {
+                self.collect_static_initializer_static_writes_from_expr(func, current_static, visiting_functions);
+                self.collect_static_initializer_static_writes_from_call_args(args, current_static, visiting_functions);
+                if let Expr::Ident(function_name) = &func.node
+                    && let Some(function_decl) = self.local_function_decls.get(function_name).cloned()
+                    && visiting_functions.insert(function_name.clone())
+                {
+                    for stmt in &function_decl.body {
+                        self.collect_static_initializer_static_writes_from_stmt(
+                            stmt,
+                            current_static,
+                            visiting_functions,
+                        );
+                    }
+                    visiting_functions.remove(function_name);
+                }
+            }
+            Expr::MethodCall(object, _, args) => {
+                self.collect_static_initializer_static_writes_from_expr(object, current_static, visiting_functions);
+                self.collect_static_initializer_static_writes_from_call_args(args, current_static, visiting_functions);
+            }
+            Expr::Index(object, index) => {
+                self.collect_static_initializer_static_writes_from_expr(object, current_static, visiting_functions);
+                self.collect_static_initializer_static_writes_from_expr(index, current_static, visiting_functions);
+            }
+            Expr::Slice(target, slice) => {
+                self.collect_static_initializer_static_writes_from_expr(target, current_static, visiting_functions);
+                if let Some(start) = &slice.start {
+                    self.collect_static_initializer_static_writes_from_expr(start, current_static, visiting_functions);
+                }
+                if let Some(end) = &slice.end {
+                    self.collect_static_initializer_static_writes_from_expr(end, current_static, visiting_functions);
+                }
+                if let Some(step) = &slice.step {
+                    self.collect_static_initializer_static_writes_from_expr(step, current_static, visiting_functions);
+                }
+            }
+            Expr::Field(object, _) => {
+                self.collect_static_initializer_static_writes_from_expr(object, current_static, visiting_functions);
+            }
+            Expr::Tuple(items) | Expr::List(items) | Expr::Set(items) => {
+                for item in items {
+                    self.collect_static_initializer_static_writes_from_expr(item, current_static, visiting_functions);
+                }
+            }
+            Expr::Dict(items) => {
+                for (key, value) in items {
+                    self.collect_static_initializer_static_writes_from_expr(key, current_static, visiting_functions);
+                    self.collect_static_initializer_static_writes_from_expr(value, current_static, visiting_functions);
+                }
+            }
+            Expr::FString(parts) => {
+                for part in parts {
+                    if let FStringPart::Expr(inner) = part {
+                        self.collect_static_initializer_static_writes_from_expr(
+                            inner,
+                            current_static,
+                            visiting_functions,
+                        );
+                    }
+                }
+            }
+            Expr::Range { start, end, .. } => {
+                self.collect_static_initializer_static_writes_from_expr(start, current_static, visiting_functions);
+                self.collect_static_initializer_static_writes_from_expr(end, current_static, visiting_functions);
+            }
+            Expr::Constructor(_, args) => {
+                self.collect_static_initializer_static_writes_from_call_args(args, current_static, visiting_functions);
+            }
+            Expr::Match(scrutinee, arms) => {
+                self.collect_static_initializer_static_writes_from_expr(scrutinee, current_static, visiting_functions);
+                for arm in arms {
+                    if let Some(guard) = &arm.node.guard {
+                        self.collect_static_initializer_static_writes_from_expr(
+                            guard,
+                            current_static,
+                            visiting_functions,
+                        );
+                    }
+                    match &arm.node.body {
+                        MatchBody::Expr(inner) => {
+                            self.collect_static_initializer_static_writes_from_expr(
+                                inner,
+                                current_static,
+                                visiting_functions,
+                            );
+                        }
+                        MatchBody::Block(stmts) => {
+                            for stmt in stmts {
+                                self.collect_static_initializer_static_writes_from_stmt(
+                                    stmt,
+                                    current_static,
+                                    visiting_functions,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            Expr::If(if_expr) => {
+                self.collect_static_initializer_static_writes_from_expr(
+                    &if_expr.condition,
+                    current_static,
+                    visiting_functions,
+                );
+                for stmt in &if_expr.then_body {
+                    self.collect_static_initializer_static_writes_from_stmt(stmt, current_static, visiting_functions);
+                }
+                if let Some(else_body) = &if_expr.else_body {
+                    for stmt in else_body {
+                        self.collect_static_initializer_static_writes_from_stmt(
+                            stmt,
+                            current_static,
+                            visiting_functions,
+                        );
+                    }
+                }
+            }
+            Expr::ListComp(list_comp) => {
+                self.collect_static_initializer_static_writes_from_expr(
+                    &list_comp.expr,
+                    current_static,
+                    visiting_functions,
+                );
+                self.collect_static_initializer_static_writes_from_expr(
+                    &list_comp.iter,
+                    current_static,
+                    visiting_functions,
+                );
+                if let Some(filter) = &list_comp.filter {
+                    self.collect_static_initializer_static_writes_from_expr(filter, current_static, visiting_functions);
+                }
+            }
+            Expr::DictComp(dict_comp) => {
+                self.collect_static_initializer_static_writes_from_expr(
+                    &dict_comp.key,
+                    current_static,
+                    visiting_functions,
+                );
+                self.collect_static_initializer_static_writes_from_expr(
+                    &dict_comp.value,
+                    current_static,
+                    visiting_functions,
+                );
+                self.collect_static_initializer_static_writes_from_expr(
+                    &dict_comp.iter,
+                    current_static,
+                    visiting_functions,
+                );
+                if let Some(filter) = &dict_comp.filter {
+                    self.collect_static_initializer_static_writes_from_expr(filter, current_static, visiting_functions);
+                }
+            }
+            Expr::Closure(_, _) => {}
+            Expr::Surface(surface) => match &surface.payload {
+                SurfaceExprPayload::PrefixUnary(inner) => {
+                    self.collect_static_initializer_static_writes_from_expr(inner, current_static, visiting_functions);
+                }
+            },
+        }
+    }
+
+    fn collect_static_initializer_static_writes_from_call_args(
+        &mut self,
+        args: &[CallArg],
+        current_static: &str,
+        visiting_functions: &mut HashSet<String>,
+    ) {
+        for arg in args {
+            match arg {
+                CallArg::Positional(expr) | CallArg::Named(_, expr) => {
+                    self.collect_static_initializer_static_writes_from_expr(expr, current_static, visiting_functions);
+                }
+            }
+        }
+    }
+
+    fn collect_static_initializer_static_writes_from_stmt(
+        &mut self,
+        stmt: &Spanned<Statement>,
+        current_static: &str,
+        visiting_functions: &mut HashSet<String>,
+    ) {
+        match &stmt.node {
+            Statement::Assignment(assign) => {
+                if self.static_decl_positions.contains_key(&assign.name) {
+                    self.errors.push(errors::static_initializer_static_write_not_allowed(
+                        current_static,
+                        &assign.name,
+                        stmt.span,
+                    ));
+                }
+                self.collect_static_initializer_static_writes_from_expr(
+                    &assign.value,
+                    current_static,
+                    visiting_functions,
+                );
+            }
+            Statement::CompoundAssignment(assign) => {
+                if self.static_decl_positions.contains_key(&assign.name) {
+                    self.errors.push(errors::static_initializer_static_write_not_allowed(
+                        current_static,
+                        &assign.name,
+                        stmt.span,
+                    ));
+                }
+                self.collect_static_initializer_static_writes_from_expr(
+                    &assign.value,
+                    current_static,
+                    visiting_functions,
+                );
+            }
+            Statement::FieldAssignment(assign) => {
+                if let Some(target_static) = self.static_assignment_target_name(&assign.object) {
+                    self.errors.push(errors::static_initializer_static_write_not_allowed(
+                        current_static,
+                        target_static.as_str(),
+                        assign.target_span,
+                    ));
+                }
+                self.collect_static_initializer_static_writes_from_expr(
+                    &assign.object,
+                    current_static,
+                    visiting_functions,
+                );
+                self.collect_static_initializer_static_writes_from_expr(
+                    &assign.value,
+                    current_static,
+                    visiting_functions,
+                );
+            }
+            Statement::IndexAssignment(assign) => {
+                if let Some(target_static) = self.static_assignment_target_name(&assign.object) {
+                    self.errors.push(errors::static_initializer_static_write_not_allowed(
+                        current_static,
+                        target_static.as_str(),
+                        stmt.span,
+                    ));
+                }
+                self.collect_static_initializer_static_writes_from_expr(
+                    &assign.object,
+                    current_static,
+                    visiting_functions,
+                );
+                self.collect_static_initializer_static_writes_from_expr(
+                    &assign.index,
+                    current_static,
+                    visiting_functions,
+                );
+                self.collect_static_initializer_static_writes_from_expr(
+                    &assign.value,
+                    current_static,
+                    visiting_functions,
+                );
+            }
+            Statement::TupleAssign(assign) => {
+                for target in &assign.targets {
+                    if let Some(target_static) = self.static_assignment_target_name(target) {
+                        self.errors.push(errors::static_initializer_static_write_not_allowed(
+                            current_static,
+                            target_static.as_str(),
+                            target.span,
+                        ));
+                    }
+                    self.collect_static_initializer_static_writes_from_expr(target, current_static, visiting_functions);
+                }
+                self.collect_static_initializer_static_writes_from_expr(
+                    &assign.value,
+                    current_static,
+                    visiting_functions,
+                );
+            }
+            Statement::TupleUnpack(assign) => {
+                for target in &assign.names {
+                    if self.static_decl_positions.contains_key(target) {
+                        self.errors.push(errors::static_initializer_static_write_not_allowed(
+                            current_static,
+                            target,
+                            stmt.span,
+                        ));
+                    }
+                }
+                self.collect_static_initializer_static_writes_from_expr(
+                    &assign.value,
+                    current_static,
+                    visiting_functions,
+                );
+            }
+            Statement::ChainedAssignment(assign) => {
+                for target in &assign.targets {
+                    if self.static_decl_positions.contains_key(target) {
+                        self.errors.push(errors::static_initializer_static_write_not_allowed(
+                            current_static,
+                            target,
+                            stmt.span,
+                        ));
+                    }
+                }
+                self.collect_static_initializer_static_writes_from_expr(
+                    &assign.value,
+                    current_static,
+                    visiting_functions,
+                );
+            }
+            Statement::Return(Some(expr)) | Statement::Expr(expr) => {
+                self.collect_static_initializer_static_writes_from_expr(expr, current_static, visiting_functions);
+            }
+            Statement::If(if_stmt) => {
+                self.collect_static_initializer_static_writes_from_expr(
+                    &if_stmt.condition,
+                    current_static,
+                    visiting_functions,
+                );
+                for inner in &if_stmt.then_body {
+                    self.collect_static_initializer_static_writes_from_stmt(inner, current_static, visiting_functions);
+                }
+                for (condition, body) in &if_stmt.elif_branches {
+                    self.collect_static_initializer_static_writes_from_expr(
+                        condition,
+                        current_static,
+                        visiting_functions,
+                    );
+                    for inner in body {
+                        self.collect_static_initializer_static_writes_from_stmt(
+                            inner,
+                            current_static,
+                            visiting_functions,
+                        );
+                    }
+                }
+                if let Some(else_body) = &if_stmt.else_body {
+                    for inner in else_body {
+                        self.collect_static_initializer_static_writes_from_stmt(
+                            inner,
+                            current_static,
+                            visiting_functions,
+                        );
+                    }
+                }
+            }
+            Statement::While(while_stmt) => {
+                self.collect_static_initializer_static_writes_from_expr(
+                    &while_stmt.condition,
+                    current_static,
+                    visiting_functions,
+                );
+                for inner in &while_stmt.body {
+                    self.collect_static_initializer_static_writes_from_stmt(inner, current_static, visiting_functions);
+                }
+            }
+            Statement::For(for_stmt) => {
+                self.collect_static_initializer_static_writes_from_expr(
+                    &for_stmt.iter,
+                    current_static,
+                    visiting_functions,
+                );
+                for inner in &for_stmt.body {
+                    self.collect_static_initializer_static_writes_from_stmt(inner, current_static, visiting_functions);
+                }
+            }
+            Statement::Return(None)
+            | Statement::Pass
+            | Statement::Break
+            | Statement::Continue
+            | Statement::Surface(_)
+            | Statement::VocabBlock(_) => {}
+        }
+    }
+
+    /// Resolve the static root name for assignment targets such as `S`, `S.field`, or `S[idx]`.
+    fn static_assignment_target_name(&self, expr: &Spanned<Expr>) -> Option<String> {
+        match &expr.node {
+            Expr::Ident(name) => self.static_decl_positions.contains_key(name).then(|| name.clone()),
+            Expr::Field(object, _) | Expr::Index(object, _) | Expr::Paren(object) => {
+                self.static_assignment_target_name(object)
+            }
+            _ => None,
+        }
+    }
+
+    /// Recursively collect the names of local static dependencies from `stmt` into `deps`.
+    fn collect_static_dependencies_from_statement(
+        &self,
+        stmt: &Statement,
+        deps: &mut HashSet<String>,
+        visiting_functions: &mut HashSet<String>,
+    ) {
+        match stmt {
+            Statement::Assignment(assign) => {
+                self.collect_static_dependencies_from_expr(&assign.value.node, deps, visiting_functions);
+            }
+            Statement::FieldAssignment(assign) => {
+                self.collect_static_dependencies_from_expr(&assign.object.node, deps, visiting_functions);
+                self.collect_static_dependencies_from_expr(&assign.value.node, deps, visiting_functions);
+            }
+            Statement::IndexAssignment(assign) => {
+                self.collect_static_dependencies_from_expr(&assign.object.node, deps, visiting_functions);
+                self.collect_static_dependencies_from_expr(&assign.index.node, deps, visiting_functions);
+                self.collect_static_dependencies_from_expr(&assign.value.node, deps, visiting_functions);
+            }
+            Statement::Return(Some(expr)) | Statement::Expr(expr) => {
+                self.collect_static_dependencies_from_expr(&expr.node, deps, visiting_functions);
+            }
+            Statement::Return(None) | Statement::Pass | Statement::Break | Statement::Continue => {}
+            Statement::If(if_stmt) => {
+                self.collect_static_dependencies_from_expr(&if_stmt.condition.node, deps, visiting_functions);
+                for stmt in &if_stmt.then_body {
+                    self.collect_static_dependencies_from_statement(&stmt.node, deps, visiting_functions);
+                }
+                for (condition, body) in &if_stmt.elif_branches {
+                    self.collect_static_dependencies_from_expr(&condition.node, deps, visiting_functions);
+                    for stmt in body {
+                        self.collect_static_dependencies_from_statement(&stmt.node, deps, visiting_functions);
+                    }
+                }
+                if let Some(else_body) = &if_stmt.else_body {
+                    for stmt in else_body {
+                        self.collect_static_dependencies_from_statement(&stmt.node, deps, visiting_functions);
+                    }
+                }
+            }
+            Statement::While(while_stmt) => {
+                self.collect_static_dependencies_from_expr(&while_stmt.condition.node, deps, visiting_functions);
+                for stmt in &while_stmt.body {
+                    self.collect_static_dependencies_from_statement(&stmt.node, deps, visiting_functions);
+                }
+            }
+            Statement::For(for_stmt) => {
+                self.collect_static_dependencies_from_expr(&for_stmt.iter.node, deps, visiting_functions);
+                for stmt in &for_stmt.body {
+                    self.collect_static_dependencies_from_statement(&stmt.node, deps, visiting_functions);
+                }
+            }
+            Statement::CompoundAssignment(assign) => {
+                self.collect_static_dependencies_from_expr(&assign.value.node, deps, visiting_functions);
+            }
+            Statement::TupleUnpack(assign) => {
+                self.collect_static_dependencies_from_expr(&assign.value.node, deps, visiting_functions);
+            }
+            Statement::TupleAssign(assign) => {
+                self.collect_static_dependencies_from_expr(&assign.value.node, deps, visiting_functions);
+                for target in &assign.targets {
+                    self.collect_static_dependencies_from_expr(&target.node, deps, visiting_functions);
+                }
+            }
+            Statement::ChainedAssignment(assign) => {
+                self.collect_static_dependencies_from_expr(&assign.value.node, deps, visiting_functions);
+            }
+            Statement::Surface(_) | Statement::VocabBlock(_) => {}
         }
     }
 
@@ -968,6 +1715,9 @@ impl TypeChecker {
     pub fn check_program(&mut self, program: &Program) -> Result<(), Vec<CompileError>> {
         // Reset per-run caches.
         self.const_decls.clear();
+        self.static_decls.clear();
+        self.local_function_decls.clear();
+        self.static_decl_positions.clear();
         self.const_eval_state.clear();
         self.const_eval_cache.clear();
         self.type_info = TypeCheckInfo::default();
@@ -992,6 +1742,7 @@ impl TypeChecker {
         self.resolve_pending_trait_supertraits();
         self.finalize_supertrait_graph();
         self.merge_supertrait_requires_into_traits();
+        self.validate_static_dependencies();
 
         // Second pass: check consts first so their resolved types are available to later checks.
         for decl in &program.declarations {
@@ -1371,6 +2122,7 @@ impl Default for TypeChecker {
 fn is_public_decl(decl: &Spanned<Declaration>) -> bool {
     match &decl.node {
         Declaration::Const(c) => matches!(c.visibility, Visibility::Public),
+        Declaration::Static(s) => matches!(s.visibility, Visibility::Public),
         Declaration::Model(m) => matches!(m.visibility, Visibility::Public),
         Declaration::Class(c) => matches!(c.visibility, Visibility::Public),
         Declaration::Enum(e) => matches!(e.visibility, Visibility::Public),

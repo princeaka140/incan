@@ -8,7 +8,7 @@ use crate::frontend::library_manifest_index::{
 use crate::frontend::{lexer, parser};
 use crate::library_manifest::{
     ConstExport, EnumExport, EnumVariantExport, FunctionExport, LibraryExports, LibraryManifest, ModelExport,
-    ParamExport, TraitExport, TypeParamExport, TypeRef,
+    ParamExport, StaticExport, TraitExport, TypeParamExport, TypeRef,
 };
 #[cfg(feature = "rust-metadata")]
 use crate::rust_metadata::write_substrait_probe_crate;
@@ -151,6 +151,15 @@ fn library_index_with_mylib_exports() -> LibraryManifestIndex {
                     name: "str".to_string(),
                 },
             }],
+            statics: vec![StaticExport {
+                name: "SHARED_ITEMS".to_string(),
+                ty: TypeRef::Applied {
+                    name: "list".to_string(),
+                    args: vec![TypeRef::Named {
+                        name: "int".to_string(),
+                    }],
+                },
+            }],
         },
         vocab: None,
         soft_keywords: Default::default(),
@@ -189,6 +198,7 @@ fn library_index_with_trait_export() -> LibraryManifestIndex {
             type_aliases: Vec::new(),
             newtypes: Vec::new(),
             consts: Vec::new(),
+            statics: Vec::new(),
         },
         vocab: None,
         soft_keywords: Default::default(),
@@ -4773,5 +4783,179 @@ def main() -> float:
         errs.iter().any(|e| e.message.contains("violates generic bound")),
         "Expected explicit Eq bound error; got: {:?}",
         errs.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_static_initializer_requires_earlier_static() {
+    let source = r#"
+static SECOND: int = FIRST
+static FIRST: int = 1
+"#;
+    let Err(errs) = check_str(source) else {
+        panic!("forward static reference should fail");
+    };
+    assert!(
+        errs.iter().any(|e| e
+            .message
+            .contains("Static 'SECOND' cannot reference 'FIRST' before it is initialized")),
+        "expected earlier-static diagnostic, got: {:?}",
+        errs.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_static_dependency_cycle_is_rejected() {
+    let source = r#"
+static A: int = B
+static B: int = A
+"#;
+    let Err(errs) = check_str(source) else {
+        panic!("static cycle should fail");
+    };
+    assert!(
+        errs.iter()
+            .any(|e| e.message.contains("Static dependency cycle detected")),
+        "expected static-cycle diagnostic, got: {:?}",
+        errs.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_static_dependency_cycle_via_function_calls_is_rejected() {
+    let source = r#"
+def read_a() -> int:
+  return A
+
+def read_b() -> int:
+  return B
+
+static A: int = read_b()
+static B: int = read_a()
+"#;
+    let Err(errs) = check_str(source) else {
+        panic!("static cycle through helper functions should fail");
+    };
+    assert!(
+        errs.iter()
+            .any(|e| e.message.contains("Static dependency cycle detected")),
+        "expected static-cycle diagnostic, got: {:?}",
+        errs.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_static_initializer_rejects_helper_static_assignment() {
+    let source = r#"
+static TARGET: int = 0
+
+def mutate_target() -> int:
+  TARGET = TARGET + 1
+  return TARGET
+
+static RESULT: int = mutate_target()
+"#;
+    let Err(errs) = check_str(source) else {
+        panic!("static initializer that assigns a static through helper call should fail");
+    };
+    assert!(
+        errs.iter().any(|e| e
+            .message
+            .contains("Static initializer for 'RESULT' cannot assign to static 'TARGET'")),
+        "expected static-initializer write diagnostic, got: {:?}",
+        errs.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_static_initializer_via_function_requires_earlier_static() {
+    let source = r#"
+def read_first() -> int:
+  return FIRST
+
+static SECOND: int = read_first()
+static FIRST: int = 1
+"#;
+    let Err(errs) = check_str(source) else {
+        panic!("forward static reference through helper function should fail");
+    };
+    assert!(
+        errs.iter().any(|e| e
+            .message
+            .contains("Static 'SECOND' cannot reference 'FIRST' before it is initialized")),
+        "expected earlier-static diagnostic, got: {:?}",
+        errs.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_imported_static_reassignment_is_rejected() {
+    let source = r#"
+from pub::mylib import SHARED_ITEMS
+
+def main() -> None:
+  SHARED_ITEMS = []
+"#;
+    let Err(errs) = check_str_with_library_index(source, library_index_with_mylib_exports()) else {
+        panic!("imported static reassignment should fail");
+    };
+    assert!(
+        errs.iter()
+            .any(|e| e.message.contains("Cannot reassign imported static 'SHARED_ITEMS'")),
+        "expected imported-static reassignment diagnostic, got: {:?}",
+        errs.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_const_reassignment_suggests_static() {
+    let source = r#"
+const COUNTER: int = 0
+
+def main() -> None:
+  COUNTER = 1
+"#;
+    let Err(errs) = check_str(source) else {
+        panic!("const reassignment should fail");
+    };
+    assert!(
+        errs.iter()
+            .any(|e| e.message.contains("Cannot reassign const 'COUNTER'"))
+            && errs.iter().any(|e| e
+                .hints
+                .iter()
+                .any(|hint| hint.contains("declare it as `static COUNTER"))),
+        "expected const-reassignment static hint, got: {:?}",
+        errs.iter().map(|e| (&e.message, &e.hints)).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_static_alias_mutation_typechecks() {
+    let source = r#"
+static ITEMS: list[int] = []
+
+def main() -> None:
+  let live = ITEMS
+  live.append(1)
+  println(len(ITEMS))
+  println(len(live))
+"#;
+    assert_check_ok(source);
+}
+
+#[test]
+fn test_imported_static_mutation_typechecks() {
+    let source = r#"
+from pub::mylib import SHARED_ITEMS
+
+def main() -> None:
+  SHARED_ITEMS.append(1)
+  let live = SHARED_ITEMS
+  live.append(2)
+"#;
+    assert!(
+        check_str_with_library_index(source, library_index_with_mylib_exports()).is_ok(),
+        "expected imported static mutation to typecheck"
     );
 }

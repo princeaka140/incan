@@ -1460,6 +1460,52 @@ def test_nested_dataset_modules() -> None:
     }
 
     #[test]
+    fn e2e_imported_pub_static_scalar_read_in_tests_succeeds() {
+        let dir = write_test_project(
+            "incan.toml",
+            r#"[project]
+name = "pub_static_scalar_read"
+version = "0.1.0"
+"#,
+        );
+        let src_dir = dir.join("src");
+        let tests_dir = dir.join("tests");
+
+        if let Err(err) = std::fs::create_dir_all(&src_dir) {
+            panic!("failed to create src dir: {}", err);
+        }
+        if let Err(err) = std::fs::create_dir_all(&tests_dir) {
+            panic!("failed to create tests dir: {}", err);
+        }
+        if let Err(err) = std::fs::write(src_dir.join("widgets.incn"), "pub static MARKER: int = 41\n") {
+            panic!("failed to write widgets source: {}", err);
+        }
+        if let Err(err) = std::fs::write(
+            tests_dir.join("test_widgets_static.incn"),
+            r#"
+from std.testing import assert_eq
+from widgets import MARKER
+
+def test_imported_pub_static_scalar_read() -> None:
+    assert_eq(MARKER, 41)
+"#,
+        ) {
+            panic!("failed to write widget static test: {}", err);
+        }
+
+        let output = run_incan_test(&dir);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            output.status.success(),
+            "expected imported pub static scalar read test to succeed.\nstdout:\n{}\nstderr:\n{}",
+            stdout,
+            stderr,
+        );
+    }
+
+    #[test]
     fn e2e_empty_list_arguments_in_tests_preserve_string_element_type() -> Result<(), Box<dyn std::error::Error>> {
         let dir = write_test_project(
             "incan.toml",

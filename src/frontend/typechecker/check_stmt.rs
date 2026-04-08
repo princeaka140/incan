@@ -105,6 +105,54 @@ impl TypeChecker {
                             compound.value.span,
                         ));
                     }
+                } else if let Some(static_info) = self.lookup_static_info(&compound.name).cloned() {
+                    if static_info.is_imported {
+                        self.errors.push(errors::imported_static_reassignment_not_allowed(
+                            &compound.name,
+                            stmt.span,
+                        ));
+                        return;
+                    }
+                    let value_ty = self.check_expr(&compound.value);
+                    let var_ty = static_info.ty;
+
+                    let binop = match compound.op {
+                        CompoundOp::Add => BinaryOp::Add,
+                        CompoundOp::Sub => BinaryOp::Sub,
+                        CompoundOp::Mul => BinaryOp::Mul,
+                        CompoundOp::Div => BinaryOp::Div,
+                        CompoundOp::FloorDiv => BinaryOp::FloorDiv,
+                        CompoundOp::Mod => BinaryOp::Mod,
+                    };
+
+                    let lhs_num = numeric_ty_from_resolved(&var_ty);
+                    let rhs_num = numeric_ty_from_resolved(&value_ty);
+
+                    if let (Some(lhs), Some(rhs)) = (lhs_num, rhs_num) {
+                        if let Some(num_op) = numeric_op_from_ast(&binop) {
+                            let res_num = result_numeric_type(num_op, lhs, rhs, None);
+                            let res_ty = match res_num {
+                                NumericTy::Int => ResolvedType::Int,
+                                NumericTy::Float => ResolvedType::Float,
+                            };
+                            if !self.types_compatible(&res_ty, &var_ty) {
+                                self.errors.push(errors::type_mismatch(
+                                    &var_ty.to_string(),
+                                    &res_ty.to_string(),
+                                    compound.value.span,
+                                ));
+                            }
+                        }
+                    } else if !self.types_compatible(&value_ty, &var_ty) {
+                        self.errors.push(errors::type_mismatch(
+                            &var_ty.to_string(),
+                            &value_ty.to_string(),
+                            compound.value.span,
+                        ));
+                    }
+                } else if self.const_decls.contains_key(&compound.name) {
+                    self.errors
+                        .push(errors::const_reassignment_suggests_static(&compound.name, stmt.span));
                 } else {
                     self.errors.push(errors::unknown_symbol(&compound.name, stmt.span));
                 }
@@ -185,6 +233,14 @@ impl TypeChecker {
                                 && !var_info.is_mutable
                             {
                                 self.errors.push(errors::mutation_without_mut(name, target.span));
+                            } else if let Some(static_info) = self.lookup_static_info(name) {
+                                if static_info.is_imported {
+                                    self.errors
+                                        .push(errors::imported_static_reassignment_not_allowed(name, target.span));
+                                }
+                            } else if self.const_decls.contains_key(name) {
+                                self.errors
+                                    .push(errors::const_reassignment_suggests_static(name, target.span));
                             }
                         }
                         Expr::Index(_, _) | Expr::Field(_, _) => {
@@ -395,6 +451,30 @@ impl TypeChecker {
                     assign.value.span,
                 ));
             }
+            return;
+        }
+
+        if let Some(static_info) = self.lookup_static_info(&assign.name) {
+            if static_info.is_imported {
+                self.errors
+                    .push(errors::imported_static_reassignment_not_allowed(&assign.name, span));
+                return;
+            }
+            let static_ty = static_info.ty.clone();
+            let value_ty = self.check_expr_with_expected(&assign.value, Some(&static_ty));
+            if !self.types_compatible(&value_ty, &static_ty) {
+                self.errors.push(errors::type_mismatch(
+                    &static_ty.to_string(),
+                    &value_ty.to_string(),
+                    assign.value.span,
+                ));
+            }
+            return;
+        }
+
+        if self.const_decls.contains_key(&assign.name) {
+            self.errors
+                .push(errors::const_reassignment_suggests_static(&assign.name, span));
             return;
         }
 

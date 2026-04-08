@@ -120,6 +120,12 @@ pub struct CheckedConstExport {
 }
 
 #[derive(Debug, Clone)]
+pub struct CheckedStaticExport {
+    pub name: String,
+    pub ty: ResolvedType,
+}
+
+#[derive(Debug, Clone)]
 pub enum CheckedExportKind {
     Function(CheckedFunctionExport),
     TypeAlias(CheckedTypeAliasExport),
@@ -129,6 +135,7 @@ pub enum CheckedExportKind {
     Enum(CheckedEnumExport),
     Newtype(CheckedNewtypeExport),
     Const(CheckedConstExport),
+    Static(CheckedStaticExport),
 }
 
 #[derive(Debug, Clone)]
@@ -201,6 +208,14 @@ pub fn collect_checked_public_exports(program: &Program, checker: &TypeChecker) 
                     exports.push(CheckedNamedExport {
                         name: export.name.clone(),
                         kind: CheckedExportKind::Const(export),
+                    });
+                }
+            }
+            Declaration::Static(static_decl) if matches!(static_decl.visibility, Visibility::Public) => {
+                if let Some(export) = checked_static_export(static_decl.name.as_str(), checker) {
+                    exports.push(CheckedNamedExport {
+                        name: export.name.clone(),
+                        kind: CheckedExportKind::Static(export),
                     });
                 }
             }
@@ -375,6 +390,17 @@ fn checked_const_export(const_name: &str, checker: &TypeChecker) -> Option<Check
     Some(CheckedConstExport {
         name: const_name.to_string(),
         ty: variable_info.ty.clone(),
+    })
+}
+
+fn checked_static_export(static_name: &str, checker: &TypeChecker) -> Option<CheckedStaticExport> {
+    let symbol = checker.lookup_symbol(static_name)?;
+    let SymbolKind::Static(static_info) = &symbol.kind else {
+        return None;
+    };
+    Some(CheckedStaticExport {
+        name: static_name.to_string(),
+        ty: static_info.ty.clone(),
     })
 }
 

@@ -14,7 +14,8 @@ use crate::frontend::testing_markers::load_testing_marker_semantics;
 use crate::frontend::typechecker::TypeChecker;
 use crate::library_manifest::{
     ClassExport, ConstExport, EnumExport, FieldExport, FunctionExport, LibraryManifest, MethodExport, ModelExport,
-    NewtypeExport, ParamExport, ReceiverExport, TraitExport, TypeParamExport, resolved_type_from_manifest_type_ref,
+    NewtypeExport, ParamExport, ReceiverExport, StaticExport, TraitExport, TypeParamExport,
+    resolved_type_from_manifest_type_ref,
 };
 use incan_core::interop::is_rust_capability_bound;
 use incan_core::lang::stdlib::{self, is_typechecker_only_stdlib};
@@ -34,6 +35,7 @@ enum ManifestExportRef<'a> {
     TypeAlias,
     Newtype(&'a NewtypeExport),
     Const(&'a ConstExport),
+    Static(&'a StaticExport),
 }
 
 impl TypeChecker {
@@ -229,27 +231,36 @@ impl TypeChecker {
                         }
                     }
 
-                    let aliased_type = item.alias.as_ref().and_then(|alias| {
-                        if self.symbols.lookup(alias).is_some() {
-                            return None;
+                    // If dependency metadata has already materialized this imported item as a concrete symbol,
+                    // preserve that symbol kind (especially `static`) instead of rewriting it as a module path proxy.
+                    if let Some(mut imported_kind) = self.existing_from_import_symbol_kind(&item.name) {
+                        if let SymbolKind::Static(info) = &mut imported_kind {
+                            info.is_imported = true;
                         }
-                        let id = self.symbols.lookup(&item.name)?;
-                        let sym = self.symbols.get(id)?;
-                        let SymbolKind::Type(info) = &sym.kind else {
-                            return None;
-                        };
-                        Some((alias.clone(), info.clone()))
-                    });
-
-                    if let Some((alias, info)) = aliased_type {
-                        self.symbols.define(Symbol {
-                            name: alias,
-                            kind: SymbolKind::Type(info),
-                            span,
-                            scope: 0,
-                        });
-                        continue;
+                        if let Some(alias) = &item.alias {
+                            if self.symbols.lookup(alias).is_none() {
+                                self.validate_root_namespace(alias, span);
+                                if matches!(imported_kind, SymbolKind::Static(_)) {
+                                    self.type_info.static_bindings.insert(
+                                        alias.clone(),
+                                        crate::frontend::typechecker::StaticBindingInfo { is_imported: true },
+                                    );
+                                }
+                                self.symbols.define(Symbol {
+                                    name: alias.clone(),
+                                    kind: imported_kind,
+                                    span,
+                                    scope: 0,
+                                });
+                                self.mark_static_binding_imported(&item.name);
+                                continue;
+                            }
+                        } else {
+                            self.mark_static_binding_imported(&item.name);
+                            continue;
+                        }
                     }
+
                     let name = item.alias.clone().unwrap_or_else(|| item.name.clone());
                     self.validate_root_namespace(&name, span);
                     let mut path = canonicalize_source_module_segments(&module.segments);
@@ -458,6 +469,7 @@ impl TypeChecker {
         names.extend(manifest.exports.type_aliases.iter().map(|item| item.name.clone()));
         names.extend(manifest.exports.newtypes.iter().map(|item| item.name.clone()));
         names.extend(manifest.exports.consts.iter().map(|item| item.name.clone()));
+        names.extend(manifest.exports.statics.iter().map(|item| item.name.clone()));
         names.sort();
         names.dedup();
         names
@@ -496,6 +508,9 @@ impl TypeChecker {
         if let Some(item) = manifest.exports.consts.iter().find(|item| item.name == name) {
             return Some(ManifestExportRef::Const(item));
         }
+        if let Some(item) = manifest.exports.statics.iter().find(|item| item.name == name) {
+            return Some(ManifestExportRef::Static(item));
+        }
         None
     }
 
@@ -516,6 +531,7 @@ impl TypeChecker {
         let symbol = self.symbols.get(symbol_id)?;
         let kind = match &symbol.kind {
             SymbolKind::Variable(_) => "const/variable",
+            SymbolKind::Static(_) => "static",
             SymbolKind::Function(_) => "function",
             SymbolKind::Type(_) => "type",
             SymbolKind::Trait(_) => "trait",
@@ -557,8 +573,21 @@ impl TypeChecker {
                 is_mutable: false,
                 is_used: false,
             }),
+            ManifestExportRef::Static(export) => SymbolKind::Static(StaticInfo {
+                ty: resolved_type_from_manifest_type_ref(&export.ty),
+                is_public: true,
+                is_imported: true,
+                is_used: false,
+            }),
         };
         self.remap_symbol_kind_with_import_aliases(&mut kind, imported_type_aliases);
+
+        if matches!(kind, SymbolKind::Static(_)) {
+            self.type_info.static_bindings.insert(
+                local_name.clone(),
+                crate::frontend::typechecker::StaticBindingInfo { is_imported: true },
+            );
+        }
 
         self.symbols.define(Symbol {
             name: local_name,
@@ -579,6 +608,9 @@ impl TypeChecker {
 
         match kind {
             SymbolKind::Variable(info) => {
+                Self::remap_resolved_type_with_import_aliases(&mut info.ty, imported_type_aliases);
+            }
+            SymbolKind::Static(info) => {
                 Self::remap_resolved_type_with_import_aliases(&mut info.ty, imported_type_aliases);
             }
             SymbolKind::Function(info) => {
@@ -851,6 +883,7 @@ impl TypeChecker {
         for sym in exports {
             match sym {
                 ExportedSymbol::Const(name)
+                | ExportedSymbol::Static(name)
                 | ExportedSymbol::Type(name)
                 | ExportedSymbol::Trait(name)
                 | ExportedSymbol::Function(name)
@@ -930,13 +963,53 @@ impl TypeChecker {
         });
     }
 
-    /// Returns `true` if `name` already resolves to a "real" definition (type, function, trait, or variant) that
-    /// should not be overwritten by a module/rust-module placeholder.
+    /// Returns the existing symbol kind for a `from ... import ...` item when it resolves to a concrete, non-implicit
+    /// symbol in the current compilation context.
+    fn existing_from_import_symbol_kind(&self, name: &str) -> Option<SymbolKind> {
+        let id = self.symbols.lookup(name)?;
+        let sym = self.symbols.get(id)?;
+        let is_implicit_builtin = sym.scope == 0 && sym.span == Span::default();
+        if is_implicit_builtin {
+            return None;
+        }
+        Some(sym.kind.clone())
+    }
+
+    /// Mark a symbol as an imported static binding when it resolves to `SymbolKind::Static`.
+    ///
+    /// This keeps assignment diagnostics aligned with RFC 052 (`from ... import STATIC` may read/mutate contents but
+    /// must reject rebinding the imported name).
+    fn mark_static_binding_imported(&mut self, name: &str) {
+        let Some(id) = self.symbols.lookup(name) else {
+            return;
+        };
+        let mut touched_static = false;
+        if let Some(sym) = self.symbols.get_mut(id)
+            && let SymbolKind::Static(info) = &mut sym.kind
+        {
+            info.is_imported = true;
+            touched_static = true;
+        }
+        if touched_static {
+            self.type_info.static_bindings.insert(
+                name.to_string(),
+                crate::frontend::typechecker::StaticBindingInfo { is_imported: true },
+            );
+        }
+    }
+
+    /// Returns `true` if `name` already resolves to a real definition that should not be overwritten by a module
+    /// placeholder.
     fn has_real_definition(&self, name: &str) -> bool {
         self.lookup_symbol(name).is_some_and(|sym| {
             matches!(
                 sym.kind,
-                SymbolKind::Type(_) | SymbolKind::Function(_) | SymbolKind::Trait(_) | SymbolKind::Variant(_)
+                SymbolKind::Type(_)
+                    | SymbolKind::Function(_)
+                    | SymbolKind::Trait(_)
+                    | SymbolKind::Variant(_)
+                    | SymbolKind::Variable(_)
+                    | SymbolKind::Static(_)
             )
         })
     }

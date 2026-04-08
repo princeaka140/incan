@@ -770,6 +770,7 @@ impl TypeChecker {
         match &decl.node {
             Declaration::Import(_) => {} // Already handled
             Declaration::Const(konst) => self.check_const(konst, decl.span),
+            Declaration::Static(static_decl) => self.check_static(static_decl, decl.span),
             Declaration::Model(model) => self.check_model(model),
             Declaration::Class(class) => self.check_class(class),
             Declaration::Trait(tr) => self.check_trait(tr),
@@ -784,6 +785,36 @@ impl TypeChecker {
     fn check_const(&mut self, konst: &ConstDecl, span: Span) {
         // RFC 008: const-eval (with cycle detection + category classification).
         self.check_and_resolve_const(konst, span);
+    }
+
+    fn check_static(&mut self, static_decl: &StaticDecl, span: Span) {
+        let expected_ty = self.resolve_type_checked(&static_decl.ty);
+        let value_ty = self.check_expr_with_expected(&static_decl.value, Some(&expected_ty));
+        if !self.types_compatible(&value_ty, &expected_ty) {
+            self.errors.push(errors::type_mismatch(
+                &expected_ty.to_string(),
+                &value_ty.to_string(),
+                static_decl.value.span,
+            ));
+        }
+
+        if let Some(symbol_id) = self.symbols.lookup_local(&static_decl.name)
+            && let Some(symbol) = self.symbols.get_mut(symbol_id)
+            && let SymbolKind::Static(info) = &mut symbol.kind
+        {
+            info.ty = expected_ty.clone();
+        }
+
+        if let Some(binding) = self.type_info.static_bindings.get_mut(&static_decl.name) {
+            binding.is_imported = false;
+        } else {
+            self.type_info.static_bindings.insert(
+                static_decl.name.clone(),
+                super::StaticBindingInfo { is_imported: false },
+            );
+        }
+
+        let _ = span;
     }
 
     fn check_model(&mut self, model: &ModelDecl) {

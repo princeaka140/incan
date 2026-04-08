@@ -260,5 +260,6 @@ fn library_export_names(exports: &RawLibraryExports) -> HashSet<&str> {
     names.extend(exports.type_aliases.iter().map(|item| item.name.as_str()));
     names.extend(exports.newtypes.iter().map(|item| item.name.as_str()));
     names.extend(exports.consts.iter().map(|item| item.name.as_str()));
+    names.extend(exports.statics.iter().map(|item| item.name.as_str()));
     names
 }
