@@ -251,6 +251,17 @@ pub fn static_dependency_cycle(cycle: &str, span: Span) -> CompileError {
     CompileError::type_error(format!("Static dependency cycle detected: {}", cycle), span)
 }
 
+pub fn static_initializer_static_write_not_allowed(current: &str, target: &str, span: Span) -> CompileError {
+    CompileError::type_error(
+        format!(
+            "Static initializer for '{}' cannot assign to static '{}'",
+            current, target
+        ),
+        span,
+    )
+    .with_hint("Static initializers may read earlier statics, but must not assign to any static")
+}
+
 pub fn imported_static_reassignment_not_allowed(name: &str, span: Span) -> CompileError {
     CompileError::type_error(format!("Cannot reassign imported static '{}'", name), span)
         .with_hint("Imported statics expose shared storage; mutate their contents instead of rebinding the name")
