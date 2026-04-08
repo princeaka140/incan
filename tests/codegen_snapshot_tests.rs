@@ -825,6 +825,23 @@ fn test_issue236_non_string_join_codegen() {
     insta::assert_snapshot!("issue236_non_string_join", rust_code);
 }
 
+/// Issue #244: recursive call with `mut` list args inside `while` must not emit `.clone()` for those args (snapshot is
+/// the contract).
+#[test]
+fn test_issue244_recursive_mut_list_codegen() {
+    let source = load_test_file("issue244_recursive_mut_list");
+    let rust_code = generate_rust(&source);
+    insta::assert_snapshot!("issue244_recursive_mut_list", rust_code);
+}
+
+/// Issue #244 regression: mutable `str` params are passed by `&mut` and keep string conversions.
+#[test]
+fn test_issue244_mut_str_param_codegen() {
+    let source = load_test_file("issue244_mut_str_param");
+    let rust_code = generate_rust(&source);
+    insta::assert_snapshot!("issue244_mut_str_param", rust_code);
+}
+
 // ============================================================================
 // Tests for declarations (functions, classes, models, traits, enums)
 // ============================================================================
