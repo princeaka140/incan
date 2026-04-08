@@ -19,6 +19,8 @@ pub struct ModelDecl {
     pub type_params: Vec<TypeParam>,
     // Traits adopted by this model via `with TraitA, TraitB`.
     pub traits: Vec<Spanned<Ident>>,
+    /// Docstring at the start of the model body (surface `"""..."""`), when present.
+    pub docstring: Option<String>,
     pub fields: Vec<Spanned<FieldDecl>>,
     pub methods: Vec<Spanned<MethodDecl>>,
 }
@@ -53,6 +55,8 @@ pub struct ClassDecl {
     pub type_params: Vec<TypeParam>,
     pub extends: Option<Ident>,
     pub traits: Vec<Spanned<Ident>>,
+    /// Docstring at the start of the class body (surface `"""..."""`), when present.
+    pub docstring: Option<String>,
     pub fields: Vec<Spanned<FieldDecl>>,
     pub methods: Vec<Spanned<MethodDecl>>,
 }
@@ -70,6 +74,8 @@ pub struct TraitDecl {
     pub type_params: Vec<TypeParam>,
     /// Supertraits adopted via `with TraitA, TraitB[T]` (RFC 042).
     pub traits: Vec<Spanned<TraitBound>>,
+    /// Docstring at the start of the trait body (surface `"""..."""`), when present.
+    pub docstring: Option<String>,
     pub methods: Vec<Spanned<MethodDecl>>,
 }
 
@@ -152,6 +158,8 @@ pub struct EnumDecl {
     pub decorators: Vec<Spanned<Decorator>>,
     pub name: Ident,
     pub type_params: Vec<TypeParam>,
+    /// Docstring at the start of the enum body (surface `"""..."""`), when present.
+    pub docstring: Option<String>,
     pub variants: Vec<Spanned<VariantDecl>>,
 }
 

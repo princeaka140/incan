@@ -279,6 +279,23 @@ impl<'a> Parser<'a> {
         while self.match_token(&TokenKind::Newline) {}
     }
 
+    /// Consume `Newline` tokens between statements in an indented block (or before the first statement).
+    ///
+    /// Returns how many **extra** blank lines to preserve before the next statement when formatting:
+    /// - One newline (end of previous line only) → `0`
+    /// - Two or more newlines → `1` (at least one empty line; further empties are collapsed)
+    fn consume_inter_statement_blank_prefix(&mut self) -> u8 {
+        let mut count = 0u8;
+        while self.match_token(&TokenKind::Newline) {
+            count = count.saturating_add(1);
+        }
+        if count >= 2 {
+            1
+        } else {
+            0
+        }
+    }
+
     /// Skip stray DEDENT tokens at the current position.
     ///
     /// These should not normally appear at module level, but can show up after error recovery.
@@ -339,6 +356,22 @@ impl<'a> Parser<'a> {
             || self.check_punct(PunctuationId::LBracket)
             || self.check_punct(PunctuationId::LBrace)
             || self.check_op(OperatorId::Minus)
+    }
+
+    /// After consuming `Indent` into a `model` / `class` / `enum` body, optionally parse a leading `"""..."""`.
+    ///
+    /// Matches the newtype-body pattern: skip leading newlines, consume one string literal if present, then optional
+    /// newline and further skipped newlines before fields, variants, or methods.
+    fn optional_leading_block_docstring(&mut self) -> Option<String> {
+        let mut docstring = None;
+        self.skip_newlines();
+        if let TokenKind::String(s) = &self.peek().kind {
+            docstring = Some(s.clone());
+            self.advance();
+            self.match_token(&TokenKind::Newline);
+            self.skip_newlines();
+        }
+        docstring
     }
 
 }

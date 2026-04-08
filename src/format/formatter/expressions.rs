@@ -321,7 +321,7 @@ impl Formatter {
                 self.writer.newline();
                 self.writer.indent();
                 for stmt in stmts {
-                    self.format_statement(&stmt.node);
+                    self.format_statement(stmt);
                 }
                 self.writer.dedent();
             }

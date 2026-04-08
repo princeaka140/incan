@@ -7,8 +7,9 @@ use incan_semantics_core::SurfaceFeatureKey;
 use super::Formatter;
 
 impl Formatter {
-    pub(super) fn format_statement(&mut self, stmt: &Statement) {
-        match stmt {
+    pub(super) fn format_statement(&mut self, stmt: &Spanned<Statement>) {
+        self.writer.blank_lines(stmt.leading_blank_lines as usize);
+        match &stmt.node {
             Statement::Expr(expr) => {
                 self.format_expr(&expr.node);
                 self.writer.newline();
@@ -90,7 +91,7 @@ impl Formatter {
                 self.writer.writeln(":");
                 self.writer.indent();
                 for stmt in &vocab_block.body {
-                    self.format_statement(&stmt.node);
+                    self.format_statement(stmt);
                 }
                 if vocab_block.body.is_empty() {
                     self.writer.writeln("pass");
@@ -168,7 +169,7 @@ impl Formatter {
         self.writer.writeln(":");
         self.writer.indent();
         for stmt in &if_stmt.then_body {
-            self.format_statement(&stmt.node);
+            self.format_statement(stmt);
         }
         if if_stmt.then_body.is_empty() {
             self.writer.writeln("pass");
@@ -181,7 +182,7 @@ impl Formatter {
             self.writer.writeln(":");
             self.writer.indent();
             for stmt in elif_body {
-                self.format_statement(&stmt.node);
+                self.format_statement(stmt);
             }
             if elif_body.is_empty() {
                 self.writer.writeln("pass");
@@ -193,7 +194,7 @@ impl Formatter {
             self.writer.writeln("else:");
             self.writer.indent();
             for stmt in else_body {
-                self.format_statement(&stmt.node);
+                self.format_statement(stmt);
             }
             if else_body.is_empty() {
                 self.writer.writeln("pass");
@@ -208,7 +209,7 @@ impl Formatter {
         self.writer.writeln(":");
         self.writer.indent();
         for stmt in &while_stmt.body {
-            self.format_statement(&stmt.node);
+            self.format_statement(stmt);
         }
         if while_stmt.body.is_empty() {
             self.writer.writeln("pass");
@@ -224,7 +225,7 @@ impl Formatter {
         self.writer.writeln(":");
         self.writer.indent();
         for stmt in &for_stmt.body {
-            self.format_statement(&stmt.node);
+            self.format_statement(stmt);
         }
         if for_stmt.body.is_empty() {
             self.writer.writeln("pass");

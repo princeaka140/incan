@@ -18,6 +18,8 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Newline, "Expected newline after ':'")?;
         self.expect(&TokenKind::Indent, "Expected indented block")?;
 
+        let docstring = self.optional_leading_block_docstring();
+
         let (mut fields, methods) = self.fields_and_methods()?;
 
         self.expect(&TokenKind::Dedent, "Expected dedent after model body")?;
@@ -35,6 +37,7 @@ impl<'a> Parser<'a> {
             name,
             type_params,
             traits,
+            docstring,
             fields,
             methods,
         })
@@ -66,6 +69,8 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Newline, "Expected newline after ':'")?;
         self.expect(&TokenKind::Indent, "Expected indented block")?;
 
+        let docstring = self.optional_leading_block_docstring();
+
         let (mut fields, methods) = self.fields_and_methods()?;
 
         self.expect(&TokenKind::Dedent, "Expected dedent after class body")?;
@@ -84,6 +89,7 @@ impl<'a> Parser<'a> {
             type_params,
             extends,
             traits,
+            docstring,
             fields,
             methods,
         })
@@ -107,15 +113,9 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Newline, "Expected newline after ':'")?;
         self.expect(&TokenKind::Indent, "Expected indented block")?;
 
+        let docstring = self.optional_leading_block_docstring();
+
         let mut methods = Vec::new();
-        self.skip_newlines();
-
-        // Skip optional docstring at the start of the trait body
-        if let TokenKind::String(_) = &self.peek().kind {
-            self.advance();
-            self.skip_newlines();
-        }
-
         // Allow empty trait body with just 'pass'
         if self.match_keyword(KeywordId::Pass) {
             self.skip_newlines();
@@ -138,6 +138,7 @@ impl<'a> Parser<'a> {
             name,
             type_params,
             traits,
+            docstring,
             methods,
         })
     }

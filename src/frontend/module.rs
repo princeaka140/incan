@@ -407,6 +407,90 @@ pub fn exported_symbols(ast: &Program) -> Vec<ExportedSymbol> {
     exports
 }
 
+/// Kind of declaration surfaced by [`exported_type_like_docs`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExportedTypeLikeKind {
+    Model,
+    Class,
+    Enum,
+    Trait,
+    Newtype,
+}
+
+/// Body docstring attached to a **public** type-like declaration, for documentation tooling and IDE features.
+///
+/// This reads the AST fields populated by the parser (`ModelDecl::docstring`, `ClassDecl::docstring`, etc.). It does
+/// **not** include freestanding [`Declaration::Docstring`] items (module-level narrative) or `const` / `static` docs,
+/// which use the preceding docstring declaration pattern instead.
+///
+/// Visibility matches [`exported_symbols`]: only `pub` declarations are listed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportedTypeLikeDoc {
+    pub name: String,
+    pub kind: ExportedTypeLikeKind,
+    /// Raw docstring payload from the lexer/parser (same string the formatter round-trips).
+    pub docstring: Option<String>,
+}
+
+/// Collect body docstrings for public model/class/enum/trait/newtype declarations.
+///
+/// Order follows declaration order in `ast`. Entries with `docstring: None` are still included so callers can tell a
+/// public type exists without attached body docs.
+pub fn exported_type_like_docs(ast: &Program) -> Vec<ExportedTypeLikeDoc> {
+    let mut out = Vec::new();
+    for decl in &ast.declarations {
+        match &decl.node {
+            Declaration::Model(m) => {
+                if matches!(m.visibility, Visibility::Public) {
+                    out.push(ExportedTypeLikeDoc {
+                        name: m.name.clone(),
+                        kind: ExportedTypeLikeKind::Model,
+                        docstring: m.docstring.clone(),
+                    });
+                }
+            }
+            Declaration::Class(c) => {
+                if matches!(c.visibility, Visibility::Public) {
+                    out.push(ExportedTypeLikeDoc {
+                        name: c.name.clone(),
+                        kind: ExportedTypeLikeKind::Class,
+                        docstring: c.docstring.clone(),
+                    });
+                }
+            }
+            Declaration::Enum(e) => {
+                if matches!(e.visibility, Visibility::Public) {
+                    out.push(ExportedTypeLikeDoc {
+                        name: e.name.clone(),
+                        kind: ExportedTypeLikeKind::Enum,
+                        docstring: e.docstring.clone(),
+                    });
+                }
+            }
+            Declaration::Trait(t) => {
+                if matches!(t.visibility, Visibility::Public) {
+                    out.push(ExportedTypeLikeDoc {
+                        name: t.name.clone(),
+                        kind: ExportedTypeLikeKind::Trait,
+                        docstring: t.docstring.clone(),
+                    });
+                }
+            }
+            Declaration::Newtype(n) => {
+                if matches!(n.visibility, Visibility::Public) {
+                    out.push(ExportedTypeLikeDoc {
+                        name: n.name.clone(),
+                        kind: ExportedTypeLikeKind::Newtype,
+                        docstring: n.docstring.clone(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone)]
 pub enum ExportedSymbol {
     Type(String),
@@ -426,11 +510,17 @@ mod tests {
         ImportPath, Literal, ModelDecl, NewtypeDecl, Program, Span, Spanned, StaticDecl, TraitDecl, Type, VariantDecl,
         Visibility,
     };
+    use crate::frontend::{lexer, parser};
+
+    /// Shared with `tests/integration_tests.rs` (GitHub #247 export + CLI fmt coverage).
+    const BLOCK_DOCSTRING_PUBLIC_TYPE_LIKE: &str =
+        include_str!("../../tests/fixtures/block_docstring_public_type_like.incn");
 
     fn make_spanned<T>(node: T) -> Spanned<T> {
         Spanned {
             node,
             span: Span::default(),
+            leading_blank_lines: 0,
         }
     }
 
@@ -563,6 +653,85 @@ source-root = "library"
     }
 
     // ========================================
+    // exported_type_like_docs tests
+    // ========================================
+
+    fn assert_docstring_has_marker_lines(doc: Option<&str>, ctx: &str) -> Result<(), Vec<String>> {
+        let Some(doc) = doc else {
+            return Err(vec![format!("{ctx}: expected body docstring")]);
+        };
+        let trimmed = doc.trim();
+        if !trimmed.contains("Line A documents the class API.") {
+            return Err(vec![format!("{ctx}: missing marker A in {trimmed:?}")]);
+        }
+        if !trimmed.contains("Line B keeps interior newlines after trim().") {
+            return Err(vec![format!("{ctx}: missing marker B in {trimmed:?}")]);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_exported_type_like_docs_reads_body_docstrings_from_parse() -> Result<(), Vec<String>> {
+        let tokens = lexer::lex(BLOCK_DOCSTRING_PUBLIC_TYPE_LIKE)
+            .map_err(|e| e.iter().map(|x| x.message.clone()).collect::<Vec<_>>())?;
+        let ast = parser::parse(&tokens).map_err(|e| e.iter().map(|x| x.message.clone()).collect::<Vec<_>>())?;
+        let docs = exported_type_like_docs(&ast);
+        assert_eq!(docs.len(), 5, "expected one entry per public type-like decl");
+
+        let mut by_name: std::collections::HashMap<&str, &ExportedTypeLikeDoc> = std::collections::HashMap::new();
+        for d in &docs {
+            by_name.insert(d.name.as_str(), d);
+        }
+
+        let m = by_name
+            .get("CliModelProbe")
+            .ok_or_else(|| vec!["missing CliModelProbe entry".to_string()])?;
+        assert_eq!(m.kind, ExportedTypeLikeKind::Model);
+        assert_docstring_has_marker_lines(m.docstring.as_deref(), "CliModelProbe")?;
+
+        let c = by_name
+            .get("CliClassProbe")
+            .ok_or_else(|| vec!["missing CliClassProbe entry".to_string()])?;
+        assert_eq!(c.kind, ExportedTypeLikeKind::Class);
+        assert_docstring_has_marker_lines(c.docstring.as_deref(), "CliClassProbe")?;
+
+        let e = by_name
+            .get("CliEnumProbe")
+            .ok_or_else(|| vec!["missing CliEnumProbe entry".to_string()])?;
+        assert_eq!(e.kind, ExportedTypeLikeKind::Enum);
+        assert_docstring_has_marker_lines(e.docstring.as_deref(), "CliEnumProbe")?;
+
+        let t = by_name
+            .get("CliTraitProbe")
+            .ok_or_else(|| vec!["missing CliTraitProbe entry".to_string()])?;
+        assert_eq!(t.kind, ExportedTypeLikeKind::Trait);
+        assert_docstring_has_marker_lines(t.docstring.as_deref(), "CliTraitProbe")?;
+
+        let n = by_name
+            .get("CliNewtypeProbe")
+            .ok_or_else(|| vec!["missing CliNewtypeProbe entry".to_string()])?;
+        assert_eq!(n.kind, ExportedTypeLikeKind::Newtype);
+        assert_docstring_has_marker_lines(n.docstring.as_deref(), "CliNewtypeProbe")?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_exported_type_like_docs_skips_private_even_with_docstring() -> Result<(), Vec<String>> {
+        let source = r#"class Secret:
+    """
+    Line A documents the class API.
+    Line B keeps interior newlines after trim().
+    """
+    x: int
+"#;
+        let tokens = lexer::lex(source).map_err(|e| e.iter().map(|x| x.message.clone()).collect::<Vec<_>>())?;
+        let ast = parser::parse(&tokens).map_err(|e| e.iter().map(|x| x.message.clone()).collect::<Vec<_>>())?;
+        assert!(exported_type_like_docs(&ast).is_empty());
+        Ok(())
+    }
+
+    // ========================================
     // exported_symbols tests
     // ========================================
 
@@ -585,6 +754,7 @@ source-root = "library"
             name: "User".to_string(),
             type_params: vec![],
             traits: vec![],
+            docstring: None,
             fields: vec![],
             methods: vec![],
         };
@@ -610,6 +780,7 @@ source-root = "library"
             type_params: vec![],
             extends: None,
             traits: vec![],
+            docstring: None,
             fields: vec![],
             methods: vec![],
         };
@@ -633,6 +804,7 @@ source-root = "library"
             decorators: vec![],
             name: "Color".to_string(),
             type_params: vec![],
+            docstring: None,
             variants: vec![
                 make_spanned(VariantDecl {
                     name: "Red".to_string(),
@@ -711,6 +883,7 @@ source-root = "library"
             name: "Printable".to_string(),
             type_params: vec![],
             traits: vec![],
+            docstring: None,
             methods: vec![],
         };
         let program = Program {
@@ -872,6 +1045,7 @@ source-root = "library"
             name: "User".to_string(),
             type_params: vec![],
             traits: vec![],
+            docstring: None,
             fields: vec![],
             methods: vec![],
         };
@@ -891,6 +1065,7 @@ source-root = "library"
             name: "Serializable".to_string(),
             type_params: vec![],
             traits: vec![],
+            docstring: None,
             methods: vec![],
         };
         let program = Program {

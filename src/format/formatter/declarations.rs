@@ -285,6 +285,13 @@ impl Formatter {
         self.writer.writeln(":");
         self.writer.indent();
 
+        if let Some(docstring) = &model.docstring {
+            self.format_docstring(docstring);
+            if !model.fields.is_empty() || !model.methods.is_empty() {
+                self.writer.newline();
+            }
+        }
+
         let has_fields = !model.fields.is_empty();
         for field in &model.fields {
             self.format_field(&field.node);
@@ -300,6 +307,9 @@ impl Formatter {
         }
 
         if model.fields.is_empty() && model.methods.is_empty() {
+            if model.docstring.is_some() {
+                self.writer.newline();
+            }
             self.writer.writeln("pass");
         }
 
@@ -334,6 +344,13 @@ impl Formatter {
         self.writer.writeln(":");
         self.writer.indent();
 
+        if let Some(docstring) = &class.docstring {
+            self.format_docstring(docstring);
+            if !class.fields.is_empty() || !class.methods.is_empty() {
+                self.writer.newline();
+            }
+        }
+
         let has_fields = !class.fields.is_empty();
         for field in &class.fields {
             self.format_field(&field.node);
@@ -349,6 +366,9 @@ impl Formatter {
         }
 
         if class.fields.is_empty() && class.methods.is_empty() {
+            if class.docstring.is_some() {
+                self.writer.newline();
+            }
             self.writer.writeln("pass");
         }
 
@@ -376,6 +396,13 @@ impl Formatter {
         self.writer.writeln(":");
         self.writer.indent();
 
+        if let Some(docstring) = &tr.docstring {
+            self.format_docstring(docstring);
+            if !tr.methods.is_empty() {
+                self.writer.newline();
+            }
+        }
+
         let mut first = true;
         for method in &tr.methods {
             if !first {
@@ -386,6 +413,9 @@ impl Formatter {
         }
 
         if tr.methods.is_empty() {
+            if tr.docstring.is_some() {
+                self.writer.newline();
+            }
             self.writer.writeln("pass");
         }
 
@@ -406,11 +436,21 @@ impl Formatter {
         self.writer.writeln(":");
         self.writer.indent();
 
+        if let Some(docstring) = &en.docstring {
+            self.format_docstring(docstring);
+            if !en.variants.is_empty() {
+                self.writer.newline();
+            }
+        }
+
         for variant in &en.variants {
             self.format_enum_variant(&variant.node);
         }
 
         if en.variants.is_empty() {
+            if en.docstring.is_some() {
+                self.writer.newline();
+            }
             self.writer.writeln("pass");
         }
 
@@ -573,7 +613,7 @@ impl Formatter {
                 self.writer.writeln("pass");
             } else {
                 for stmt in body {
-                    self.format_statement(&stmt.node);
+                    self.format_statement(stmt);
                 }
             }
         }
@@ -627,7 +667,7 @@ impl Formatter {
                 self.writer.writeln("pass");
             } else {
                 for stmt in body {
-                    self.format_statement(&stmt.node);
+                    self.format_statement(stmt);
                 }
             }
         }

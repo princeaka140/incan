@@ -25,11 +25,22 @@ impl Span {
 pub struct Spanned<T> {
     pub node: T,
     pub span: Span,
+    /// Extra blank lines to emit before this node when formatting (`0` or `1`).
+    ///
+    /// Only meaningful on `Spanned<Statement>` nodes from indented statement blocks (function bodies,
+    /// `if` / `while` / `for` bodies, match blocks, vocab blocks, etc.): a single newline between statements yields
+    /// `0`; two or more consecutive newlines collapse to `1`. All other `Spanned<T>` uses keep the default `0` from
+    /// [`Spanned::new`].
+    pub leading_blank_lines: u8,
 }
 
 impl<T> Spanned<T> {
     pub fn new(node: T, span: Span) -> Self {
-        Self { node, span }
+        Self {
+            node,
+            span,
+            leading_blank_lines: 0,
+        }
     }
 }
 
