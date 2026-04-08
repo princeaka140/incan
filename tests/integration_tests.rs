@@ -296,6 +296,142 @@ def helper() -> Unit:
     );
 }
 
+#[test]
+fn test_rfc052_module_static_counter_runs() {
+    let source = r#"
+static counter: int = 0
+
+def main() -> None:
+  counter = counter + 1
+  counter += 2
+  println(counter)
+"#;
+    let Ok(output) = Command::new(incan_debug_binary())
+        .args(["run", "-c", source])
+        .env("CARGO_NET_OFFLINE", "true")
+        .output()
+    else {
+        panic!("failed to run incan with static counter source");
+    };
+
+    assert!(
+        output.status.success(),
+        "expected static counter program to run.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains('3'),
+        "expected static counter output to contain 3.\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+fn test_rfc052_static_alias_mutation_runs() {
+    let source = r#"
+static items: list[int] = []
+
+def main() -> None:
+  let live = items
+  live.append(1)
+  live.append(2)
+  println(len(items))
+  println(len(live))
+"#;
+    let Ok(output) = Command::new(incan_debug_binary())
+        .args(["run", "-c", source])
+        .env("CARGO_NET_OFFLINE", "true")
+        .output()
+    else {
+        panic!("failed to run incan with static alias source");
+    };
+
+    assert!(
+        output.status.success(),
+        "expected static alias program to run.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.lines().filter(|line| line.trim() == "2").count() >= 2,
+        "expected static alias output to print 2 twice.\nstdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_rfc052_static_self_referential_method_arg_runs() {
+    let source = r#"
+static items: list[int] = []
+
+def main() -> None:
+  items.append(len(items))
+  items.append(len(items))
+  println(items[0])
+  println(items[1])
+"#;
+    let Ok(output) = Command::new(incan_debug_binary())
+        .args(["run", "-c", source])
+        .env("CARGO_NET_OFFLINE", "true")
+        .output()
+    else {
+        panic!("failed to run incan with static self-referential source");
+    };
+
+    assert!(
+        output.status.success(),
+        "expected static self-referential append program to run.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+    assert!(
+        lines.len() >= 2 && lines[0] == "0" && lines[1] == "1",
+        "expected first two output lines to be 0 and 1.\nstdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_rfc052_static_init_is_eager_and_declaration_ordered() {
+    let source = r#"
+static init_order: list[int] = []
+
+def mark(value: int) -> int:
+  init_order.append(value)
+  return value
+
+static first: int = mark(1)
+static second: int = mark(2)
+
+def main() -> None:
+  println(len(init_order))
+  println(init_order[0])
+  println(init_order[1])
+"#;
+    let Ok(output) = Command::new(incan_debug_binary())
+        .args(["run", "-c", source])
+        .env("CARGO_NET_OFFLINE", "true")
+        .output()
+    else {
+        panic!("failed to run incan with static init-order source");
+    };
+
+    assert!(
+        output.status.success(),
+        "expected static init-order program to run.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+    assert!(
+        lines.len() >= 3 && lines[0] == "2" && lines[1] == "1" && lines[2] == "2",
+        "expected eager declaration-order static init output 2, 1, 2.\nstdout:\n{stdout}"
+    );
+}
+
 /// Test specific lexer behavior
 mod lexer_tests {
     use incan::frontend::lexer::{TokenKind, lex};

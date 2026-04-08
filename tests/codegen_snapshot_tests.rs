@@ -30,7 +30,9 @@ fn generate_rust_with_widgets_manifest(source: &str) -> String {
     use incan::frontend::library_manifest_index::{
         LibraryArtifactMetadata, LibraryManifestIndex, LibraryManifestIndexEntry,
     };
-    use incan::library_manifest::{ConstExport, FunctionExport, LibraryManifest, ModelExport, ParamExport, TypeRef};
+    use incan::library_manifest::{
+        ConstExport, FunctionExport, LibraryManifest, ModelExport, ParamExport, StaticExport, TypeRef,
+    };
     use std::collections::HashMap;
 
     let Ok(tokens) = lexer::lex(source) else {
@@ -71,6 +73,21 @@ fn generate_rust_with_widgets_manifest(source: &str) -> String {
         name: "DEFAULT_NAME".to_string(),
         ty: TypeRef::Named {
             name: "str".to_string(),
+        },
+    });
+    manifest.exports.statics.push(StaticExport {
+        name: "SHARED_COUNT".to_string(),
+        ty: TypeRef::Named {
+            name: "int".to_string(),
+        },
+    });
+    manifest.exports.statics.push(StaticExport {
+        name: "SHARED_ITEMS".to_string(),
+        ty: TypeRef::Applied {
+            name: "list".to_string(),
+            args: vec![TypeRef::Named {
+                name: "int".to_string(),
+            }],
         },
     });
 
@@ -917,6 +934,20 @@ fn test_pub_const_codegen() {
     let source = load_test_file("pub_const");
     let rust_code = generate_rust(&source);
     insta::assert_snapshot!("pub_const", rust_code);
+}
+
+#[test]
+fn test_rfc052_module_static_storage_codegen() {
+    let source = load_test_file("rfc052_module_static_storage");
+    let rust_code = generate_rust(&source);
+    insta::assert_snapshot!("rfc052_module_static_storage", rust_code);
+}
+
+#[test]
+fn test_rfc052_pub_static_codegen() {
+    let source = load_test_file("rfc052_pub_static");
+    let rust_code = generate_rust_with_widgets_manifest(&source);
+    insta::assert_snapshot!("rfc052_pub_static", rust_code);
 }
 
 #[test]
