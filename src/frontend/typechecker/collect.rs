@@ -134,7 +134,7 @@ impl TypeChecker {
     /// Register a model declaration with its fields, methods, and derived traits.
     fn collect_model(&mut self, model: &ModelDecl, span: Span) {
         let fields = collect_fields(&model.fields, self);
-        let mut methods = collect_methods(&model.methods, self);
+        let mut methods = collect_methods(&model.methods, self, Some(&model.name), &model.type_params);
 
         // Inject JSON methods based on derives
         let derives = self.extract_derive_names(&model.decorators);
@@ -164,7 +164,12 @@ impl TypeChecker {
         fields.extend(collect_fields(&class.fields, self));
 
         // Add own methods (can override inherited ones)
-        methods.extend(collect_methods(&class.methods, self));
+        methods.extend(collect_methods(
+            &class.methods,
+            self,
+            Some(&class.name),
+            &class.type_params,
+        ));
 
         // Inject JSON methods based on derives
         let derives = self.extract_derive_names(&class.decorators);
@@ -201,7 +206,7 @@ impl TypeChecker {
 
     /// Register a trait declaration with its method signatures, supertraits, and requirements.
     fn collect_trait(&mut self, tr: &TraitDecl, span: Span) {
-        let methods = collect_methods(&tr.methods, self);
+        let methods = collect_methods(&tr.methods, self, None, &tr.type_params);
         let requires = self.extract_requires(&tr.decorators);
         if !tr.traits.is_empty() {
             self.pending_trait_supertraits
@@ -446,7 +451,7 @@ impl TypeChecker {
         });
 
         // Now collect methods - they can reference the newtype name
-        let methods = collect_methods(&nt.methods, self);
+        let methods = collect_methods(&nt.methods, self, Some(&nt.name), &nt.type_params);
 
         // Update the symbol with the collected methods
         if let Some(sym_id) = self.symbols.lookup(&nt.name)
