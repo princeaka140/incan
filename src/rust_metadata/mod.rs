@@ -12,7 +12,10 @@ mod loader;
 mod test_fixtures;
 
 #[cfg(test)]
-pub(crate) use test_fixtures::{write_reexported_function_probe_crate, write_substrait_probe_crate};
+pub(crate) use test_fixtures::{
+    write_async_result_probe_crate, write_hyphenated_function_probe_crate, write_nested_context_probe_crate,
+    write_reexported_function_probe_crate, write_substrait_probe_crate,
+};
 
 pub use cache::RustMetadataCache;
 pub use error::RustMetadataError;
@@ -24,6 +27,9 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::sync::Arc;
+
+    use crate::backend::project::ProjectGenerator;
+    use crate::manifest::{DependencySource, DependencySpec};
 
     use super::*;
     use incan_core::interop::{RustItemKind, RustTypeShape};
@@ -206,6 +212,197 @@ hashbrown = "0.15"
             other => {
                 return Err(type_mismatch(format!(
                     "expected re-exported function metadata, got {other:?}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn hyphenated_package_names_resolve_via_underscored_rust_paths() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        write_hyphenated_function_probe_crate(tmp.path())?;
+        let cache = RustMetadataCache::new();
+        let meta = cache.get_or_extract(tmp.path(), "foo_bar::consumer::consume", &|_| ())?;
+        match &meta.kind {
+            RustItemKind::Function(sig) => {
+                assert_eq!(sig.params.len(), 2);
+                assert!(sig.params[0].type_display.starts_with('&'));
+                assert!(sig.params[1].type_display.starts_with('&'));
+                assert!(sig.is_async, "expected async metadata for hyphenated-package probe");
+            }
+            other => {
+                return Err(type_mismatch(format!(
+                    "expected function metadata for hyphenated-package probe, got {other:?}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn generated_lock_projects_resolve_hyphenated_dependencies_via_rust_paths() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp = tempfile::tempdir()?;
+        let dep_root = tmp.path().join("foo-bar-dep");
+        write_hyphenated_function_probe_crate(&dep_root)?;
+
+        let lock_root = tmp.path().join("generated_lock");
+        let mut generator = ProjectGenerator::new(&lock_root, "lock_probe", true);
+        generator.set_dependencies(vec![DependencySpec {
+            crate_name: "foo-bar".to_string(),
+            version: None,
+            features: vec![],
+            default_features: true,
+            source: DependencySource::Path { path: dep_root.clone() },
+            optional: false,
+            package: None,
+        }]);
+        generator.generate("fn main() {}")?;
+
+        let cache = RustMetadataCache::new();
+        let meta = cache.get_or_extract(&lock_root, "foo_bar::consumer::consume", &|_| ())?;
+        match &meta.kind {
+            RustItemKind::Function(sig) => {
+                assert_eq!(sig.params.len(), 2);
+                assert!(sig.params[0].type_display.starts_with('&'));
+                assert!(sig.params[1].type_display.starts_with('&'));
+                assert!(sig.is_async, "expected async metadata via generated lock project");
+            }
+            other => {
+                return Err(type_mismatch(format!(
+                    "expected function metadata via generated lock project, got {other:?}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn nested_method_signatures_preserve_canonical_return_paths() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        write_nested_context_probe_crate(tmp.path())?;
+        let cache = RustMetadataCache::new();
+        let meta = cache.get_or_extract(
+            tmp.path(),
+            "ra_context_probe::execution::context::SessionContext",
+            &|_| (),
+        )?;
+        let info = match &meta.kind {
+            RustItemKind::Type(info) => info,
+            other => {
+                return Err(type_mismatch(format!(
+                    "expected type metadata for nested context probe, got {other:?}"
+                )));
+            }
+        };
+        let new_sig = info
+            .methods
+            .iter()
+            .find(|method| method.name == "new")
+            .ok_or_else(|| type_mismatch("expected `new` method on nested context probe"))?;
+        let state_sig = info
+            .methods
+            .iter()
+            .find(|method| method.name == "state")
+            .ok_or_else(|| type_mismatch("expected `state` method on nested context probe"))?;
+
+        assert_eq!(
+            new_sig.signature.return_type,
+            "ra_context_probe::execution::context::SessionContext"
+        );
+        assert_eq!(
+            state_sig.signature.return_type,
+            "ra_context_probe::execution::context::SessionContext"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn async_function_signatures_preserve_result_output_types() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        write_async_result_probe_crate(tmp.path())?;
+        let cache = RustMetadataCache::new();
+        let meta = cache.get_or_extract(tmp.path(), "ra_async_result_probe::consume", &|_| ())?;
+        match &meta.kind {
+            RustItemKind::Function(sig) => {
+                assert!(sig.is_async, "expected async metadata for async result probe");
+                assert_eq!(sig.params.len(), 2);
+                assert_eq!(
+                    sig.return_type,
+                    "Result<ra_async_result_probe::LogicalPlan, ra_async_result_probe::ConsumerError>"
+                );
+            }
+            other => {
+                return Err(type_mismatch(format!(
+                    "expected function metadata for async result probe, got {other:?}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn generated_lock_projects_resolve_registry_dependencies_via_cargo_lock_fallback()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let registry_src_root = tmp.path().join("cargo-home").join("registry").join("src");
+        let dep_root = registry_src_root.join("index.crates.io-test").join("foo-bar-0.1.0");
+        write_hyphenated_function_probe_crate(&dep_root)?;
+
+        let lock_root = tmp.path().join("generated_lock");
+        let mut generator = ProjectGenerator::new(&lock_root, "lock_probe", true);
+        generator.set_dependencies(vec![DependencySpec {
+            crate_name: "foo-bar".to_string(),
+            version: Some("0.1.0".to_string()),
+            features: vec![],
+            default_features: true,
+            source: DependencySource::Registry,
+            optional: false,
+            package: None,
+        }]);
+        generator.set_cargo_lock_payload(Some(
+            r#"version = 3
+
+[[package]]
+name = "lock_probe"
+version = "0.1.0"
+dependencies = ["foo-bar"]
+
+[[package]]
+name = "foo-bar"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#
+            .to_string(),
+        ));
+        generator.generate("use foo_bar as _;\nfn main() {}\n")?;
+
+        let cache = RustMetadataCache::new();
+        let meta = cache.get_or_extract_with_registry_src_roots(
+            &lock_root,
+            "foo_bar::consumer::consume",
+            std::slice::from_ref(&registry_src_root),
+            &|_| (),
+        )?;
+        match &meta.kind {
+            RustItemKind::Function(sig) => {
+                assert_eq!(sig.params.len(), 2);
+                assert!(
+                    sig.params[0].type_display.starts_with('&'),
+                    "expected borrowed first param, got {}",
+                    sig.params[0].type_display
+                );
+                assert!(
+                    sig.params[1].type_display.starts_with('&'),
+                    "expected borrowed second param, got {}",
+                    sig.params[1].type_display
+                );
+                assert!(sig.is_async, "expected async metadata for registry fallback probe");
+            }
+            other => {
+                return Err(type_mismatch(format!(
+                    "expected function metadata for registry fallback probe, got {other:?}"
                 )));
             }
         }

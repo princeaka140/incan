@@ -133,9 +133,9 @@ impl TypeChecker {
         receiver_span: Span,
         span: Span,
     ) -> Option<ResolvedType> {
-        if RustCollectionFamily::for_canonical_path(rust_path)
-            .is_some_and(|family| family.preserves_lookup_arg_shape(method))
-        {
+        let preserves_lookup_arg_shape = RustCollectionFamily::for_canonical_path(rust_path)
+            .is_some_and(|family| family.preserves_lookup_arg_shape(method));
+        if preserves_lookup_arg_shape {
             self.type_info.record_regular_method_arg_shape(receiver_span, method);
         }
         let metadata = self.rust_item_metadata_for_path(rust_path)?;
@@ -146,7 +146,15 @@ impl TypeChecker {
                     // not yet extracted. Stay permissive rather than false-positiving on valid calls.
                     return Some(ResolvedType::Unknown);
                 };
-                Some(self.validate_rust_method_call(rust_path, method, &sig, args, arg_types, span))
+                let callable_display = format!("rust::{rust_path}.{method}");
+                Some(self.validate_rust_method_call(
+                    callable_display.as_str(),
+                    &sig,
+                    args,
+                    arg_types,
+                    preserves_lookup_arg_shape,
+                    span,
+                ))
             }
             RustItemKind::Unsupported { description } => {
                 self.errors.push(errors::rust_item_shape_not_supported(
