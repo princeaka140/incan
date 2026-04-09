@@ -549,12 +549,16 @@ fn trait_info(tr: Trait, db: &RootDatabase, dt: DisplayTarget) -> RustTraitInfo 
 }
 
 fn find_crate(db: &RootDatabase, crate_name: &str) -> Option<Crate> {
+    let normalized = crate_name.replace('-', "_");
     Crate::all(db).into_iter().find(|k| {
         k.display_name(db).is_some_and(|dn| {
-            dn.to_string() == crate_name
-                || dn.crate_name().as_str() == crate_name
-                || dn.canonical_name().as_str() == crate_name
-        })
+            dn.to_string().replace('-', "_") == normalized
+                || dn.crate_name().as_str().replace('-', "_") == normalized
+                || dn.canonical_name().as_str().replace('-', "_") == normalized
+        }) || k
+            .root_module(db)
+            .name(db)
+            .is_some_and(|name| name.as_str().replace('-', "_") == normalized)
     })
 }
 

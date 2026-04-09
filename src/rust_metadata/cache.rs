@@ -83,6 +83,15 @@ fn dependency_manifest_dir_for_crate(root: &Path, crate_name: &str) -> Option<Pa
 fn canonical_path_aliases(canonical_path: &str) -> Vec<String> {
     let mut aliases = Vec::new();
 
+    if let Some((crate_name, rest)) = canonical_path.split_once("::") {
+        if crate_name.contains('_') {
+            aliases.push(format!("{}::{rest}", crate_name.replace('_', "-")));
+        }
+        if crate_name.contains('-') {
+            aliases.push(format!("{}::{rest}", crate_name.replace('-', "_")));
+        }
+    }
+
     for (prefix, replacement) in [
         ("std::option::", "core::option::"),
         ("std::result::", "core::result::"),

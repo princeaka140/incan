@@ -12,7 +12,7 @@ mod loader;
 mod test_fixtures;
 
 #[cfg(test)]
-pub(crate) use test_fixtures::write_substrait_probe_crate;
+pub(crate) use test_fixtures::{write_reexported_function_probe_crate, write_substrait_probe_crate};
 
 pub use cache::RustMetadataCache;
 pub use error::RustMetadataError;
@@ -184,6 +184,31 @@ hashbrown = "0.15"
             "expected bare `NamedTable` payload to normalize to the canonical path, got {:?}",
             read_type_info.variants[0].fields
         );
+        Ok(())
+    }
+
+    #[test]
+    fn reexported_function_paths_resolve_to_function_metadata() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        write_reexported_function_probe_crate(tmp.path())?;
+        let cache = RustMetadataCache::new();
+        let meta = cache.get_or_extract(tmp.path(), "ra_reexport_probe::consumer::consume", &|_| ())?;
+        match &meta.kind {
+            RustItemKind::Function(sig) => {
+                assert_eq!(sig.params.len(), 2);
+                assert!(sig.params[0].type_display.starts_with('&'));
+                assert!(sig.params[1].type_display.starts_with('&'));
+                assert!(
+                    sig.is_async,
+                    "expected re-exported function metadata to preserve async-ness"
+                );
+            }
+            other => {
+                return Err(type_mismatch(format!(
+                    "expected re-exported function metadata, got {other:?}"
+                )));
+            }
+        }
         Ok(())
     }
 }

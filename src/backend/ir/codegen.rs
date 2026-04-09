@@ -1480,4 +1480,75 @@ def forward(value: Thing) -> None:
         );
         Ok(())
     }
+
+    #[cfg(feature = "rust-metadata")]
+    #[test]
+    fn test_codegen_borrows_async_rust_backed_free_function_args_from_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::frontend::typechecker::TypeChecker;
+        use incan_core::interop::{RustFunctionSig, RustItemKind, RustItemMetadata, RustParam, RustVisibility};
+
+        let source = r#"
+from std.async import sleep
+from rust::demo import State
+from rust::demo import Plan
+from rust::demo import consume
+
+async def run(state: State, plan: Plan) -> None:
+  await sleep(0.01)
+  await consume(state, plan)
+"#;
+        let tokens = must_ok(lexer::lex(source));
+        let ast = must_ok(parser::parse(&tokens));
+
+        let manifest_dir = std::env::current_dir()?;
+        let mut tc = TypeChecker::new();
+        tc.set_rust_metadata_manifest_dir(manifest_dir.clone());
+        tc.rust_metadata_cache
+            .insert_test_item(
+                &manifest_dir,
+                RustItemMetadata {
+                    canonical_path: "demo::consume".to_string(),
+                    visibility: RustVisibility::Public,
+                    kind: RustItemKind::Function(RustFunctionSig {
+                        params: vec![
+                            RustParam {
+                                name: Some("state".to_string()),
+                                type_display: "&demo::State".to_string(),
+                            },
+                            RustParam {
+                                name: Some("plan".to_string()),
+                                type_display: "&demo::Plan".to_string(),
+                            },
+                        ],
+                        return_type: "()".to_string(),
+                        is_async: true,
+                        is_unsafe: false,
+                    }),
+                },
+            )
+            .map_err(|e| std::io::Error::other(format!("seed rust metadata function: {e}")))?;
+        tc.check_program(&ast)
+            .map_err(|errs| std::io::Error::other(format!("typecheck failed: {errs:?}")))?;
+
+        let mut lowering = AstLowering::new_with_type_info(tc.type_info().clone());
+        let ir_program = lowering
+            .lower_program(&ast)
+            .map_err(|err| std::io::Error::other(format!("lowering failed: {err:?}")))?;
+
+        let mut codegen = IrCodegen::new();
+        codegen.collect_external_rust_functions(&ast);
+
+        let mut emitter = IrEmitter::new(&ir_program.function_registry);
+        emitter.set_external_rust_functions(codegen.external_rust_functions.clone());
+        let code = emitter
+            .emit_program(&ir_program)
+            .map_err(|err| std::io::Error::other(format!("emit failed: {err:?}")))?;
+
+        assert!(
+            code.contains("consume(&state, &plan).await"),
+            "expected borrowed async rust free-function args in generated code; got:\n{code}"
+        );
+        Ok(())
+    }
 }

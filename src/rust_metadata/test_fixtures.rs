@@ -61,3 +61,34 @@ edition = "2021"
     )?;
     Ok(())
 }
+
+/// Minimal crate exposing a re-exported free function through an intermediate module.
+pub(crate) fn write_reexported_function_probe_crate(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    fs::create_dir_all(root.join("src"))?;
+    fs::write(
+        root.join("Cargo.toml"),
+        r#"[package]
+name = "ra-reexport-probe"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "ra_reexport_probe"
+"#,
+    )?;
+    fs::write(
+        root.join("src/lib.rs"),
+        r#"pub struct State;
+pub struct Plan;
+
+pub mod consumer {
+    pub mod plan {
+        pub async fn consume(_state: &super::super::State, _plan: &super::super::Plan) {}
+    }
+
+    pub use plan::consume;
+}
+"#,
+    )?;
+    Ok(())
+}
