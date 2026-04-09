@@ -4959,3 +4959,141 @@ def main() -> None:
         "expected imported static mutation to typecheck"
     );
 }
+
+#[test]
+fn test_local_inference_preserves_method_result_field_access_after_factory_call() {
+    let source = r#"
+class Backend:
+  enable_optimizer: bool
+
+class Session:
+  @staticmethod
+  def default() -> Session:
+    return Session()
+
+  def backend(self) -> Backend:
+    return Backend(enable_optimizer=True)
+
+def main() -> None:
+  let session = Session.default()
+  let backend = session.backend()
+  let enabled = backend.enable_optimizer
+  let _ = enabled
+"#;
+    assert_check_ok(source);
+}
+
+#[test]
+fn test_local_inference_preserves_result_match_after_factory_call() {
+    let source = r#"
+@derive(Clone)
+class Source:
+  value: str
+
+model SessionError:
+  kind: str
+
+class Session:
+  regs: list[Source]
+
+  @staticmethod
+  def default() -> Session:
+    return Session(regs=[])
+
+  def register(mut self, logical_name: str, source: Source) -> Result[None, SessionError]:
+    self.regs.append(source)
+    return Ok(None)
+
+def main() -> None:
+  mut session = Session.default()
+  match session.register("x", Source(value="y")):
+    Ok(_) => pass
+    Err(err) => pass
+"#;
+    assert_check_ok(source);
+}
+
+#[test]
+fn test_local_inference_preserves_generic_result_match_after_factory_call() {
+    let source = r#"
+model SessionError:
+  kind: str
+
+class Session:
+  @staticmethod
+  def default() -> Session:
+    return Session()
+
+  def table[T with Clone](self, logical_name: str, marker: T) -> Result[T, SessionError]:
+    return Ok(marker)
+
+def main() -> None:
+  let session = Session.default()
+  match session.table("x", 1):
+    Ok(value) => pass
+    Err(err) => pass
+"#;
+    assert_check_ok(source);
+}
+
+#[test]
+fn test_local_inference_annotation_control_still_typechecks() {
+    let source = r#"
+class Backend:
+  enable_optimizer: bool
+
+class Session:
+  @staticmethod
+  def default() -> Session:
+    return Session()
+
+  def backend(self) -> Backend:
+    return Backend(enable_optimizer=True)
+
+def main() -> None:
+  let session: Session = Session.default()
+  let backend: Backend = session.backend()
+  let _ = backend.enable_optimizer
+"#;
+    assert_check_ok(source);
+}
+
+#[test]
+fn test_direct_construction_method_result_field_access_control_typechecks() {
+    let source = r#"
+class Backend:
+  enable_optimizer: bool
+
+class Session:
+  def backend(self) -> Backend:
+    return Backend(enable_optimizer=True)
+
+def main() -> None:
+  let session = Session()
+  let backend = session.backend()
+  let _ = backend.enable_optimizer
+"#;
+    assert_check_ok(source);
+}
+
+#[test]
+fn test_direct_construction_with_static_factory_present_still_typechecks() {
+    let source = r#"
+class Backend:
+  enable_optimizer: bool
+
+class Session:
+  @staticmethod
+  def default() -> Session:
+    return Session()
+
+  def backend(self) -> Backend:
+    return Backend(enable_optimizer=True)
+
+def main() -> None:
+  let session = Session()
+  let backend = session.backend()
+  let _ = backend.enable_optimizer
+"#;
+    assert_check_ok(source);
+}

@@ -7,11 +7,103 @@ use crate::frontend::symbols::{FieldInfo, MethodInfo, ResolvedType, TypeBoundInf
 use crate::frontend::typechecker::TypeChecker;
 use incan_core::lang::derives::{self, DeriveId};
 
+/// Build the resolved surface type for a declaration owner while that owner is still being collected.
+///
+/// During first-pass collection the owner type symbol is not yet registered, so simple self-references like `->
+/// Session` would otherwise fall back to `TypeVar("Session")`.
+fn owner_resolved_type(owner_name: &str, owner_type_params: &[TypeParam]) -> ResolvedType {
+    if owner_type_params.is_empty() {
+        return ResolvedType::Named(owner_name.to_string());
+    }
+    ResolvedType::Generic(
+        owner_name.to_string(),
+        owner_type_params
+            .iter()
+            .map(|tp| ResolvedType::TypeVar(tp.name.clone()))
+            .collect(),
+    )
+}
+
+/// Replace unresolved simple self-references with the concrete owner type during declaration collection.
+///
+/// This is intentionally narrow: only `TypeVar(owner_name)` is rewritten. Other unknown names must keep flowing as
+/// unresolved placeholders so forward references do not silently become owner-self references.
+fn resolve_owner_self_reference(
+    ty: ResolvedType,
+    owner_name: Option<&str>,
+    owner_self_ty: Option<&ResolvedType>,
+) -> ResolvedType {
+    let Some(owner_name) = owner_name else {
+        return ty;
+    };
+    let Some(owner_self_ty) = owner_self_ty else {
+        return ty;
+    };
+
+    match ty {
+        ResolvedType::TypeVar(name) if name == owner_name => owner_self_ty.clone(),
+        ResolvedType::Generic(name, args) => ResolvedType::Generic(
+            name,
+            args.into_iter()
+                .map(|arg| resolve_owner_self_reference(arg, Some(owner_name), Some(owner_self_ty)))
+                .collect(),
+        ),
+        ResolvedType::Function(params, ret) => ResolvedType::Function(
+            params
+                .into_iter()
+                .map(|param| resolve_owner_self_reference(param, Some(owner_name), Some(owner_self_ty)))
+                .collect(),
+            Box::new(resolve_owner_self_reference(
+                *ret,
+                Some(owner_name),
+                Some(owner_self_ty),
+            )),
+        ),
+        ResolvedType::Tuple(items) => ResolvedType::Tuple(
+            items
+                .into_iter()
+                .map(|item| resolve_owner_self_reference(item, Some(owner_name), Some(owner_self_ty)))
+                .collect(),
+        ),
+        ResolvedType::FrozenList(inner) => ResolvedType::FrozenList(Box::new(resolve_owner_self_reference(
+            *inner,
+            Some(owner_name),
+            Some(owner_self_ty),
+        ))),
+        ResolvedType::FrozenSet(inner) => ResolvedType::FrozenSet(Box::new(resolve_owner_self_reference(
+            *inner,
+            Some(owner_name),
+            Some(owner_self_ty),
+        ))),
+        ResolvedType::FrozenDict(key, value) => ResolvedType::FrozenDict(
+            Box::new(resolve_owner_self_reference(
+                *key,
+                Some(owner_name),
+                Some(owner_self_ty),
+            )),
+            Box::new(resolve_owner_self_reference(
+                *value,
+                Some(owner_name),
+                Some(owner_self_ty),
+            )),
+        ),
+        ResolvedType::Ref(inner) => ResolvedType::Ref(Box::new(resolve_owner_self_reference(
+            *inner,
+            Some(owner_name),
+            Some(owner_self_ty),
+        ))),
+        other => other,
+    }
+}
+
 /// Collect methods from method declarations into a `HashMap`.
 pub(super) fn collect_methods(
     methods: &[Spanned<MethodDecl>],
     checker: &mut TypeChecker,
+    owner_name: Option<&str>,
+    owner_type_params: &[TypeParam],
 ) -> HashMap<String, MethodInfo> {
+    let owner_self_ty = owner_name.map(|name| owner_resolved_type(name, owner_type_params));
     methods
         .iter()
         .map(|m| {
@@ -41,7 +133,13 @@ pub(super) fn collect_methods(
                                 type_args: bound
                                     .type_args
                                     .iter()
-                                    .map(|type_arg| checker.resolve_type_checked(type_arg))
+                                    .map(|type_arg| {
+                                        resolve_owner_self_reference(
+                                            checker.resolve_type_checked(type_arg),
+                                            owner_name,
+                                            owner_self_ty.as_ref(),
+                                        )
+                                    })
                                     .collect(),
                             })
                             .collect(),
@@ -52,9 +150,22 @@ pub(super) fn collect_methods(
                 .node
                 .params
                 .iter()
-                .map(|p| (p.node.name.clone(), checker.resolve_type_checked(&p.node.ty)))
+                .map(|p| {
+                    (
+                        p.node.name.clone(),
+                        resolve_owner_self_reference(
+                            checker.resolve_type_checked(&p.node.ty),
+                            owner_name,
+                            owner_self_ty.as_ref(),
+                        ),
+                    )
+                })
                 .collect();
-            let return_type = checker.resolve_type_checked(&m.node.return_type);
+            let return_type = resolve_owner_self_reference(
+                checker.resolve_type_checked(&m.node.return_type),
+                owner_name,
+                owner_self_ty.as_ref(),
+            );
             (
                 m.node.name.clone(),
                 MethodInfo {
