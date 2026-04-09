@@ -502,11 +502,21 @@ pub struct FieldInfo {
 /// Method information
 #[derive(Debug, Clone)]
 pub struct MethodInfo {
+    pub type_params: Vec<String>,
+    pub type_param_bounds: HashMap<String, Vec<String>>,
+    pub type_param_bound_details: HashMap<String, Vec<TypeBoundInfo>>,
     pub receiver: Option<Receiver>,
     pub params: Vec<(String, ResolvedType)>,
     pub return_type: ResolvedType,
     pub is_async: bool,
     pub has_body: bool, // false for abstract methods (...)
+}
+
+/// Resolved type-parameter bound metadata preserved for export/import paths.
+#[derive(Debug, Clone)]
+pub struct TypeBoundInfo {
+    pub name: String,
+    pub type_args: Vec<ResolvedType>,
 }
 
 /// Resolved type (after type checking)

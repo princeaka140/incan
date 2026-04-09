@@ -1357,6 +1357,16 @@ impl TypeChecker {
             });
         }
 
+        // Define method type parameters so generic methods can use them in signatures and bodies.
+        for type_param in &method.type_params {
+            self.symbols.define(Symbol {
+                name: type_param.name.clone(),
+                kind: SymbolKind::Type(TypeInfo::Builtin),
+                span: Span::default(),
+                scope: 0,
+            });
+        }
+
         // Define self if present
         if let Some(receiver) = method.receiver {
             let is_mutable = matches!(receiver, Receiver::Mutable);

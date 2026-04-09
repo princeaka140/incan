@@ -55,6 +55,18 @@ That gives Incan a simple mental model: a trait is both a capability declaration
 
 Read more about [traits: domain capabilities](../tutorials/book/11_traits_and_derives.md).
 
+### Generic methods on types
+
+Methods can also introduce their own type parameters. This now works on `class`, `model`, `trait`, and `newtype` declarations, using the same syntax as generic top-level functions:
+
+```incan
+class Box:
+    def get[T with Clone](self, value: T) -> T:
+        return value
+```
+
+The important distinction is that these are method-scoped type parameters, not hidden type parameters on the enclosing type. A generic `model Shelf[U]` may still define a method like `def swap[T](...)`, where `U` belongs to the type and `T` belongs only to that method.
+
 ## Debug vs Display: two string representations
 
 Incan intentionally separates two kinds of “stringification”:

@@ -841,6 +841,37 @@ impl TypeChecker {
                 (
                     method.name.clone(),
                     MethodInfo {
+                        type_params: method.type_params.iter().map(|tp| tp.name.clone()).collect(),
+                        type_param_bounds: method
+                            .type_params
+                            .iter()
+                            .map(|tp| {
+                                (
+                                    tp.name.clone(),
+                                    tp.bounds.iter().map(|bound| bound.name.clone()).collect(),
+                                )
+                            })
+                            .collect(),
+                        type_param_bound_details: method
+                            .type_params
+                            .iter()
+                            .map(|tp| {
+                                (
+                                    tp.name.clone(),
+                                    tp.bounds
+                                        .iter()
+                                        .map(|bound| TypeBoundInfo {
+                                            name: bound.name.clone(),
+                                            type_args: bound
+                                                .type_args
+                                                .iter()
+                                                .map(resolved_type_from_manifest_type_ref)
+                                                .collect(),
+                                        })
+                                        .collect(),
+                                )
+                            })
+                            .collect(),
                         receiver: self.receiver_from_manifest(method.receiver.as_ref()),
                         params: self.params_from_manifest(&method.params),
                         return_type: resolved_type_from_manifest_type_ref(&method.return_type),

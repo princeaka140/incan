@@ -171,6 +171,52 @@ Covered below in [Traits (authoring)](#requires-adopter-contract).
 
 ---
 
+## Generic instance methods
+
+Instance methods on `class`, `model`, `trait`, and `newtype` declarations may declare their own type parameters using
+the same syntax as top-level generic functions:
+
+```incan
+class Box:
+    def get[T with Clone](self, value: T) -> T:
+        return value
+```
+
+This is method-level polymorphism. The type parameters belong to the method, not to the enclosing type.
+
+Rules to keep in mind:
+
+- Method type parameters appear after the method name: `def name[T, U with Trait](...)`.
+- Method type parameters are scoped to that method only.
+- Enclosing type parameters and method type parameters may both be used in the same signature.
+- Trait methods may also be generic, whether they are required (`...`) or provide a default body.
+
+Examples:
+
+```incan
+model Shelf[U]:
+    item: U
+
+    def swap[T with Clone](self, value: T) -> T:
+        return value
+```
+
+```incan
+trait Echo:
+    def echo[T with Clone](self, value: T) -> T:
+        return value
+```
+
+```incan
+type Wrapper[U] = newtype U:
+    def echo[T with Clone](self, value: T) -> T:
+        return value
+```
+
+Method generic syntax is intentionally aligned with function generic syntax. If you already know how to read `def f[T](...)`, you already know how to read `def method[T](...)`.
+
+---
+
 ## Traits (authoring)
 
 Traits define reusable capabilities. Traits are always abstract: you opt concrete types in with `with TraitName`, and you may also use the trait name itself directly in annotations. Methods can be required (`...`) or have defaults.

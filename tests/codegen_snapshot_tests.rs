@@ -861,6 +861,13 @@ fn test_classes_codegen() {
 }
 
 #[test]
+fn test_generic_methods_codegen() {
+    let source = load_test_file("generic_methods");
+    let rust_code = generate_rust(&source);
+    insta::assert_snapshot!("generic_methods", rust_code);
+}
+
+#[test]
 fn test_models_codegen() {
     let source = load_test_file("models");
     let rust_code = generate_rust(&source);

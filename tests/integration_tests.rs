@@ -1936,6 +1936,48 @@ class Counter:
     }
 
     #[test]
+    fn test_generic_instance_method_full_pipeline() {
+        let source = r#"
+class Box:
+  def get[T with Clone](self, value: T) -> T:
+    return value
+
+model Shelf[U]:
+  item: U
+
+  def swap[T with Clone](self, value: T) -> T:
+    return value
+
+trait Echo:
+  def echo[T with Clone](self, value: T) -> T:
+    return value
+
+class EchoBox with Echo:
+  marker: int
+
+type Wrapper[U] = newtype U:
+  def echo[T with Clone](self, value: T) -> T:
+    return value
+
+def main() -> None:
+  let b = Box()
+  let _x = b.get(1)
+  let shelf = Shelf(item=1)
+  let _y = shelf.swap("ok")
+  let echo = EchoBox(marker=1)
+  let _z = echo.echo(True)
+  let wrapper = Wrapper(1)
+  let _w = wrapper.echo(1.5)
+"#;
+        let result = super::compile_source(source);
+        assert!(
+            result.is_ok(),
+            "expected generic instance methods across owner kinds to typecheck and lower, got {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
     fn test_match_with_case() {
         let source = r#"
 def foo(x: Option[int]) -> int:
@@ -2927,6 +2969,52 @@ mod rfc031_pub_import_integration_tests {
                 namespace: "widgets.dsl".to_string(),
                 keyword: "await".to_string(),
             }]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn build_lib_preserves_generic_instance_methods_for_consumers() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let producer_root = tmp.path().join("generic_methods_lib");
+        std::fs::create_dir_all(producer_root.join("src"))?;
+        std::fs::write(
+            producer_root.join("incan.toml"),
+            "[project]\nname = \"generic_methods_core\"\nversion = \"0.1.0\"\n",
+        )?;
+        std::fs::write(
+            producer_root.join("src/boxmod.incn"),
+            "pub class Box:\n  def get[T with Clone](self, value: T) -> T:\n    return value\n",
+        )?;
+        std::fs::write(producer_root.join("src/lib.incn"), "pub from boxmod import Box\n")?;
+
+        let producer_build = run_build_lib(&producer_root)?;
+        assert!(
+            producer_build.status.success(),
+            "expected `build --lib` to succeed.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&producer_build.stdout),
+            String::from_utf8_lossy(&producer_build.stderr)
+        );
+
+        let consumer_root = tmp.path().join("generic_methods_consumer");
+        std::fs::create_dir_all(consumer_root.join("src"))?;
+        std::fs::write(
+            consumer_root.join("incan.toml"),
+            "[project]\nname = \"consumer\"\n\n[dependencies]\nboxlib = { path = \"../generic_methods_lib\" }\n",
+        )?;
+        let consumer_main = consumer_root.join("src/main.incn");
+        std::fs::write(
+            &consumer_main,
+            "from pub::boxlib import Box\n\ndef main() -> None:\n  box: Box = Box()\n  value: int = box.get(1)\n  print(value)\n",
+        )?;
+
+        let out_dir = consumer_root.join("out");
+        let consumer_build = run_build(&consumer_main, &out_dir)?;
+        assert!(
+            consumer_build.status.success(),
+            "expected consumer build to succeed.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&consumer_build.stdout),
+            String::from_utf8_lossy(&consumer_build.stderr)
         );
         Ok(())
     }

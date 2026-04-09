@@ -198,6 +198,16 @@ impl AstLowering {
         type_param_names: Option<&std::collections::HashSet<&str>>,
     ) -> Result<IrFunction, LoweringError> {
         self.push_scope();
+        let method_type_param_names: std::collections::HashSet<&str> =
+            m.type_params.iter().map(|tp| tp.name.as_str()).collect();
+        let combined_type_param_names: std::collections::HashSet<&str> = match type_param_names {
+            Some(owner_type_param_names) => owner_type_param_names
+                .iter()
+                .copied()
+                .chain(method_type_param_names.iter().copied())
+                .collect(),
+            None => method_type_param_names,
+        };
         let mut hidden_type_params = Vec::new();
         let mut hidden_counter = 0usize;
 
@@ -223,7 +233,7 @@ impl AstLowering {
             .map(|p| {
                 let base_ty = self.lower_callable_param_type(
                     &p.node.ty.node,
-                    type_param_names,
+                    Some(&combined_type_param_names),
                     &mut hidden_type_params,
                     &mut hidden_counter,
                 );
@@ -245,7 +255,7 @@ impl AstLowering {
             .collect();
         params.extend(other_params);
 
-        let return_type = self.lower_callable_return_type(&m.return_type.node, type_param_names);
+        let return_type = self.lower_callable_return_type(&m.return_type.node, Some(&combined_type_param_names));
         let body = if let Some(ref body_stmts) = m.body {
             self.lower_statements(body_stmts)?
         } else {
@@ -255,7 +265,8 @@ impl AstLowering {
         // RFC 023: detect @rust.extern decorator to mark this method as externally-backed.
         let is_extern = Self::has_rust_extern_decorator(&m.decorators);
         let rust_attributes = self.extract_passthrough_attributes(&m.decorators);
-        let mut all_type_params = hidden_type_params;
+        let mut all_type_params = Self::lower_type_params(&m.type_params);
+        all_type_params.extend(hidden_type_params);
 
         self.pop_scope();
 
@@ -305,6 +316,16 @@ impl AstLowering {
         type_param_names: Option<&std::collections::HashSet<&str>>,
     ) -> Result<IrFunction, LoweringError> {
         self.push_scope();
+        let method_type_param_names: std::collections::HashSet<&str> =
+            m.type_params.iter().map(|tp| tp.name.as_str()).collect();
+        let combined_type_param_names: std::collections::HashSet<&str> = match type_param_names {
+            Some(owner_type_param_names) => owner_type_param_names
+                .iter()
+                .copied()
+                .chain(method_type_param_names.iter().copied())
+                .collect(),
+            None => method_type_param_names,
+        };
         let mut hidden_type_params = Vec::new();
         let mut hidden_counter = 0usize;
 
@@ -335,7 +356,7 @@ impl AstLowering {
             .map(|p| {
                 let base_ty = self.lower_callable_param_type(
                     &p.node.ty.node,
-                    type_param_names,
+                    Some(&combined_type_param_names),
                     &mut hidden_type_params,
                     &mut hidden_counter,
                 );
@@ -368,7 +389,7 @@ impl AstLowering {
             .collect();
         params.extend(other_params);
 
-        let return_type = self.lower_callable_return_type(&m.return_type.node, type_param_names);
+        let return_type = self.lower_callable_return_type(&m.return_type.node, Some(&combined_type_param_names));
         let body = if let Some(ref body_stmts) = m.body {
             self.lower_statements(body_stmts)?
         } else {
@@ -381,7 +402,8 @@ impl AstLowering {
         // `lower_impl_method_for_trait`, so inherent methods can be emitted as public here.
         let visibility = Visibility::Public;
         let is_extern = Self::has_rust_extern_decorator(&m.decorators);
-        let mut all_type_params = hidden_type_params;
+        let mut all_type_params = Self::lower_type_params(&m.type_params);
+        all_type_params.extend(hidden_type_params);
 
         Ok(IrFunction {
             name: m.name.clone(),

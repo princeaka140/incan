@@ -76,6 +76,44 @@ fn manifest_io_round_trip_preserves_trait_supertraits() -> Result<(), Box<dyn st
 }
 
 #[test]
+fn manifest_io_round_trip_preserves_generic_method_type_params() -> Result<(), Box<dyn std::error::Error>> {
+    let mut manifest = LibraryManifest::new("mylib", "0.1.0");
+    manifest.exports.classes.push(ClassExport {
+        name: "Box".to_string(),
+        type_params: Vec::new(),
+        extends: None,
+        traits: Vec::new(),
+        fields: Vec::new(),
+        methods: vec![MethodExport {
+            name: "get".to_string(),
+            type_params: vec![TypeParamExport {
+                name: "T".to_string(),
+                bounds: vec![TypeBoundExport {
+                    name: "Clone".to_string(),
+                    type_args: Vec::new(),
+                }],
+            }],
+            receiver: Some(ReceiverExport::Immutable),
+            params: vec![ParamExport {
+                name: "value".to_string(),
+                ty: TypeRef::TypeParam { name: "T".to_string() },
+            }],
+            return_type: TypeRef::TypeParam { name: "T".to_string() },
+            is_async: false,
+            has_body: true,
+        }],
+    });
+
+    let tmp = tempfile::tempdir()?;
+    let path = tmp.path().join("classes.incnlib");
+    manifest.write_to_path(&path)?;
+    let loaded = LibraryManifest::read_from_path(&path)?;
+
+    assert_eq!(loaded, manifest);
+    Ok(())
+}
+
+#[test]
 fn manifest_reader_rejects_unknown_manifest_format() -> Result<(), Box<dyn std::error::Error>> {
     let content = r#"{
   "name": "mylib",
