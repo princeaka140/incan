@@ -191,6 +191,7 @@ pub enum ReceiverExport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MethodExport {
     pub name: String,
+    pub type_params: Vec<TypeParamExport>,
     /// Receiver requirement when the method is invoked on a type instance.
     pub receiver: Option<ReceiverExport>,
     pub params: Vec<ParamExport>,
@@ -463,6 +464,7 @@ fn receiver_from_checked(receiver: Option<crate::frontend::ast::Receiver>) -> Op
 fn method_from_checked(method: &crate::frontend::library_exports::CheckedMethod) -> MethodExport {
     MethodExport {
         name: method.name.clone(),
+        type_params: method.type_params.iter().map(type_param_from_checked).collect(),
         receiver: receiver_from_checked(method.receiver),
         params: params_from_checked(&method.params),
         return_type: type_ref_from_resolved(&method.return_type),

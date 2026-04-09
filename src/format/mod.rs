@@ -714,6 +714,20 @@ def function() -> int:
     }
 
     #[test]
+    fn test_format_source_generic_method_round_trip() -> Result<(), FormatError> {
+        let source = r#"class Box:
+    def get[T with Clone](self, value: T) -> T:
+        return value
+"#;
+        let formatted = assert_format_round_trip_lex_parse(source)?;
+        assert!(
+            formatted.contains("def get[T with Clone](self, value: T) -> T:"),
+            "expected method type params preserved by formatter; got: {formatted}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_format_source_refuses_comment_loss_inline_comment() -> Result<(), FormatError> {
         let source = r#"def foo() -> int:
   x = 1  # keep this comment

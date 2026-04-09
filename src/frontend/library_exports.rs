@@ -39,6 +39,7 @@ pub struct CheckedField {
 #[derive(Debug, Clone)]
 pub struct CheckedMethod {
     pub name: String,
+    pub type_params: Vec<CheckedTypeParam>,
     pub receiver: Option<crate::frontend::ast::Receiver>,
     pub params: Vec<(String, ResolvedType)>,
     pub return_type: ResolvedType,
@@ -448,6 +449,24 @@ fn map_methods(methods: &HashMap<String, MethodInfo>) -> Vec<CheckedMethod> {
         .iter()
         .map(|(name, info)| CheckedMethod {
             name: name.clone(),
+            type_params: info
+                .type_params
+                .iter()
+                .map(|type_param| CheckedTypeParam {
+                    name: type_param.clone(),
+                    bounds: info
+                        .type_param_bound_details
+                        .get(type_param)
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|bound| CheckedTypeBound {
+                            name: bound.name,
+                            type_args: bound.type_args,
+                        })
+                        .collect(),
+                })
+                .collect(),
             receiver: info.receiver,
             params: info.params.clone(),
             return_type: info.return_type.clone(),

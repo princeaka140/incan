@@ -54,6 +54,7 @@ impl<'a> Parser<'a> {
         }
         self.expect_keyword(KeywordId::Def, "Expected 'def'")?;
         let name = self.identifier()?;
+        let type_params = self.type_params()?;
         self.expect_punct(PunctuationId::LParen, "Expected '(' after method name")?;
 
         // Parse receiver and params
@@ -88,6 +89,7 @@ impl<'a> Parser<'a> {
                 decorators,
                 surface_modifiers,
                 name,
+                type_params,
                 receiver,
                 params,
                 return_type,

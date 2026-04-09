@@ -631,6 +631,9 @@ impl Formatter {
         }
         self.writer.write("def ");
         self.writer.write(&method.name);
+        if !method.type_params.is_empty() {
+            self.format_type_params(&method.type_params);
+        }
         self.writer.write("(");
 
         let has_receiver = method.receiver.is_some();

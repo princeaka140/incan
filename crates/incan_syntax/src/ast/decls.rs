@@ -205,6 +205,8 @@ pub struct MethodDecl {
     pub decorators: Vec<Spanned<Decorator>>,
     pub surface_modifiers: Vec<SurfaceModifier>,
     pub name: Ident,
+    /// Method-scoped generic parameters declared after the method name.
+    pub type_params: Vec<TypeParam>,
     pub receiver: Option<Receiver>,
     pub params: Vec<Spanned<Param>>,
     pub return_type: Spanned<Type>,

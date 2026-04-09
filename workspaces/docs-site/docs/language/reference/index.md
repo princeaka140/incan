@@ -21,7 +21,7 @@ For step-by-step learning and patterns, see [Tutorials](../tutorials/book/index.
 - [Testing](testing.md): the `testing` stdlib module (assertions, markers, fixtures, parametrization)
 - [Numeric semantics](numeric_semantics.md): numeric operators, promotion rules, and edge cases
 - [Strings](strings.md): string types, formatting, and string operations
-- [Derives & traits](derives_and_traits.md): how derives and traits fit together
+- [Derives & traits](derives_and_traits.md): derives, trait authoring, method decorators, and generic instance methods
 - Derives:
     - [String representation](derives/string_representation.md): `Debug`, `Display`
     - [Comparison](derives/comparison.md): `Eq`, `Ord`, `Hash`

@@ -53,6 +53,13 @@ impl AstLowering {
             .iter()
             .map(|m| {
                 self.push_scope();
+                let method_type_param_names: HashSet<&str> =
+                    m.node.type_params.iter().map(|tp| tp.name.as_str()).collect();
+                let combined_type_param_names: HashSet<&str> = type_param_names
+                    .iter()
+                    .copied()
+                    .chain(method_type_param_names.iter().copied())
+                    .collect();
                 let mut hidden_type_params = Vec::new();
                 let mut hidden_counter = 0usize;
 
@@ -79,7 +86,7 @@ impl AstLowering {
                     .map(|p| {
                         let ty = self.lower_callable_param_type(
                             &p.node.ty.node,
-                            Some(&type_param_names),
+                            Some(&combined_type_param_names),
                             &mut hidden_type_params,
                             &mut hidden_counter,
                         );
@@ -101,7 +108,8 @@ impl AstLowering {
                     .collect();
                 params.extend(other_params);
 
-                let return_type = self.lower_callable_return_type(&m.node.return_type.node, Some(&type_param_names));
+                let return_type =
+                    self.lower_callable_return_type(&m.node.return_type.node, Some(&combined_type_param_names));
                 // IMPORTANT: We intentionally do NOT emit trait method bodies into the Rust trait itself.
                 // Default methods are expanded into each adopting `impl Trait for Type` block during lowering, which
                 // allows bodies to assume adopter fields (RFC 000) without generating invalid Rust trait default
@@ -110,6 +118,9 @@ impl AstLowering {
 
                 self.pop_scope();
 
+                let mut all_type_params = Self::lower_type_params(&m.node.type_params);
+                all_type_params.extend(hidden_type_params);
+
                 Ok(IrFunction {
                     name: m.node.name.clone(),
                     params,
@@ -117,7 +128,7 @@ impl AstLowering {
                     body,
                     is_async: m.node.is_async(),
                     visibility: Visibility::Private,
-                    type_params: hidden_type_params,
+                    type_params: all_type_params,
                     is_extern: false,
                     rust_attributes: self.extract_passthrough_attributes(&m.node.decorators),
                 })

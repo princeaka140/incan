@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::frontend::ast::*;
-use crate::frontend::symbols::{FieldInfo, MethodInfo, ResolvedType};
+use crate::frontend::symbols::{FieldInfo, MethodInfo, ResolvedType, TypeBoundInfo};
 use crate::frontend::typechecker::TypeChecker;
 use incan_core::lang::derives::{self, DeriveId};
 
@@ -15,6 +15,39 @@ pub(super) fn collect_methods(
     methods
         .iter()
         .map(|m| {
+            let type_params: Vec<String> = m.node.type_params.iter().map(|tp| tp.name.clone()).collect();
+            let type_param_bounds: HashMap<String, Vec<String>> = m
+                .node
+                .type_params
+                .iter()
+                .map(|tp| {
+                    (
+                        tp.name.clone(),
+                        tp.bounds.iter().map(|bound| bound.name.clone()).collect(),
+                    )
+                })
+                .collect();
+            let type_param_bound_details: HashMap<String, Vec<TypeBoundInfo>> = m
+                .node
+                .type_params
+                .iter()
+                .map(|tp| {
+                    (
+                        tp.name.clone(),
+                        tp.bounds
+                            .iter()
+                            .map(|bound| TypeBoundInfo {
+                                name: bound.name.clone(),
+                                type_args: bound
+                                    .type_args
+                                    .iter()
+                                    .map(|type_arg| checker.resolve_type_checked(type_arg))
+                                    .collect(),
+                            })
+                            .collect(),
+                    )
+                })
+                .collect();
             let params = m
                 .node
                 .params
@@ -25,6 +58,9 @@ pub(super) fn collect_methods(
             (
                 m.node.name.clone(),
                 MethodInfo {
+                    type_params,
+                    type_param_bounds,
+                    type_param_bound_details,
                     receiver: m.node.receiver,
                     params,
                     return_type,
@@ -63,6 +99,9 @@ pub(super) fn inject_json_methods(methods: &mut HashMap<String, MethodInfo>, typ
         methods.insert(
             "to_json".to_string(),
             MethodInfo {
+                type_params: Vec::new(),
+                type_param_bounds: HashMap::new(),
+                type_param_bound_details: HashMap::new(),
                 receiver: Some(Receiver::Immutable),
                 params: vec![],
                 return_type: ResolvedType::Str,
@@ -78,6 +117,9 @@ pub(super) fn inject_json_methods(methods: &mut HashMap<String, MethodInfo>, typ
         methods.insert(
             "from_json".to_string(),
             MethodInfo {
+                type_params: Vec::new(),
+                type_param_bounds: HashMap::new(),
+                type_param_bound_details: HashMap::new(),
                 receiver: None, // Static method
                 params: vec![("json_str".to_string(), ResolvedType::Str)],
                 return_type: ResolvedType::Generic(
@@ -133,6 +175,9 @@ pub(super) fn inject_validate_methods(
     methods.insert(
         "new".to_string(),
         MethodInfo {
+            type_params: Vec::new(),
+            type_param_bounds: HashMap::new(),
+            type_param_bound_details: HashMap::new(),
             receiver: None, // associated function via `TypeName.new(...)`
             params,
             return_type,

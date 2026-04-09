@@ -122,6 +122,25 @@ model User:
     }
 
     #[test]
+    fn test_parse_generic_method_type_params() -> Result<(), Vec<CompileError>> {
+        let source = r#"
+class Box:
+  def get[T with Clone](self, value: T) -> T:
+    return value
+"#;
+        let program = parse_str(source)?;
+        let class = require_class_decl(&program.declarations[0])?;
+        assert_eq!(class.methods.len(), 1);
+        let method = &class.methods[0].node;
+        assert_eq!(method.name, "get");
+        assert_eq!(method.type_params.len(), 1);
+        assert_eq!(method.type_params[0].name, "T");
+        assert_eq!(method.type_params[0].bounds.len(), 1);
+        assert_eq!(method.type_params[0].bounds[0].name, "Clone");
+        Ok(())
+    }
+
+    #[test]
     fn test_parse_class_docstring() -> Result<(), Vec<CompileError>> {
         let source = r#"
 class FieldInfo:

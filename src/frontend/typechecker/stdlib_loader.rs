@@ -427,16 +427,59 @@ fn extract_method_signatures(
     methods
         .iter()
         .map(|m| {
+            let method_type_params: Vec<String> = m.node.type_params.iter().map(|tp| tp.name.clone()).collect();
+            let method_type_param_bounds: HashMap<String, Vec<String>> = m
+                .node
+                .type_params
+                .iter()
+                .map(|tp| {
+                    (
+                        tp.name.clone(),
+                        tp.bounds.iter().map(|bound| bound.name.clone()).collect(),
+                    )
+                })
+                .collect();
+            let mut all_type_params = type_params.to_vec();
+            all_type_params.extend(method_type_params.iter().cloned());
+            let method_type_param_bound_details = m
+                .node
+                .type_params
+                .iter()
+                .map(|tp| {
+                    (
+                        tp.name.clone(),
+                        tp.bounds
+                            .iter()
+                            .map(|bound| crate::frontend::symbols::TypeBoundInfo {
+                                name: bound.name.clone(),
+                                type_args: bound
+                                    .type_args
+                                    .iter()
+                                    .map(|arg| ast_type_to_resolved(&arg.node, &all_type_params))
+                                    .collect(),
+                            })
+                            .collect(),
+                    )
+                })
+                .collect();
             let params: Vec<(String, ResolvedType)> = m
                 .node
                 .params
                 .iter()
-                .map(|p| (p.node.name.clone(), ast_type_to_resolved(&p.node.ty.node, type_params)))
+                .map(|p| {
+                    (
+                        p.node.name.clone(),
+                        ast_type_to_resolved(&p.node.ty.node, &all_type_params),
+                    )
+                })
                 .collect();
-            let return_type = ast_type_to_resolved(&m.node.return_type.node, type_params);
+            let return_type = ast_type_to_resolved(&m.node.return_type.node, &all_type_params);
             (
                 m.node.name.clone(),
                 MethodInfo {
+                    type_params: method_type_params,
+                    type_param_bounds: method_type_param_bounds,
+                    type_param_bound_details: method_type_param_bound_details,
                     receiver: m.node.receiver,
                     params,
                     return_type,

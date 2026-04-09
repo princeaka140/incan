@@ -99,6 +99,7 @@ impl IncanLanguageServer {
         let mut declared_crates = HashSet::new();
         let mut library_imported_vocab = HashMap::new();
         let mut library_manifest_index = LibraryManifestIndex::default();
+        #[cfg(feature = "rust-metadata")]
         let mut project_manifest: Option<ProjectManifest> = None;
         #[cfg(feature = "rust-metadata")]
         let mut rust_metadata_manifest_dir: Option<PathBuf> = None;
@@ -106,7 +107,10 @@ impl IncanLanguageServer {
             && let Some(start_dir) = path.parent()
             && let Ok(Some(manifest)) = ProjectManifest::discover(start_dir)
         {
-            project_manifest = Some(manifest.clone());
+            #[cfg(feature = "rust-metadata")]
+            {
+                project_manifest = Some(manifest.clone());
+            }
             declared_crates = manifest.declared_rust_crate_names();
             library_manifest_index = LibraryManifestIndex::from_project_manifest(&manifest);
             library_imported_vocab = library_manifest_index.library_imported_vocab();
