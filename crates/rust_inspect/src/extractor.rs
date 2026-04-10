@@ -14,6 +14,7 @@ use ra_ap_hir::{
 use ra_ap_ide_db::RootDatabase;
 
 use super::error::RustMetadataError;
+use super::loader::RustWorkspace;
 
 fn map_visibility(vis: Visibility) -> RustVisibility {
     match vis {
@@ -616,20 +617,10 @@ fn trait_info(tr: Trait, db: &RootDatabase, dt: DisplayTarget) -> RustTraitInfo 
 
 /// Find a crate by any spelling that can legally name it across Cargo and Rust surfaces.
 ///
-/// rust-metadata queries use canonical Rust paths, so the first segment may be the Rust crate name even when Cargo
+/// rust-inspect queries use canonical Rust paths, so the first segment may be the Rust crate name even when Cargo
 /// registered the package with hyphens or via a differently-cased display name.
-fn find_crate(db: &RootDatabase, crate_name: &str) -> Option<Crate> {
-    let normalized = crate_name.replace('-', "_");
-    Crate::all(db).into_iter().find(|k| {
-        k.display_name(db).is_some_and(|dn| {
-            dn.to_string().replace('-', "_") == normalized
-                || dn.crate_name().as_str().replace('-', "_") == normalized
-                || dn.canonical_name().as_str().replace('-', "_") == normalized
-        }) || k
-            .root_module(db)
-            .name(db)
-            .is_some_and(|name| name.as_str().replace('-', "_") == normalized)
-    })
+fn find_crate(workspace: &RustWorkspace, crate_name: &str) -> Option<Crate> {
+    workspace.crate_by_name(crate_name)
 }
 
 fn resolve_module_def(db: &RootDatabase, krate: Crate, segments: &[Name]) -> Result<ModuleDef, RustMetadataError> {
@@ -697,13 +688,22 @@ fn split_canonical_path(path: &str) -> Result<(&str, Vec<Name>), RustMetadataErr
 ///
 /// rust-analyzer's type layer uses thread-local database attachment; this entry point wraps the implementation in
 /// [`attach_db`] so callers only need a `RootDatabase` reference.
-pub fn extract_rust_item(db: &RootDatabase, canonical_path: &str) -> Result<RustItemMetadata, RustMetadataError> {
-    attach_db(db, || extract_rust_item_inner(db, canonical_path))
+pub fn extract_rust_item(
+    workspace: &RustWorkspace,
+    canonical_path: &str,
+) -> Result<RustItemMetadata, RustMetadataError> {
+    let db = workspace.db();
+    attach_db(db, || extract_rust_item_inner(workspace, db, canonical_path))
 }
 
-fn extract_rust_item_inner(db: &RootDatabase, canonical_path: &str) -> Result<RustItemMetadata, RustMetadataError> {
+fn extract_rust_item_inner(
+    workspace: &RustWorkspace,
+    db: &RootDatabase,
+    canonical_path: &str,
+) -> Result<RustItemMetadata, RustMetadataError> {
     let (crate_name, segments) = split_canonical_path(canonical_path)?;
-    let krate = find_crate(db, crate_name).ok_or_else(|| RustMetadataError::CrateNotFound(crate_name.to_owned()))?;
+    let krate =
+        find_crate(workspace, crate_name).ok_or_else(|| RustMetadataError::CrateNotFound(crate_name.to_owned()))?;
     let dt = DisplayTarget::from_crate(db, krate.base());
     let def = resolve_module_def(db, krate, &segments)?;
     let vis = map_visibility(def.visibility(db));

@@ -35,7 +35,7 @@ In this file we demonstrate the full rust interop surface (as introduced by RFC 
 
 **Design note** — str vs &str at rusttype method boundaries:  
 Incan's `str` maps to Rust `String`. A method declared `def label(self) -> str` will emit `widget.label()` in Rust,
-which must return `String` (not `&str`). When built with the `rust-metadata` feature, the compiler detects the mismatch
+which must return `String` (not `&str`). When built with the `rust_inspect` feature, the compiler detects the mismatch
 and automatically inserts `.to_string()` at the call site. Without that feature, choose methods whose Rust signatures
 already return `String` (e.g. `to_string()`). This example uses Uuid which has `to_string() -> String` (always safe).
 """
@@ -60,7 +60,7 @@ type RequestId = rusttype Uuid:
     - into str: format back to canonical hyphenated form (infallible, via adapter)
     
     `to_string` is used over `as_str` because Uuid::to_string returns String directly, matching Incan's str = String
-    contract without needing the rust-metadata feature.
+    contract without needing the `rust_inspect` feature.
     """
     # Abstract rusttype method declarations: bodies are `...` on purpose.
     # Implementations are provided by the underlying Rust type (`uuid::Uuid`).

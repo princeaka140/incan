@@ -6,8 +6,10 @@ use std::time::Instant;
 use crate::backend::{IrCodegen, ProjectGenerator};
 use crate::cli::commands;
 use crate::cli::commands::common;
-#[cfg(feature = "rust-metadata")]
-use crate::cli::commands::common::ensure_rust_metadata_workspace;
+#[cfg(feature = "rust_inspect")]
+use crate::cli::commands::common::{
+    collect_rust_inspect_query_paths, ensure_rust_inspect_workspace, prewarm_rust_inspect_workspace,
+};
 use crate::cli::prelude::ParsedModule;
 use crate::dependency_resolver::resolve_dependencies;
 use crate::frontend::library_manifest_index::LibraryManifestIndex;
@@ -186,9 +188,10 @@ pub(super) fn run_single_test(
     // ---- Setup codegen ----
     let mut codegen = IrCodegen::new();
     codegen.set_library_manifest_index(library_manifest_index.clone());
-    #[cfg(feature = "rust-metadata")]
+    #[cfg(feature = "rust_inspect")]
     {
-        let rust_metadata_manifest_dir = match ensure_rust_metadata_workspace(
+        let metadata_query_paths = collect_rust_inspect_query_paths(&dependency_modules);
+        let rust_inspect_manifest_dir = match ensure_rust_inspect_workspace(
             &project_root,
             &project_name,
             manifest
@@ -201,7 +204,10 @@ pub(super) fn run_single_test(
             Ok(dir) => dir,
             Err(err) => return TestResult::Failed(start.elapsed(), err.message),
         };
-        codegen.set_rust_metadata_manifest_dir(rust_metadata_manifest_dir);
+        if let Err(err) = prewarm_rust_inspect_workspace(&rust_inspect_manifest_dir, &metadata_query_paths) {
+            return TestResult::Failed(start.elapsed(), err.message);
+        }
+        codegen.set_rust_inspect_manifest_dir(rust_inspect_manifest_dir);
     }
 
     for module in &source_modules {

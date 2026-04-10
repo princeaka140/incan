@@ -1,4 +1,4 @@
-//! Shared on-disk fixtures for `rust-metadata` tests (typechecker + extractor).
+//! Shared on-disk fixtures for `rust_inspect` tests (typechecker + extractor).
 
 use std::fs;
 use std::path::Path;
@@ -62,37 +62,6 @@ edition = "2021"
     Ok(())
 }
 
-/// Minimal crate exposing a re-exported free function through an intermediate module.
-pub(crate) fn write_reexported_function_probe_crate(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    fs::create_dir_all(root.join("src"))?;
-    fs::write(
-        root.join("Cargo.toml"),
-        r#"[package]
-name = "ra-reexport-probe"
-version = "0.1.0"
-edition = "2021"
-
-[lib]
-name = "ra_reexport_probe"
-"#,
-    )?;
-    fs::write(
-        root.join("src/lib.rs"),
-        r#"pub struct State;
-pub struct Plan;
-
-pub mod consumer {
-    pub mod plan {
-        pub async fn consume(_state: &super::super::State, _plan: &super::super::Plan) {}
-    }
-
-    pub use plan::consume;
-}
-"#,
-    )?;
-    Ok(())
-}
-
 /// Minimal crate with a hyphenated package name and underscored lib name.
 pub(crate) fn write_hyphenated_function_probe_crate(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(root.join("src"))?;
@@ -118,39 +87,6 @@ pub mod consumer {
     }
 
     pub use nested::consume;
-}
-"#,
-    )?;
-    Ok(())
-}
-
-/// Minimal crate exposing nested module types whose methods return their own concrete canonical path.
-pub(crate) fn write_nested_context_probe_crate(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    fs::create_dir_all(root.join("src"))?;
-    fs::write(
-        root.join("Cargo.toml"),
-        r#"[package]
-name = "ra_context_probe"
-version = "0.1.0"
-edition = "2021"
-"#,
-    )?;
-    fs::write(
-        root.join("src/lib.rs"),
-        r#"pub mod execution {
-    pub mod context {
-        pub struct SessionContext;
-
-        impl SessionContext {
-            pub fn new() -> SessionContext {
-                SessionContext
-            }
-
-            pub fn state(&self) -> SessionContext {
-                SessionContext
-            }
-        }
-    }
 }
 "#,
     )?;

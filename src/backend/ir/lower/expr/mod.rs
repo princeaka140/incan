@@ -39,9 +39,9 @@ impl AstLowering {
             return MethodCallArgPolicy::PreserveShape;
         }
 
-        // Fallback for unresolved Rust-interop receivers when optional rust metadata is unavailable or local type
-        // inference did not retain the receiver family. Keep lookup calls like `counts.get(word)` borrow-shaped rather
-        // than forcing an extra `&`/`.into()` conversion on already string-like probe values.
+        // Fallback for unresolved Rust-interop receivers when optional rust-inspect metadata is unavailable or local
+        // type inference did not retain the receiver family. Keep lookup calls like `counts.get(word)` borrow-shaped
+        // rather than forcing an extra `&`/`.into()` conversion on already string-like probe values.
         if matches!(receiver.ty, IrType::Unknown)
             && matches!(method, "get" | "contains" | "contains_key")
             && args.first().is_some_and(|arg| {

@@ -382,12 +382,12 @@ type Name[Params...] = rusttype RustBacking[Params...]:
 Normative rules:
 
 - `impl` blocks must appear inside `rusttype` declarations only. Ordinary `newtype` and `model` declarations must not contain `impl` blocks; the compiler must reject them with a clear diagnostic.
-- The trait name must resolve to an imported Rust trait (via `rust::` or `std.rust`) and be available in the `rust_metadata` module.
-- Method signatures in the `impl` block must match the trait's method signatures as reported by Rust metadata (in `rust_metadata`). The compiler must validate parameter types, return types, receiver shapes, and asyncness.
+- The trait name must resolve to an imported Rust trait (via `rust::` or `std.rust`) and be available in the `rust_inspect` crate.
+- Method signatures in the `impl` block must match the trait's method signatures as reported by rust-inspect metadata (in `rust_inspect`). The compiler must validate parameter types, return types, receiver shapes, and asyncness.
 - Associated types declared with `type AssocType = T` must be compatible with the trait's associated type constraints.
 - If a trait item has associated types, either:
     - the `impl` block explicitly declares them, or
-    - the compiler infers them from the backing Rust type's trait impl via `rust_metadata`.
+    - the compiler infers them from the backing Rust type's trait impl via `rust_inspect`.
   Otherwise the compiler must emit a diagnostic requiring explicit declarations.
 - `impl Trait` supports two modes:
     1. **Custom behavior** (method bodies present): authors provide explicit method implementations in Incan.
@@ -439,7 +439,7 @@ Normative rules:
 
 #### Expected diagnostics for `impl`/forwarding path
 
-- Trait not found in scope: "Trait `X` not imported or not available in rust_metadata." 
+- Trait not found in scope: "Trait `X` not imported or not available in rust_inspect." 
 - `impl` outside `rusttype`: "`impl` blocks are only allowed inside `rusttype` declarations." 
 - Signature mismatch: "Method `foo` signature differs from `Trait::foo`; expected `...`, found `...`."
 - Forwarding failure: "Backing type does not implement `Trait` and no method bodies are present." 
@@ -457,7 +457,7 @@ Normative rules:
 - When a `rusttype` declaration includes `impl Future:` with an associated `type Output = T`, the compiler generates `impl Future for Type` with a `poll` method that delegates to the backing type.
 - The generated `poll` must handle `Pin` projection correctly, preserving Rust pinning guarantees. The compiler must maintain the invariant that `Pin<&mut Type>` corresponds to a safe projection into `Pin<&mut backing_type>`.
 - Output type mapping: if the backing type's `Future::Output` differs from the declared `Output`, the compiler must insert the appropriate conversion (using `From` impls, `map`, or `map_err`) in the generated `poll` method.
-- The compiler should verify (via `rust_metadata` when available) that the backing type actually implements `Future`. When metadata is unavailable, the compiler must accept the declaration and let rustc validate it.
+- The compiler should verify (via `rust_inspect` when available) that the backing type actually implements `Future`. When metadata is unavailable, the compiler must accept the declaration and let rustc validate it.
 
 ### Interaction with existing features
 
@@ -488,7 +488,7 @@ New syntax additions:
 The semantic center of this RFC is:
 
 1. `impl` blocks on `rusttype` are Incan-authored, Rust-emitted trait implementations.
-2. The compiler owns the translation: method signatures are validated against Rust metadata, bodies are lowered through the standard Incan pipeline, and the output is a valid Rust `impl` block.
+2. The compiler owns the translation: method signatures are validated against rust-inspect metadata, bodies are lowered through the standard Incan pipeline, and the output is a valid Rust `impl` block.
 3. `@rust.derive` is a passthrough: the compiler does not interpret the derive macro, it forwards it to rustc.
 4. Async bridging is a specialization of `impl Future` that the compiler can optimize by delegating `poll` to the backing type.
 

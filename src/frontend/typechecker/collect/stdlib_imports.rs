@@ -322,11 +322,41 @@ impl TypeChecker {
                     let name = item.alias.clone().unwrap_or_else(|| item.name.clone());
                     let full_path = self.rust_import_full_path(crate_name, path, Some(&item.name));
                     let canonical_path = full_path.join("::");
+                    let item_name = item.name.trim_start_matches("r#");
+                    let is_primitive = matches!(
+                        item_name,
+                        "bool"
+                            | "char"
+                            | "str"
+                            | "f32"
+                            | "f64"
+                            | "i8"
+                            | "i16"
+                            | "i32"
+                            | "i64"
+                            | "i128"
+                            | "isize"
+                            | "u8"
+                            | "u16"
+                            | "u32"
+                            | "u64"
+                            | "u128"
+                            | "usize"
+                    );
+                    let should_block_for_item = !is_primitive
+                        && item_name
+                            .chars()
+                            .next()
+                            .is_some_and(|ch| ch.is_ascii_lowercase() || ch == '_');
                     let info = RustItemInfo {
                         crate_name: crate_name.clone(),
                         path: canonical_path.clone(),
                         binding: RustImportBindingKind::FromImport,
-                        metadata: self.rust_item_metadata_for_path(&canonical_path),
+                        metadata: if should_block_for_item {
+                            self.rust_item_metadata_for_path_blocking(&canonical_path)
+                        } else {
+                            self.rust_item_metadata_for_path(&canonical_path)
+                        },
                     };
                     self.define_rust_import_binding(name, info, span);
                 }

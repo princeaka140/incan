@@ -10,15 +10,15 @@ use crate::library_manifest::{
     ConstExport, EnumExport, EnumVariantExport, FunctionExport, LibraryExports, LibraryManifest, ModelExport,
     ParamExport, StaticExport, TraitExport, TypeParamExport, TypeRef,
 };
-#[cfg(feature = "rust-metadata")]
-use crate::rust_metadata::write_substrait_probe_crate;
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
+use crate::rust_inspect::{Inspector, InspectorConfig, write_substrait_probe_crate};
+#[cfg(feature = "rust_inspect")]
 use incan_core::interop::{
     RustFieldInfo, RustFunctionSig, RustItemKind, RustItemMetadata, RustMethodSig, RustParam, RustTypeInfo,
     RustTypeShape, RustVariantInfo, RustVisibility,
 };
 use std::collections::HashMap;
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 use std::fs;
 use std::path::PathBuf;
 
@@ -44,8 +44,8 @@ fn synthetic_artifact_root(name: &str) -> PathBuf {
     root
 }
 
-#[cfg(feature = "rust-metadata")]
-fn write_rust_metadata_probe_crate(root: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+#[cfg(feature = "rust_inspect")]
+fn write_rust_inspect_probe_crate(root: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(root.join("src"))?;
     fs::create_dir_all(root.join("demo").join("src"))?;
     fs::write(
@@ -89,8 +89,8 @@ pub enum Choice {
     Ok(())
 }
 
-#[cfg(feature = "rust-metadata")]
-fn seeded_rust_metadata_workspace() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
+#[cfg(feature = "rust_inspect")]
+fn seeded_rust_inspect_workspace() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
     fs::write(
         tmp.path().join("Cargo.toml"),
@@ -101,6 +101,16 @@ edition = "2021"
 "#,
     )?;
     Ok(tmp)
+}
+
+#[cfg(feature = "rust_inspect")]
+fn prewarm_metadata(manifest_dir: &std::path::Path, paths: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
+    let inspector = Inspector::new(InspectorConfig::new(manifest_dir.to_path_buf()));
+    inspector.prewarm(
+        paths.iter().map(|path| (*path).to_string()).collect::<Vec<_>>(),
+        &|_| (),
+    )?;
+    Ok(())
 }
 
 fn assert_check_ok(source: &str) {
@@ -595,7 +605,7 @@ type Email = rusttype RustEmailAddress:
     assert_check_ok(source);
 }
 
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 #[test]
 fn test_ambiguous_short_form_adapter_rejected() {
     let source = r#"
@@ -810,9 +820,9 @@ type Email = rusttype RustEmailAddress:
     );
 }
 
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 #[test]
-fn test_rust_metadata_unavailable_stays_permissive_for_method_calls() -> Result<(), Box<dyn std::error::Error>> {
+fn test_rust_inspect_unavailable_stays_permissive_for_method_calls() -> Result<(), Box<dyn std::error::Error>> {
     let source = r#"
 from rust::regex import Regex
 
@@ -822,7 +832,7 @@ def f() -> None:
     let tokens = lexer::lex(source).map_err(|errs| std::io::Error::other(format!("lex failed: {errs:?}")))?;
     let ast = parser::parse(&tokens).map_err(|errs| std::io::Error::other(format!("parse failed: {errs:?}")))?;
     let mut checker = TypeChecker::new();
-    checker.set_rust_metadata_manifest_dir(PathBuf::from("/__incan_nonexistent_metadata_root__"));
+    checker.set_rust_inspect_manifest_dir(PathBuf::from("/__incan_nonexistent_metadata_root__"));
     let result = checker.check_program(&ast);
     assert!(
         result.is_ok(),
@@ -831,16 +841,15 @@ def f() -> None:
     Ok(())
 }
 
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 #[test]
-fn test_rust_metadata_function_signature_preserves_borrowed_rust_path_param() -> Result<(), Box<dyn std::error::Error>>
-{
+fn test_rust_inspect_function_signature_preserves_borrowed_rust_path_param() -> Result<(), Box<dyn std::error::Error>> {
     let mut checker = TypeChecker::new();
-    let tmp = seeded_rust_metadata_workspace()?;
+    let tmp = seeded_rust_inspect_workspace()?;
     let manifest_dir = tmp.path().to_path_buf();
-    checker.set_rust_metadata_manifest_dir(manifest_dir.clone());
+    checker.set_rust_inspect_manifest_dir(manifest_dir.clone());
     checker
-        .rust_metadata_cache
+        .rust_inspect_cache
         .insert_test_item(
             &manifest_dir,
             RustItemMetadata {
@@ -858,13 +867,13 @@ fn test_rust_metadata_function_signature_preserves_borrowed_rust_path_param() ->
                 }),
             },
         )
-        .map_err(|e| std::io::Error::other(format!("seed rust metadata function: {e}")))?;
+        .map_err(|e| std::io::Error::other(format!("seed rust-inspect function: {e}")))?;
     let Some(RustItemMetadata {
         kind: RustItemKind::Function(sig),
         ..
     }) = checker.rust_item_metadata_for_path("demo::takes_ref")
     else {
-        return Err(std::io::Error::other("expected rust metadata function entry").into());
+        return Err(std::io::Error::other("expected rust-inspect function entry").into());
     };
     assert_eq!(
         checker.resolved_function_type_from_rust_sig(&sig, false),
@@ -878,35 +887,35 @@ fn test_rust_metadata_function_signature_preserves_borrowed_rust_path_param() ->
     Ok(())
 }
 
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 #[test]
-fn test_rust_metadata_lookup_path_strips_outer_generic_instantiation() {
+fn test_rust_inspect_lookup_path_strips_outer_generic_instantiation() {
     assert_eq!(
-        TypeChecker::rust_metadata_lookup_path("incan_stdlib::r#async::channel::SendError<T>"),
+        TypeChecker::rust_inspect_lookup_path("incan_stdlib::r#async::channel::SendError<T>"),
         Some("incan_stdlib::r#async::channel::SendError")
     );
     assert_eq!(
-        TypeChecker::rust_metadata_lookup_path("Result<(),incan_stdlib::r#async::channel::SendError<T>>"),
+        TypeChecker::rust_inspect_lookup_path("Result<(),incan_stdlib::r#async::channel::SendError<T>>"),
         None
     );
 }
 
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 #[test]
-fn test_rust_metadata_lookup_path_rejects_unknown_placeholder() {
-    assert_eq!(TypeChecker::rust_metadata_lookup_path("{unknown}"), None);
+fn test_rust_inspect_lookup_path_rejects_unknown_placeholder() {
+    assert_eq!(TypeChecker::rust_inspect_lookup_path("{unknown}"), None);
 }
 
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 #[test]
 fn test_rust_item_metadata_lookup_reuses_cached_nominal_item_for_instantiated_rust_path()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut checker = TypeChecker::new();
-    let tmp = seeded_rust_metadata_workspace()?;
+    let tmp = seeded_rust_inspect_workspace()?;
     let manifest_dir = tmp.path().to_path_buf();
-    checker.set_rust_metadata_manifest_dir(manifest_dir.clone());
+    checker.set_rust_inspect_manifest_dir(manifest_dir.clone());
     checker
-        .rust_metadata_cache
+        .rust_inspect_cache
         .insert_test_item(
             &manifest_dir,
             RustItemMetadata {
@@ -920,16 +929,16 @@ fn test_rust_item_metadata_lookup_reuses_cached_nominal_item_for_instantiated_ru
                 }),
             },
         )
-        .map_err(|e| std::io::Error::other(format!("seed rust metadata type: {e}")))?;
+        .map_err(|e| std::io::Error::other(format!("seed rust-inspect type: {e}")))?;
 
     let Some(meta) = checker.rust_item_metadata_for_path("demo::SendError<T>") else {
-        return Err(std::io::Error::other("expected nominal rust metadata hit").into());
+        return Err(std::io::Error::other("expected nominal rust-inspect hit").into());
     };
     assert_eq!(meta.canonical_path, "demo::SendError");
     Ok(())
 }
 
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 #[test]
 fn test_types_compatible_accepts_rust_alias_definition_without_metadata_lookup() {
     let mut checker = TypeChecker::new();
@@ -965,7 +974,7 @@ fn test_types_compatible_accepts_rust_alias_definition_without_metadata_lookup()
     );
 }
 
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 #[test]
 fn test_types_compatible_accepts_rust_path_alias_with_attached_definition_metadata() {
     let mut checker = TypeChecker::new();
@@ -1001,9 +1010,9 @@ fn test_types_compatible_accepts_rust_path_alias_with_attached_definition_metada
     );
 }
 
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 #[test]
-fn test_rust_metadata_resolves_type_associated_function_field_access() -> Result<(), Box<dyn std::error::Error>> {
+fn test_rust_inspect_resolves_type_associated_function_field_access() -> Result<(), Box<dyn std::error::Error>> {
     let source = r#"
 from rust::demo import Builder
 
@@ -1015,8 +1024,9 @@ def f() -> None:
     let ast = parser::parse(&tokens).map_err(|errs| std::io::Error::other(format!("parse failed: {errs:?}")))?;
     let mut checker = TypeChecker::new();
     let tmp = tempfile::tempdir()?;
-    write_rust_metadata_probe_crate(tmp.path())?;
-    checker.set_rust_metadata_manifest_dir(tmp.path().to_path_buf());
+    write_rust_inspect_probe_crate(tmp.path())?;
+    checker.set_rust_inspect_manifest_dir(tmp.path().to_path_buf());
+    prewarm_metadata(tmp.path(), &["demo::Builder"])?;
     checker.check_program(&ast).map_err(|errs| {
         std::io::Error::other(format!(
             "expected associated function field access to typecheck: {errs:?}"
@@ -1059,9 +1069,9 @@ def f(words: HashSet[str]) -> None:
     Ok(())
 }
 
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 #[test]
-fn test_rust_metadata_validates_associated_function_arguments() -> Result<(), Box<dyn std::error::Error>> {
+fn test_rust_inspect_validates_associated_function_arguments() -> Result<(), Box<dyn std::error::Error>> {
     let source = r#"
 from rust::demo import Builder
 
@@ -1071,9 +1081,10 @@ def f() -> None:
     let tokens = lexer::lex(source).map_err(|errs| std::io::Error::other(format!("lex failed: {errs:?}")))?;
     let ast = parser::parse(&tokens).map_err(|errs| std::io::Error::other(format!("parse failed: {errs:?}")))?;
     let tmp = tempfile::tempdir()?;
-    write_rust_metadata_probe_crate(tmp.path())?;
+    write_rust_inspect_probe_crate(tmp.path())?;
     let mut checker = TypeChecker::new();
-    checker.set_rust_metadata_manifest_dir(tmp.path().to_path_buf());
+    checker.set_rust_inspect_manifest_dir(tmp.path().to_path_buf());
+    prewarm_metadata(tmp.path(), &["demo::Builder"])?;
     let Err(errs) = checker.check_program(&ast) else {
         panic!("expected arity error for Builder.new with an argument");
     };
@@ -1085,9 +1096,9 @@ def f() -> None:
     Ok(())
 }
 
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 #[test]
-fn test_rust_metadata_reports_unsupported_rust_item_shape() -> Result<(), Box<dyn std::error::Error>> {
+fn test_rust_inspect_reports_unsupported_rust_item_shape() -> Result<(), Box<dyn std::error::Error>> {
     let source = r#"
 from rust::demo::Choice import Some
 
@@ -1097,9 +1108,10 @@ def f() -> None:
     let tokens = lexer::lex(source).map_err(|errs| std::io::Error::other(format!("lex failed: {errs:?}")))?;
     let ast = parser::parse(&tokens).map_err(|errs| std::io::Error::other(format!("parse failed: {errs:?}")))?;
     let tmp = tempfile::tempdir()?;
-    write_rust_metadata_probe_crate(tmp.path())?;
+    write_rust_inspect_probe_crate(tmp.path())?;
     let mut checker = TypeChecker::new();
-    checker.set_rust_metadata_manifest_dir(tmp.path().to_path_buf());
+    checker.set_rust_inspect_manifest_dir(tmp.path().to_path_buf());
+    prewarm_metadata(tmp.path(), &["demo::Choice", "demo::Choice::Some"])?;
     let Err(errs) = checker.check_program(&ast) else {
         panic!("expected unsupported Rust item shape diagnostic");
     };
@@ -1138,20 +1150,20 @@ def f() -> None:
     assert_check_ok(source);
 }
 
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 #[test]
-fn test_typechecker_defaults_to_no_rust_metadata_workspace() {
+fn test_typechecker_defaults_to_no_rust_inspect_workspace() {
     let checker = TypeChecker::new();
     assert!(
-        checker.rust_metadata_manifest_dir.is_none(),
-        "plain typechecker construction should not eagerly bind a rust-metadata workspace"
+        checker.rust_inspect_manifest_dir.is_none(),
+        "plain typechecker construction should not eagerly bind a rust-inspect workspace"
     );
 }
 
-/// Default builds omit `rust-metadata`; Rust receivers stay permissive (no method index).
-#[cfg(not(feature = "rust-metadata"))]
+/// Default builds omit `rust-inspect`; Rust receivers stay permissive (no method index).
+#[cfg(not(feature = "rust_inspect"))]
 #[test]
-fn test_without_rust_metadata_missing_rust_method_is_not_an_error() {
+fn test_without_rust_inspect_missing_rust_method_is_not_an_error() {
     let source = r#"
 from rust::regex import Regex
 
@@ -1226,7 +1238,7 @@ fn test_structural_coercion_list_str_to_vec_string() {
     );
 }
 
-/// `maybe_record_rusttype_return_coercion` is metadata-driven; without the `rust-metadata`
+/// `maybe_record_rusttype_return_coercion` is metadata-driven; without the `rust-inspect`
 /// feature the cache is empty and the helper is a no-op.  The test below exercises the
 /// *non-metadata* path to assert that the coercion map stays empty (no false positives).
 #[test]
@@ -1246,7 +1258,7 @@ def use_widget(w: Widget) -> str:
     assert_check_ok(source);
 }
 
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 #[test]
 fn test_rusttype_return_coercion_recorded_for_generic_newtype_method_call() -> Result<(), Box<dyn std::error::Error>> {
     let source = r#"
@@ -1262,11 +1274,11 @@ def render[T](value: Label[T]) -> str:
     let tokens = lexer::lex(source).map_err(|errs| std::io::Error::other(format!("lex failed: {errs:?}")))?;
     let ast = parser::parse(&tokens).map_err(|errs| std::io::Error::other(format!("parse failed: {errs:?}")))?;
     let mut checker = TypeChecker::new();
-    let tmp = seeded_rust_metadata_workspace()?;
+    let tmp = seeded_rust_inspect_workspace()?;
     let manifest_dir = tmp.path().to_path_buf();
-    checker.set_rust_metadata_manifest_dir(manifest_dir.clone());
+    checker.set_rust_inspect_manifest_dir(manifest_dir.clone());
     checker
-        .rust_metadata_cache
+        .rust_inspect_cache
         .insert_test_item(
             &manifest_dir,
             RustItemMetadata {
@@ -1291,7 +1303,7 @@ def render[T](value: Label[T]) -> str:
                 }),
             },
         )
-        .map_err(|e| std::io::Error::other(format!("seed rust metadata: {e}")))?;
+        .map_err(|e| std::io::Error::other(format!("seed rust-inspect: {e}")))?;
     checker.check_program(&ast).map_err(|errs| {
         std::io::Error::other(format!("expected generic rusttype method call to typecheck: {errs:?}"))
     })?;
@@ -1306,7 +1318,7 @@ def render[T](value: Label[T]) -> str:
     Ok(())
 }
 
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 #[test]
 fn test_rust_field_access_preserves_type_for_nested_match_binding() -> Result<(), Box<dyn std::error::Error>> {
     let source = r#"
@@ -1334,11 +1346,11 @@ def f(x: Envelope) -> None:
     let tokens = lexer::lex(source).map_err(|errs| std::io::Error::other(format!("lex failed: {errs:?}")))?;
     let ast = parser::parse(&tokens).map_err(|errs| std::io::Error::other(format!("parse failed: {errs:?}")))?;
     let mut checker = TypeChecker::new();
-    let tmp = seeded_rust_metadata_workspace()?;
+    let tmp = seeded_rust_inspect_workspace()?;
     let manifest_dir = tmp.path().to_path_buf();
-    checker.set_rust_metadata_manifest_dir(manifest_dir.clone());
+    checker.set_rust_inspect_manifest_dir(manifest_dir.clone());
     checker
-        .rust_metadata_cache
+        .rust_inspect_cache
         .insert_test_item(
             &manifest_dir,
             RustItemMetadata {
@@ -1359,9 +1371,9 @@ def f(x: Envelope) -> None:
                 }),
             },
         )
-        .map_err(|e| std::io::Error::other(format!("seed rust metadata envelope: {e}")))?;
+        .map_err(|e| std::io::Error::other(format!("seed rust-inspect envelope: {e}")))?;
     checker
-        .rust_metadata_cache
+        .rust_inspect_cache
         .insert_test_item(
             &manifest_dir,
             RustItemMetadata {
@@ -1375,7 +1387,7 @@ def f(x: Envelope) -> None:
                 }),
             },
         )
-        .map_err(|e| std::io::Error::other(format!("seed rust metadata kind: {e}")))?;
+        .map_err(|e| std::io::Error::other(format!("seed rust-inspect kind: {e}")))?;
     checker.check_program(&ast).map_err(|errs| {
         std::io::Error::other(format!(
             "expected rust field access + nested match binding to typecheck: {errs:?}"
@@ -1384,7 +1396,7 @@ def f(x: Envelope) -> None:
     Ok(())
 }
 
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 #[test]
 fn test_rust_path_field_access_preserves_type_for_nested_match_binding() -> Result<(), Box<dyn std::error::Error>> {
     let source = r#"
@@ -1404,11 +1416,11 @@ def f(x: Envelope) -> None:
     let tokens = lexer::lex(source).map_err(|errs| std::io::Error::other(format!("lex failed: {errs:?}")))?;
     let ast = parser::parse(&tokens).map_err(|errs| std::io::Error::other(format!("parse failed: {errs:?}")))?;
     let mut checker = TypeChecker::new();
-    let tmp = seeded_rust_metadata_workspace()?;
+    let tmp = seeded_rust_inspect_workspace()?;
     let manifest_dir = tmp.path().to_path_buf();
-    checker.set_rust_metadata_manifest_dir(manifest_dir.clone());
+    checker.set_rust_inspect_manifest_dir(manifest_dir.clone());
     checker
-        .rust_metadata_cache
+        .rust_inspect_cache
         .insert_test_item(
             &manifest_dir,
             RustItemMetadata {
@@ -1429,9 +1441,9 @@ def f(x: Envelope) -> None:
                 }),
             },
         )
-        .map_err(|e| std::io::Error::other(format!("seed rust metadata envelope: {e}")))?;
+        .map_err(|e| std::io::Error::other(format!("seed rust-inspect envelope: {e}")))?;
     checker
-        .rust_metadata_cache
+        .rust_inspect_cache
         .insert_test_item(
             &manifest_dir,
             RustItemMetadata {
@@ -1445,7 +1457,7 @@ def f(x: Envelope) -> None:
                 }),
             },
         )
-        .map_err(|e| std::io::Error::other(format!("seed rust metadata kind: {e}")))?;
+        .map_err(|e| std::io::Error::other(format!("seed rust-inspect kind: {e}")))?;
     checker.check_program(&ast).map_err(|errs| {
         std::io::Error::other(format!(
             "expected rust path field access + nested match binding to typecheck: {errs:?}"
@@ -1454,7 +1466,7 @@ def f(x: Envelope) -> None:
     Ok(())
 }
 
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 #[test]
 fn test_imported_prost_oneof_field_match_uses_concrete_variant_payload_types() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -1477,11 +1489,11 @@ def inspect(rel: Rel) -> None:
     let tokens = lexer::lex(source).map_err(|errs| std::io::Error::other(format!("lex failed: {errs:?}")))?;
     let ast = parser::parse(&tokens).map_err(|errs| std::io::Error::other(format!("parse failed: {errs:?}")))?;
     let mut checker = TypeChecker::new();
-    let tmp = seeded_rust_metadata_workspace()?;
+    let tmp = seeded_rust_inspect_workspace()?;
     let manifest_dir = tmp.path().to_path_buf();
-    checker.set_rust_metadata_manifest_dir(manifest_dir.clone());
+    checker.set_rust_inspect_manifest_dir(manifest_dir.clone());
     checker
-        .rust_metadata_cache
+        .rust_inspect_cache
         .insert_test_item(
             &manifest_dir,
             RustItemMetadata {
@@ -1502,9 +1514,9 @@ def inspect(rel: Rel) -> None:
                 }),
             },
         )
-        .map_err(|e| std::io::Error::other(format!("seed rust metadata rel: {e}")))?;
+        .map_err(|e| std::io::Error::other(format!("seed rust-inspect rel: {e}")))?;
     checker
-        .rust_metadata_cache
+        .rust_inspect_cache
         .insert_test_item(
             &manifest_dir,
             RustItemMetadata {
@@ -1524,9 +1536,9 @@ def inspect(rel: Rel) -> None:
                 }),
             },
         )
-        .map_err(|e| std::io::Error::other(format!("seed rust metadata rel type: {e}")))?;
+        .map_err(|e| std::io::Error::other(format!("seed rust-inspect rel type: {e}")))?;
     checker
-        .rust_metadata_cache
+        .rust_inspect_cache
         .insert_test_item(
             &manifest_dir,
             RustItemMetadata {
@@ -1547,9 +1559,9 @@ def inspect(rel: Rel) -> None:
                 }),
             },
         )
-        .map_err(|e| std::io::Error::other(format!("seed rust metadata read rel: {e}")))?;
+        .map_err(|e| std::io::Error::other(format!("seed rust-inspect read rel: {e}")))?;
     checker
-        .rust_metadata_cache
+        .rust_inspect_cache
         .insert_test_item(
             &manifest_dir,
             RustItemMetadata {
@@ -1569,7 +1581,7 @@ def inspect(rel: Rel) -> None:
                 }),
             },
         )
-        .map_err(|e| std::io::Error::other(format!("seed rust metadata read type: {e}")))?;
+        .map_err(|e| std::io::Error::other(format!("seed rust-inspect read type: {e}")))?;
     checker.check_program(&ast).map_err(|errs| {
         std::io::Error::other(format!(
             "expected imported prost oneof field match to typecheck: {errs:?}"
@@ -1578,9 +1590,9 @@ def inspect(rel: Rel) -> None:
     Ok(())
 }
 
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 #[test]
-fn test_real_rust_metadata_allows_imported_prost_oneof_field_match() -> Result<(), Box<dyn std::error::Error>> {
+fn test_real_rust_inspect_allows_imported_prost_oneof_field_match() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
     write_substrait_probe_crate(tmp.path())?;
     let source = r#"
@@ -1602,7 +1614,7 @@ def inspect(rel: Rel) -> None:
     let tokens = lexer::lex(source).map_err(|errs| std::io::Error::other(format!("lex failed: {errs:?}")))?;
     let ast = parser::parse(&tokens).map_err(|errs| std::io::Error::other(format!("parse failed: {errs:?}")))?;
     let mut checker = TypeChecker::new();
-    checker.set_rust_metadata_manifest_dir(tmp.path().to_path_buf());
+    checker.set_rust_inspect_manifest_dir(tmp.path().to_path_buf());
     checker.check_program(&ast).map_err(|errs| {
         std::io::Error::other(format!(
             "expected extracted prost oneof field metadata to typecheck end-to-end: {errs:?}"

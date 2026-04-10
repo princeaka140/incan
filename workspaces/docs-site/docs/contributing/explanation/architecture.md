@@ -197,7 +197,7 @@ dependency-light crate suitable for reuse across compiler and tooling.
 | `resolver.rs`          | Multi-file module resolution                                                        |
 | `surface_semantics.rs` | Import-driven activation + feature-key routing for soft keywords/decorators         |
 | `typechecker/`         | Two-pass collection + type checking                                                 |
-| `rust_metadata/`       | Rust item metadata loading/cache/extraction for Rust interop typechecking           |
+| `rust_inspect/`        | Rust item metadata loading/cache/extraction for Rust interop typechecking           |
 | `symbols.rs`           | Symbol table and scope management                                                   |
 | `diagnostics`          | Syntax/parse diagnostics (re-exported from `crates/incan_syntax`)                   |
 
@@ -318,9 +318,9 @@ descriptors represent compiler behavior patterns, not individual keywords.
 | `ir/decl.rs`        | IR declarations (`IrDecl`)                      |
 | `project.rs`        | Cargo project scaffolding and generation        |
 
-### Rust metadata subsystem (`src/rust_metadata/`)
+### Rust inspect subsystem (`src/rust_inspect/`)
 
-`rust_metadata/` powers RFC 041 interop checks that need Rust-side signatures and item shapes.
+`rust_inspect/` powers RFC 041 interop checks that need Rust-side signatures and item shapes.
 
 | Module         | Purpose                                                               |
 | -------------- | --------------------------------------------------------------------- |

@@ -21,12 +21,12 @@ use crate::lockfile::CargoFeatureSelection;
 use crate::manifest::ProjectManifest;
 use std::collections::{HashMap, HashSet};
 
-#[cfg(feature = "rust-metadata")]
-use super::common::ensure_rust_metadata_workspace;
 use super::common::{
     build_source_map, cargo_command_flags, collect_inline_rust_imports, collect_modules, collect_project_requirements,
     format_dependency_error, merge_project_requirement_dependencies, resolve_project_root, validate_output_dir,
 };
+#[cfg(feature = "rust_inspect")]
+use super::common::{collect_rust_inspect_query_paths, ensure_rust_inspect_workspace, prewarm_rust_inspect_workspace};
 use super::lock::{LockResolutionRequest, resolve_lock_payload};
 use super::vocab_extraction::{PendingDesugarerArtifact, collect_library_vocab_metadata};
 use crate::cli::prelude::ParsedModule;
@@ -479,9 +479,9 @@ fn prepare_project(
         locked,
         frozen,
     })?;
-    #[cfg(feature = "rust-metadata")]
+    #[cfg(feature = "rust_inspect")]
     {
-        let rust_metadata_manifest_dir = ensure_rust_metadata_workspace(
+        let rust_inspect_manifest_dir = ensure_rust_inspect_workspace(
             &project_root,
             project_name.as_str(),
             manifest
@@ -491,7 +491,9 @@ fn prepare_project(
             &project_requirements,
             lock_payload.clone(),
         )?;
-        codegen.set_rust_metadata_manifest_dir(rust_metadata_manifest_dir);
+        let metadata_query_paths = collect_rust_inspect_query_paths(&modules);
+        prewarm_rust_inspect_workspace(&rust_inspect_manifest_dir, &metadata_query_paths)?;
+        codegen.set_rust_inspect_manifest_dir(rust_inspect_manifest_dir);
     }
     generator.set_cargo_lock_payload(lock_payload);
 
@@ -659,11 +661,11 @@ pub fn build_library(
         locked,
         frozen,
     })?;
-    #[cfg(feature = "rust-metadata")]
-    let rust_metadata_manifest_dir = project_root.join("target").join("incan_lock");
-    #[cfg(feature = "rust-metadata")]
+    #[cfg(feature = "rust_inspect")]
+    let rust_inspect_manifest_dir = project_root.join("target").join("incan_lock");
+    #[cfg(feature = "rust_inspect")]
     {
-        ensure_rust_metadata_workspace(
+        ensure_rust_inspect_workspace(
             &project_root,
             project_name.as_str(),
             manifest.build.as_ref().and_then(|build| build.rust_edition.clone()),
@@ -671,6 +673,8 @@ pub fn build_library(
             &project_requirements,
             lock_payload_for_typecheck.clone(),
         )?;
+        let metadata_query_paths = collect_rust_inspect_query_paths(&modules);
+        prewarm_rust_inspect_workspace(&rust_inspect_manifest_dir, &metadata_query_paths)?;
     }
 
     let mut all_errors = String::new();
@@ -682,8 +686,8 @@ pub fn build_library(
         let mut checker = typechecker::TypeChecker::new();
         checker.set_declared_crate_names(declared.clone());
         checker.set_library_manifest_index(library_manifest_index.clone());
-        #[cfg(feature = "rust-metadata")]
-        checker.set_rust_metadata_manifest_dir(rust_metadata_manifest_dir.clone());
+        #[cfg(feature = "rust_inspect")]
+        checker.set_rust_inspect_manifest_dir(rust_inspect_manifest_dir.clone());
 
         match checker.check_with_imports(&module.ast, &deps_for_module) {
             Ok(()) => {
@@ -775,9 +779,9 @@ pub fn build_library(
         locked,
         frozen,
     })?;
-    #[cfg(feature = "rust-metadata")]
+    #[cfg(feature = "rust_inspect")]
     {
-        let rust_metadata_manifest_dir = ensure_rust_metadata_workspace(
+        let rust_inspect_manifest_dir = ensure_rust_inspect_workspace(
             &project_root,
             project_name.as_str(),
             manifest.build.as_ref().and_then(|build| build.rust_edition.clone()),
@@ -785,7 +789,9 @@ pub fn build_library(
             &project_requirements,
             lock_payload.clone(),
         )?;
-        codegen.set_rust_metadata_manifest_dir(rust_metadata_manifest_dir);
+        let metadata_query_paths = collect_rust_inspect_query_paths(&modules);
+        prewarm_rust_inspect_workspace(&rust_inspect_manifest_dir, &metadata_query_paths)?;
+        codegen.set_rust_inspect_manifest_dir(rust_inspect_manifest_dir);
     }
     generator.set_cargo_lock_payload(lock_payload);
     generator.set_cargo_policy_flags(cargo_command_flags(locked, frozen, &cargo_features));

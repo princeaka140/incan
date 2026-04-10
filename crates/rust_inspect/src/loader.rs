@@ -1,7 +1,9 @@
 //! Load a Cargo tree into rust-analyzer's `RootDatabase`.
 
+use std::collections::HashMap;
 use std::path::Path;
 
+use ra_ap_hir::Crate;
 use ra_ap_ide_db::RootDatabase;
 use ra_ap_load_cargo::{LoadCargoConfig, ProcMacroServerChoice, load_workspace_at};
 use ra_ap_project_model::CargoConfig;
@@ -15,11 +17,34 @@ use super::error::RustMetadataError;
 /// value.
 pub struct RustWorkspace {
     pub(crate) db: RootDatabase,
+    crate_index: HashMap<String, Crate>,
     #[allow(dead_code)]
     vfs: Vfs,
 }
 
 impl RustWorkspace {
+    fn normalize_crate_name(name: &str) -> String {
+        name.replace('-', "_")
+    }
+
+    fn build_crate_index(db: &RootDatabase) -> HashMap<String, Crate> {
+        let mut index = HashMap::new();
+        for krate in Crate::all(db) {
+            if let Some(display_name) = krate.display_name(db) {
+                index
+                    .entry(Self::normalize_crate_name(display_name.to_string().as_str()))
+                    .or_insert(krate);
+                index
+                    .entry(Self::normalize_crate_name(display_name.crate_name().as_str()))
+                    .or_insert(krate);
+                index
+                    .entry(Self::normalize_crate_name(display_name.canonical_name().as_str()))
+                    .or_insert(krate);
+            }
+        }
+        index
+    }
+
     fn metadata_cargo_config() -> CargoConfig {
         let mut cargo_config = CargoConfig::default();
         // The generated `target/incan_lock` workspace is a semantic probe, not the user's real build. Keep metadata
@@ -61,12 +86,19 @@ impl RustWorkspace {
                 message: e.to_string(),
             }
         })?;
-        Ok(RustWorkspace { db, vfs })
+        let crate_index = Self::build_crate_index(&db);
+        Ok(RustWorkspace { db, crate_index, vfs })
     }
 
     /// Shared read-only access to the underlying database.
     pub fn db(&self) -> &RootDatabase {
         &self.db
+    }
+
+    pub fn crate_by_name(&self, crate_name: &str) -> Option<Crate> {
+        self.crate_index
+            .get(Self::normalize_crate_name(crate_name).as_str())
+            .copied()
     }
 }
 
@@ -79,12 +111,12 @@ mod tests {
         let cargo_config = RustWorkspace::metadata_cargo_config();
         assert!(
             cargo_config.extra_args.iter().any(|arg| arg == "--offline"),
-            "rust-metadata workspace loads should pass --offline to cargo metadata"
+            "rust-inspect workspace loads should pass --offline to cargo metadata"
         );
         assert_eq!(
             cargo_config.extra_env.get("CARGO_NET_OFFLINE"),
             Some(&Some("true".to_string())),
-            "rust-metadata workspace loads should force offline cargo resolution"
+            "rust-inspect workspace loads should force offline cargo resolution"
         );
     }
 }

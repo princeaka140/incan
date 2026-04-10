@@ -222,11 +222,11 @@ test:
 	@echo "\033[1mRunning tests...\033[0m"
 	@$(TEST_CMD)
 
-.PHONY: test-rust-metadata  ## test - Run focused rust-metadata regression tests
-test-rust-metadata:
-	@echo "\033[1mRunning rust-metadata focused tests...\033[0m"
-	@cargo test --lib --features rust-metadata frontend::typechecker::tests::test_rust_metadata_unavailable_stays_permissive_for_method_calls
-	@cargo test --lib --features rust-metadata frontend::typechecker::tests::test_rusttype_return_coercion_recorded_for_generic_newtype_method_call
+.PHONY: test-rust-inspect  ## test - Run focused rust-inspect regression tests
+test-rust-inspect:
+	@echo "\033[1mRunning rust-inspect focused tests...\033[0m"
+	@cargo test --lib --features rust_inspect frontend::typechecker::tests::test_rust_inspect_unavailable_stays_permissive_for_method_calls
+	@cargo test --lib --features rust_inspect frontend::typechecker::tests::test_rusttype_return_coercion_recorded_for_generic_newtype_method_call
 
 .PHONY: examples  ## test - Smoke test examples (check all, run entrypoints with timeout)
 examples: release
@@ -251,7 +251,7 @@ benchmarks-incan: release
 .PHONY: smoke-test-core
 smoke-test-core:
 	@$(MAKE) release
-	@$(MAKE) test-rust-metadata
+	@$(MAKE) test-rust-inspect
 	@echo "\033[1mRunning Incan assertion canary...\033[0m"
 	@INCAN_NO_BANNER=1 ./target/release/incan test tests/fixtures/test_assert_canary.incn
 	@echo "\033[32m✓ Incan assertion canary passed\033[0m"
