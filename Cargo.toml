@@ -9,6 +9,7 @@ members = [
     "crates/incan_semantics_core",
     "crates/incan_semantics_stdlib",
     "crates/incan_web_macros",
+    "crates/rust_inspect",
 ]
 exclude = ["target/incan"]
 resolver = "2"
@@ -42,21 +43,14 @@ readme.workspace = true
 
 [features]
 default = ["cli", "std_testing", "std_async", "std_decorators"]
-cli = ["dep:clap", "dep:tracing-subscriber", "rust-metadata"]
+cli = ["dep:clap", "dep:tracing-subscriber", "rust_inspect"]
 lsp = ["dep:tower-lsp", "dep:tokio"]
 std_testing = ["dep:incan_semantics_stdlib", "incan_semantics_stdlib/std_testing"]
 std_async = ["dep:incan_semantics_stdlib", "incan_semantics_stdlib/std_async"]
 std_decorators = ["dep:incan_semantics_stdlib", "incan_semantics_stdlib/std_decorators"]
 # Rust dependency metadata via rust-analyzer (`ra_ap_*`). Kept optional for non-CLI/library builds; the CLI enables it
 # so ordinary `rust::` imports can preserve real function/type signatures.
-rust-metadata = [
-    "dep:anyhow",
-    "dep:ra_ap_hir",
-    "dep:ra_ap_ide_db",
-    "dep:ra_ap_load-cargo",
-    "dep:ra_ap_project_model",
-    "dep:ra_ap_vfs",
-]
+rust_inspect = ["dep:rust_inspect"]
 
 [dependencies]
 # Shared language/semantic helpers (canonical vocab)
@@ -99,17 +93,10 @@ sha2 = "0.10.9"
 hex = "0.4.3"
 time = { version = "0.3.45", features = ["formatting"] }
 semver = "1.0.27"
+rust_inspect = { path = "crates/rust_inspect", optional = true }
 # WASM runtime for desugarer packaging
 wasmtime = { version = "43.0.1", default-features = false, features = ["cranelift", "runtime", "std"] }
 wasmtime-wasi = { version = "43.0.1", default-features = false, features = ["p1"] }
-
-# Optional: rust-analyzer library stack for `rust::` metadata (RFC 041). Pin versions together.
-anyhow = { version = "1.0.98", optional = true }
-ra_ap_hir = { version = "0.0.325", optional = true }
-ra_ap_ide_db = { version = "0.0.325", optional = true }
-ra_ap_load-cargo = { version = "0.0.325", optional = true }
-ra_ap_project_model = { version = "0.0.325", optional = true }
-ra_ap_vfs = { version = "0.0.325", optional = true }
 
 [dev-dependencies]
 # Snapshot testing for codegen

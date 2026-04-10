@@ -1435,7 +1435,6 @@ dependencies = [
 name = "incan"
 version = "0.2.0-dev.8"
 dependencies = [
- "anyhow",
  "clap",
  "hex",
  "incan_core",
@@ -1450,11 +1449,7 @@ dependencies = [
  "proc-macro2",
  "proptest",
  "quote",
- "ra_ap_hir",
- "ra_ap_ide_db",
- "ra_ap_load-cargo",
- "ra_ap_project_model",
- "ra_ap_vfs",
+ "rust_inspect",
  "semver",
  "serde",
  "serde_json",
@@ -3068,6 +3063,25 @@ dependencies = [
  "memoffset",
  "rustc-hash 1.1.0",
  "text-size",
+]
+
+[[package]]
+name = "rust_inspect"
+version = "0.2.0-dev.8"
+dependencies = [
+ "hex",
+ "incan_core",
+ "ra_ap_hir",
+ "ra_ap_ide_db",
+ "ra_ap_load-cargo",
+ "ra_ap_project_model",
+ "ra_ap_vfs",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml",
 ]
 
 [[package]]
