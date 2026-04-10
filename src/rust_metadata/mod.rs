@@ -46,13 +46,31 @@ mod tests {
 name = "ra_metadata_probe"
 version = "0.1.0"
 edition = "2021"
-
-[dependencies]
-regex = "1"
-hashbrown = "0.15"
 "#,
         )?;
-        fs::write(root.join("src/lib.rs"), "// probe crate for rust metadata tests\n")?;
+        fs::write(
+            root.join("src/lib.rs"),
+            r#"pub struct ProbeType;
+
+impl ProbeType {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn is_match(&self, needle: &str) -> bool {
+        needle == "match"
+    }
+
+    pub fn find(&self, haystack: &str) -> Option<usize> {
+        haystack.find("match")
+    }
+
+    pub fn len(&self) -> usize {
+        1
+    }
+}
+"#,
+        )?;
         Ok(())
     }
 
@@ -64,18 +82,16 @@ hashbrown = "0.15"
     }
 
     #[test]
-    fn hashmap_has_expected_public_methods() -> Result<(), Box<dyn std::error::Error>> {
+    fn probe_type_has_expected_public_methods() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         write_probe_crate(tmp.path())?;
         let cache = RustMetadataCache::new();
-        // Sysroot `std` is not always registered under the display name `std` in minimal workspaces;
-        // `hashbrown::HashMap` is a normal dependency with the same public map surface we care about.
-        let meta = cache.get_or_extract(tmp.path(), "hashbrown::HashMap", &|_| ())?;
+        let meta = cache.get_or_extract(tmp.path(), "ra_metadata_probe::ProbeType", &|_| ())?;
         let names = method_names(&meta);
-        for required in ["insert", "get", "len", "contains_key"] {
+        for required in ["new", "is_match", "find", "len"] {
             assert!(
                 names.iter().any(|n| n == required),
-                "expected inherent method `{required}` on HashMap, have {:?}",
+                "expected inherent method `{required}` on ProbeType, have {:?}",
                 names
             );
         }
@@ -83,16 +99,16 @@ hashbrown = "0.15"
     }
 
     #[test]
-    fn regex_type_exposes_core_methods() -> Result<(), Box<dyn std::error::Error>> {
+    fn probe_type_exposes_core_methods() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         write_probe_crate(tmp.path())?;
         let cache = RustMetadataCache::new();
-        let meta = cache.get_or_extract(tmp.path(), "regex::Regex", &|_| ())?;
+        let meta = cache.get_or_extract(tmp.path(), "ra_metadata_probe::ProbeType", &|_| ())?;
         let names = method_names(&meta);
         for required in ["new", "is_match", "find"] {
             assert!(
                 names.iter().any(|n| n == required),
-                "expected method `{required}` on regex::Regex, have {:?}",
+                "expected method `{required}` on ProbeType, have {:?}",
                 names
             );
         }
@@ -104,8 +120,8 @@ hashbrown = "0.15"
         let tmp = tempfile::tempdir()?;
         write_probe_crate(tmp.path())?;
         let cache = RustMetadataCache::new();
-        let a = cache.get_or_extract(tmp.path(), "regex::Regex", &|_| ())?;
-        let b = cache.get_or_extract(tmp.path(), "regex::Regex", &|_| ())?;
+        let a = cache.get_or_extract(tmp.path(), "ra_metadata_probe::ProbeType", &|_| ())?;
+        let b = cache.get_or_extract(tmp.path(), "ra_metadata_probe::ProbeType", &|_| ())?;
         assert!(Arc::ptr_eq(&a, &b));
         Ok(())
     }

@@ -138,6 +138,15 @@ fmt-check-ci:
 lint-fast-ci:
 	@cargo clippy --workspace --all-features -- -D warnings
 
+.PHONY: cargo-deny  ## quality - Run cargo-deny policy checks
+cargo-deny:
+	@echo "\033[1mRunning cargo-deny...\033[0m"
+	@cargo deny check
+
+.PHONY: cargo-deny-ci
+cargo-deny-ci:
+	@cargo deny check
+
 .PHONY: check-fast-ci
 check-fast-ci:
 	@cargo check --workspace --all-features
@@ -166,7 +175,7 @@ pre-commit-fast:
 	echo "\033[32m✓ Pre-commit checks passed (fast)\033[0m"; \
 	echo "\033[36mPhase timing:\033[0m fmt-check=$$((t1-start))s, check=$$((t2-t1))s, total=$$((t2-start))s"
 
-.PHONY: pre-commit-full-gate  ## quality - Full local gate core: fmt-check + tests + clippy with phase timing
+.PHONY: pre-commit-full-gate  ## quality - Full local gate core: fmt-check + tests + clippy + cargo-deny with phase timing
 pre-commit-full-gate:
 	@set -e; \
 	start=$$(date +%s); \
@@ -182,8 +191,12 @@ pre-commit-full-gate:
 	$(MAKE) -s lint-fast-ci; \
 	echo "\033[32mDONE\033[0m"; \
 	t3=$$(date +%s); \
+	echo "\033[1mRunning cargo-deny...\033[0m"; \
+	$(MAKE) -s cargo-deny-ci; \
+	echo "\033[32mDONE\033[0m"; \
+	t4=$$(date +%s); \
 	echo "\033[32m✓ Pre-commit checks passed (full)\033[0m"; \
-	echo "\033[36mPhase timing:\033[0m fmt-check=$$((t1-start))s, tests=$$((t2-t1))s, lint=$$((t3-t2))s, total=$$((t3-start))s"
+	echo "\033[36mPhase timing:\033[0m fmt-check=$$((t1-start))s, tests=$$((t2-t1))s, lint=$$((t3-t2))s, deny=$$((t4-t3))s, total=$$((t4-start))s"
 
 .PHONY: pre-commit  ## quality - Full local gate: pre-commit-full-gate + smoke-test-fast
 pre-commit:

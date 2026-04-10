@@ -100,8 +100,8 @@ hex = "0.4.3"
 time = { version = "0.3.45", features = ["formatting"] }
 semver = "1.0.27"
 # WASM runtime for desugarer packaging
-wasmtime = { version = "40", default-features = false, features = ["cranelift", "runtime", "std"] }
-wasmtime-wasi = { version = "40", default-features = false, features = ["p1"] }
+wasmtime = { version = "43.0.1", default-features = false, features = ["cranelift", "runtime", "std"] }
+wasmtime-wasi = { version = "43.0.1", default-features = false, features = ["p1"] }
 
 # Optional: rust-analyzer library stack for `rust::` metadata (RFC 041). Pin versions together.
 anyhow = { version = "1.0.98", optional = true }
