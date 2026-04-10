@@ -1,29 +1,34 @@
 //! LSP (Language Server Protocol) backend implementation for Incan
 
+#[cfg(feature = "rust_inspect")]
+use std::collections::BTreeSet;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(feature = "rust_inspect")]
+use std::sync::{Mutex, OnceLock};
 use tokio::sync::RwLock;
 
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 use crate::cli::commands::common::{
-    build_source_map, collect_inline_rust_imports, collect_project_requirements, ensure_rust_metadata_workspace,
-    format_dependency_error, merge_project_requirement_dependencies,
+    build_source_map, collect_inline_rust_imports, collect_project_requirements, collect_rust_inspect_query_paths,
+    ensure_rust_inspect_workspace, format_dependency_error, merge_project_requirement_dependencies,
+    prewarm_rust_inspect_workspace,
 };
 use crate::cli::prelude::ParsedModule;
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 use crate::dependency_resolver::{ResolvedDependencies, resolve_dependencies};
 use crate::frontend::ast::{Declaration, Program, Span, Type};
 use crate::frontend::diagnostics::CompileError;
 use crate::frontend::library_manifest_index::LibraryManifestIndex;
 use crate::frontend::module::resolve_import_path;
 use crate::frontend::{lexer, parser, typechecker, vocab_desugar_pass};
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 use crate::lockfile::CargoFeatureSelection;
 use crate::lsp::diagnostics::{compile_error_to_diagnostic, position_to_offset, span_to_range};
 use crate::manifest::ProjectManifest;
@@ -97,15 +102,15 @@ impl IncanLanguageServer {
         let mut declared_crates = HashSet::new();
         let mut library_imported_vocab = HashMap::new();
         let mut library_manifest_index = LibraryManifestIndex::default();
-        #[cfg(feature = "rust-metadata")]
+        #[cfg(feature = "rust_inspect")]
         let mut project_manifest: Option<ProjectManifest> = None;
-        #[cfg(feature = "rust-metadata")]
-        let mut rust_metadata_manifest_dir: Option<PathBuf> = None;
+        #[cfg(feature = "rust_inspect")]
+        let mut rust_inspect_context: Option<(PathBuf, Vec<String>)> = None;
         if let Some(path) = &module_path
             && let Some(start_dir) = path.parent()
             && let Ok(Some(manifest)) = ProjectManifest::discover(start_dir)
         {
-            #[cfg(feature = "rust-metadata")]
+            #[cfg(feature = "rust_inspect")]
             {
                 project_manifest = Some(manifest.clone());
             }
@@ -168,22 +173,29 @@ impl IncanLanguageServer {
                 Some(&library_manifest_index),
             )
             .await;
-        #[cfg(feature = "rust-metadata")]
+        #[cfg(feature = "rust_inspect")]
         if let (Some(manifest), Some(path)) = (project_manifest.as_ref(), module_path.as_ref()) {
             let mut metadata_modules = Vec::with_capacity(deps.len() + 1);
             metadata_modules.push(parsed_module_for_lsp_document(path, source, &ast));
             metadata_modules.extend(deps.iter().cloned());
-            rust_metadata_manifest_dir =
-                prepare_lsp_rust_metadata_workspace(manifest, &metadata_modules, &library_manifest_index).ok();
+            rust_inspect_context =
+                match prepare_lsp_rust_inspect_workspace(manifest, &metadata_modules, &library_manifest_index) {
+                    Ok(ctx) => Some(ctx),
+                    Err(err) => {
+                        tracing::warn!("failed to prepare rust-inspect workspace for lsp: {err}");
+                        None
+                    }
+                };
         }
 
         // Step 3: Type check (with multi-file import resolution)
         let mut checker = typechecker::TypeChecker::new();
         checker.set_declared_crate_names(declared_crates);
         checker.set_library_manifest_index(library_manifest_index.clone());
-        #[cfg(feature = "rust-metadata")]
-        if let Some(dir) = rust_metadata_manifest_dir {
-            checker.set_rust_metadata_manifest_dir(dir);
+        #[cfg(feature = "rust_inspect")]
+        if let Some((dir, metadata_query_paths)) = rust_inspect_context {
+            spawn_rust_inspect_prewarm(dir.clone(), metadata_query_paths);
+            checker.set_rust_inspect_manifest_dir(dir);
         }
 
         let dep_refs: Vec<(&str, &Program)> = deps.iter().map(|module| (module.name.as_str(), &module.ast)).collect();
@@ -589,7 +601,119 @@ impl IncanLanguageServer {
     }
 }
 
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
+#[derive(Default)]
+struct PrewarmQueueEntry {
+    /// Whether a worker task is currently draining this workspace queue.
+    in_flight: bool,
+    /// Canonical query paths accumulated while the worker is busy.
+    pending: BTreeSet<String>,
+}
+
+#[cfg(feature = "rust_inspect")]
+fn prewarm_queue() -> &'static Mutex<HashMap<PathBuf, PrewarmQueueEntry>> {
+    static PREWARM_QUEUE: OnceLock<Mutex<HashMap<PathBuf, PrewarmQueueEntry>>> = OnceLock::new();
+    PREWARM_QUEUE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(feature = "rust_inspect")]
+fn enqueue_prewarm_paths(
+    queue: &mut HashMap<PathBuf, PrewarmQueueEntry>,
+    manifest_dir: &Path,
+    query_paths: impl IntoIterator<Item = String>,
+) -> bool {
+    let entry = queue.entry(manifest_dir.to_path_buf()).or_default();
+    for path in query_paths {
+        if !path.is_empty() {
+            entry.pending.insert(path);
+        }
+    }
+    if entry.in_flight {
+        return false;
+    }
+    entry.in_flight = true;
+    true
+}
+
+#[cfg(feature = "rust_inspect")]
+fn take_next_prewarm_batch(
+    queue: &mut HashMap<PathBuf, PrewarmQueueEntry>,
+    manifest_dir: &Path,
+) -> Option<Vec<String>> {
+    let entry = queue.get_mut(manifest_dir)?;
+    if entry.pending.is_empty() {
+        entry.in_flight = false;
+        queue.remove(manifest_dir);
+        return None;
+    }
+    Some(std::mem::take(&mut entry.pending).into_iter().collect())
+}
+
+#[cfg(feature = "rust_inspect")]
+/// Queue prewarm work for one workspace.
+///
+/// Contract:
+/// - at most one worker runs per manifest directory
+/// - requests arriving during a run are coalesced into `pending`
+/// - the worker loops until `pending` is empty under lock, then exits
+fn spawn_rust_inspect_prewarm(manifest_dir: PathBuf, query_paths: Vec<String>) {
+    if query_paths.is_empty() {
+        return;
+    }
+    let mut queue = match prewarm_queue().lock() {
+        Ok(guard) => guard,
+        Err(err) => {
+            tracing::warn!("rust-inspect prewarm queue lock poisoned; recovering");
+            err.into_inner()
+        }
+    };
+    if !enqueue_prewarm_paths(&mut queue, &manifest_dir, query_paths) {
+        tracing::debug!(
+            "coalescing rust-inspect prewarm request while prior run is active (workspace={})",
+            manifest_dir.display()
+        );
+        return;
+    }
+    tokio::spawn(async move {
+        run_rust_inspect_prewarm_queue(manifest_dir).await;
+    });
+}
+
+#[cfg(feature = "rust_inspect")]
+async fn run_rust_inspect_prewarm_queue(manifest_dir: PathBuf) {
+    loop {
+        let batch: Vec<String> = {
+            let mut queue = match prewarm_queue().lock() {
+                Ok(guard) => guard,
+                Err(err) => {
+                    tracing::warn!("rust-inspect prewarm queue lock poisoned; recovering");
+                    err.into_inner()
+                }
+            };
+            let Some(batch) = take_next_prewarm_batch(&mut queue, &manifest_dir) else {
+                return;
+            };
+            batch
+        };
+
+        match tokio::task::spawn_blocking({
+            let manifest_dir = manifest_dir.clone();
+            move || prewarm_rust_inspect_workspace(&manifest_dir, &batch)
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                tracing::warn!("rust-inspect prewarm failed in lsp: {err}");
+            }
+            Err(err) => {
+                tracing::warn!("rust-inspect prewarm join error in lsp: {err}");
+            }
+        }
+    }
+}
+
+#[cfg(feature = "rust_inspect")]
 fn parsed_module_for_lsp_document(path: &Path, source: &str, ast: &Program) -> ParsedModule {
     let module_name = path
         .file_stem()
@@ -605,8 +729,8 @@ fn parsed_module_for_lsp_document(path: &Path, source: &str, ast: &Program) -> P
     }
 }
 
-#[cfg(feature = "rust-metadata")]
-fn resolved_rust_metadata_dependencies(
+#[cfg(feature = "rust_inspect")]
+fn resolved_rust_inspect_dependencies(
     manifest: &ProjectManifest,
     modules: &[ParsedModule],
     library_manifest_index: &LibraryManifestIndex,
@@ -632,16 +756,16 @@ fn resolved_rust_metadata_dependencies(
     Ok(resolved)
 }
 
-#[cfg(feature = "rust-metadata")]
-/// Build the rust-metadata workspace for LSP analysis after collecting the document's effective Rust dependencies.
+#[cfg(feature = "rust_inspect")]
+/// Build the rust-inspect workspace for LSP analysis after collecting the document's effective Rust dependencies.
 ///
 /// The shared CLI helper owns workspace generation; this wrapper only translates the LSP document set into the
 /// resolved dependency inputs that helper expects.
-fn prepare_lsp_rust_metadata_workspace(
+fn prepare_lsp_rust_inspect_workspace(
     manifest: &ProjectManifest,
     modules: &[ParsedModule],
     library_manifest_index: &LibraryManifestIndex,
-) -> std::result::Result<PathBuf, String> {
+) -> std::result::Result<(PathBuf, Vec<String>), String> {
     let project_name = manifest
         .project
         .as_ref()
@@ -655,10 +779,10 @@ fn prepare_lsp_rust_metadata_workspace(
         })
         .unwrap_or_else(|| "incan_lsp".to_string());
 
-    let resolved = resolved_rust_metadata_dependencies(manifest, modules, library_manifest_index)?;
+    let resolved = resolved_rust_inspect_dependencies(manifest, modules, library_manifest_index)?;
     let project_requirements =
         collect_project_requirements(modules, library_manifest_index).map_err(|err| err.to_string())?;
-    ensure_rust_metadata_workspace(
+    let rust_inspect_manifest_dir = ensure_rust_inspect_workspace(
         manifest.project_root(),
         project_name.as_str(),
         manifest.build.as_ref().and_then(|build| build.rust_edition.clone()),
@@ -666,15 +790,65 @@ fn prepare_lsp_rust_metadata_workspace(
         &project_requirements,
         None,
     )
-    .map_err(|err| err.to_string())
+    .map_err(|err| err.to_string())?;
+    let query_paths = collect_rust_inspect_query_paths(modules);
+    Ok((rust_inspect_manifest_dir, query_paths))
 }
 
-#[cfg(all(test, feature = "rust-metadata"))]
+#[cfg(all(test, feature = "rust_inspect"))]
 mod tests {
-    use super::*;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    use super::{
+        PrewarmQueueEntry, enqueue_prewarm_paths, prepare_lsp_rust_inspect_workspace, take_next_prewarm_batch,
+    };
+    use crate::cli::prelude::ParsedModule;
+    use crate::frontend::library_manifest_index::LibraryManifestIndex;
+    use crate::frontend::{lexer, parser};
+    use crate::manifest::ProjectManifest;
 
     #[test]
-    fn lsp_rust_metadata_workspace_includes_resolved_inline_and_stdlib_requirements()
+    fn prewarm_queue_coalesces_followup_requests_for_same_workspace() {
+        let mut queue = HashMap::<PathBuf, PrewarmQueueEntry>::new();
+        let root = PathBuf::from("/tmp/project");
+        assert!(enqueue_prewarm_paths(
+            &mut queue,
+            &root,
+            vec!["a::f".to_string(), "b::g".to_string()]
+        ));
+        assert!(!enqueue_prewarm_paths(
+            &mut queue,
+            &root,
+            vec!["b::g".to_string(), "c::h".to_string()]
+        ));
+
+        let first = take_next_prewarm_batch(&mut queue, &root);
+        assert_eq!(
+            first,
+            Some(vec!["a::f".to_string(), "b::g".to_string(), "c::h".to_string()])
+        );
+        assert!(take_next_prewarm_batch(&mut queue, &root).is_none());
+        assert!(!queue.contains_key(&root));
+    }
+
+    #[test]
+    fn prewarm_queue_keeps_new_paths_arriving_while_worker_active() {
+        let mut queue = HashMap::<PathBuf, PrewarmQueueEntry>::new();
+        let root = PathBuf::from("/tmp/project2");
+        assert!(enqueue_prewarm_paths(&mut queue, &root, vec!["a::f".to_string()]));
+        let first = take_next_prewarm_batch(&mut queue, &root);
+        assert_eq!(first, Some(vec!["a::f".to_string()]));
+
+        assert!(!enqueue_prewarm_paths(&mut queue, &root, vec!["z::k".to_string()]));
+        let second = take_next_prewarm_batch(&mut queue, &root);
+        assert_eq!(second, Some(vec!["z::k".to_string()]));
+        assert!(take_next_prewarm_batch(&mut queue, &root).is_none());
+        assert!(!queue.contains_key(&root));
+    }
+
+    #[test]
+    fn lsp_rust_inspect_workspace_includes_resolved_inline_and_stdlib_requirements()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let manifest_path = tmp.path().join("incan.toml");
@@ -699,8 +873,9 @@ def use_it(x: Serialize) -> None:
             ast,
         };
 
-        let out_dir = prepare_lsp_rust_metadata_workspace(&manifest, &[module], &LibraryManifestIndex::default())
-            .map_err(std::io::Error::other)?;
+        let (out_dir, _query_paths) =
+            prepare_lsp_rust_inspect_workspace(&manifest, &[module], &LibraryManifestIndex::default())
+                .map_err(std::io::Error::other)?;
         let cargo_toml = std::fs::read_to_string(out_dir.join("Cargo.toml"))?;
 
         assert!(

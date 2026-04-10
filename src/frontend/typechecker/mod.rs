@@ -56,7 +56,7 @@ pub use const_eval::ConstValue;
 mod tests;
 
 use std::collections::{HashMap, HashSet};
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -66,8 +66,8 @@ use crate::frontend::library_manifest_index::LibraryManifestIndex;
 use crate::frontend::module::{ExportedSymbol, exported_symbols};
 use crate::frontend::surface_semantics::SurfaceContext;
 use crate::frontend::symbols::*;
-#[cfg(feature = "rust-metadata")]
-use crate::rust_metadata::RustMetadataCache;
+#[cfg(feature = "rust_inspect")]
+use crate::rust_inspect::RustMetadataCache;
 use helpers::{collection_type_id, stringlike_type_id};
 use incan_core::interop::{CoercionPolicy, RustFunctionSig, RustItemKind, RustItemMetadata, RustParam, RustTypeShape};
 use incan_core::lang::surface::types as surface_types;
@@ -135,7 +135,7 @@ pub struct TypeCheckInfo {
     /// Regular method calls whose arguments must keep Rust method-call lookup shape.
     ///
     /// Keyed by `(receiver_span.start, receiver_span.end, method_name)` so lowering can preserve borrow-sensitive
-    /// lookup calls like `HashMap.get(key)` without re-querying rust metadata in the backend.
+    /// lookup calls like `HashMap.get(key)` without re-querying rust-inspect metadata in the backend.
     pub regular_method_arg_shape_preserving_calls: HashSet<(usize, usize, String)>,
     /// Module-visible static bindings keyed by local name for lowering/runtime emission.
     pub static_bindings: HashMap<String, StaticBindingInfo>,
@@ -319,12 +319,12 @@ pub struct TypeChecker {
     /// Ensures supertrait names are not mistaken for free type parameters when the supertrait is declared later in the
     /// same module.
     pub(crate) pending_trait_supertraits: Vec<(String, Vec<Spanned<TraitBound>>)>,
-    /// Feature-gated cache for Rust semantic metadata extraction (RFC 041).
-    #[cfg(feature = "rust-metadata")]
-    pub(crate) rust_metadata_cache: RustMetadataCache,
+    /// Feature-gated cache for rust-inspect semantic metadata extraction (RFC 041).
+    #[cfg(feature = "rust_inspect")]
+    pub(crate) rust_inspect_cache: RustMetadataCache,
     /// Manifest/workspace root used for rust-analyzer metadata extraction.
-    #[cfg(feature = "rust-metadata")]
-    pub(crate) rust_metadata_manifest_dir: Option<PathBuf>,
+    #[cfg(feature = "rust_inspect")]
+    pub(crate) rust_inspect_manifest_dir: Option<PathBuf>,
 }
 
 impl TypeChecker {
@@ -356,35 +356,80 @@ impl TypeChecker {
             surface_context: SurfaceContext::default(),
             supertrait_closure: HashMap::new(),
             pending_trait_supertraits: Vec::new(),
-            #[cfg(feature = "rust-metadata")]
-            rust_metadata_cache: RustMetadataCache::new(),
-            #[cfg(feature = "rust-metadata")]
-            rust_metadata_manifest_dir: None,
+            #[cfg(feature = "rust_inspect")]
+            rust_inspect_cache: RustMetadataCache::new(),
+            #[cfg(feature = "rust_inspect")]
+            rust_inspect_manifest_dir: None,
         }
     }
 
-    /// Opt into semantic Rust metadata extraction for this checker.
+    /// Opt into semantic rust-inspect extraction for this checker.
     ///
     /// The checker stays metadata-free by default so plain semantic/unit-test paths do not accidentally load an
     /// external Rust workspace. Callers that own project context, such as the CLI, test runner, and LSP, must set the
     /// generated metadata workspace explicitly.
-    #[cfg(feature = "rust-metadata")]
-    pub fn set_rust_metadata_manifest_dir(&mut self, dir: PathBuf) {
-        self.rust_metadata_manifest_dir = Some(dir);
+    #[cfg(feature = "rust_inspect")]
+    pub fn set_rust_inspect_manifest_dir(&mut self, dir: PathBuf) {
+        self.rust_inspect_manifest_dir = Some(dir);
     }
 
-    #[cfg(feature = "rust-metadata")]
+    #[cfg(feature = "rust_inspect")]
     pub(crate) fn rust_item_metadata_for_path(&self, canonical_path: &str) -> Option<RustItemMetadata> {
-        let lookup_path = Self::rust_metadata_lookup_path(canonical_path)?;
-        let dir = self.rust_metadata_manifest_dir.as_ref()?;
-        match self.rust_metadata_cache.get_or_extract(dir, lookup_path, &|_| ()) {
-            Ok(meta) => Some((*meta).clone()),
-            Err(_) => None,
+        let lookup_path = Self::rust_inspect_lookup_path(canonical_path)?;
+        let dir = self.rust_inspect_manifest_dir.as_ref()?;
+        match self.rust_inspect_cache.get_cached(dir, lookup_path) {
+            Ok(Some(hit)) => Some((*hit.metadata).clone()),
+            Err(err) => {
+                tracing::debug!(
+                    "rust-inspect cache lookup failed for `{}` (query `{}`): {err}",
+                    canonical_path,
+                    lookup_path
+                );
+                None
+            }
+            Ok(None) => None,
         }
     }
 
-    #[cfg(not(feature = "rust-metadata"))]
+    #[cfg(feature = "rust_inspect")]
+    pub(crate) fn rust_item_metadata_for_path_blocking(&self, canonical_path: &str) -> Option<RustItemMetadata> {
+        let lookup_path = Self::rust_inspect_lookup_path(canonical_path)?;
+        let dir = self.rust_inspect_manifest_dir.as_ref()?;
+        // stdlib interop paths are conventionally stable and intentionally stay cache-only.
+        if lookup_path.starts_with("incan_stdlib::") {
+            return self.rust_item_metadata_for_path(lookup_path);
+        }
+        match self.rust_inspect_cache.get_cached(dir, lookup_path) {
+            Ok(Some(hit)) => Some((*hit.metadata).clone()),
+            Ok(None) => match self.rust_inspect_cache.get_or_extract(dir, lookup_path, &|_| ()) {
+                Ok(hit) => Some((*hit).clone()),
+                Err(err) => {
+                    tracing::debug!(
+                        "rust-inspect extraction failed for `{}` (query `{}`): {err}",
+                        canonical_path,
+                        lookup_path
+                    );
+                    None
+                }
+            },
+            Err(err) => {
+                tracing::debug!(
+                    "rust-inspect cache lookup failed for `{}` (query `{}`): {err}",
+                    canonical_path,
+                    lookup_path
+                );
+                None
+            }
+        }
+    }
+
+    #[cfg(not(feature = "rust_inspect"))]
     pub(crate) fn rust_item_metadata_for_path(&self, _canonical_path: &str) -> Option<RustItemMetadata> {
+        None
+    }
+
+    #[cfg(not(feature = "rust_inspect"))]
+    pub(crate) fn rust_item_metadata_for_path_blocking(&self, _canonical_path: &str) -> Option<RustItemMetadata> {
         None
     }
 
@@ -410,25 +455,19 @@ impl TypeChecker {
         parts
     }
 
-    /// Normalize a Rust metadata lookup path down to the nominal item path.
+    /// Normalize a rust-inspect lookup path down to the nominal item path.
     ///
     /// rust-analyzer metadata is keyed by the item path (`foo::Bar`), not by instantiated spellings like
     /// `foo::Bar<T>` or placeholder displays like `{unknown}`. This strips outer generic instantiation from a Rust
     /// path while rejecting obviously non-item spellings before hitting the metadata cache/extractor.
-    fn rust_metadata_lookup_path(canonical_path: &str) -> Option<&str> {
-        let trimmed = canonical_path.trim();
-        if trimmed.is_empty() || trimmed == "{unknown}" {
-            return None;
-        }
-        let had_generics = trimmed.contains('<');
-        let base = trimmed.split_once('<').map_or(trimmed, |(base, _)| base);
-        if had_generics && !base.contains("::") {
-            return None;
-        }
-        if base.is_empty() || base.contains(['{', '}', '(', ')', '[', ']', ',', ' ']) {
-            return None;
-        }
-        Some(base)
+    #[cfg(feature = "rust_inspect")]
+    fn rust_inspect_lookup_path(canonical_path: &str) -> Option<&str> {
+        crate::rust_inspect::Inspector::normalize_lookup_path(canonical_path)
+    }
+
+    #[cfg(not(feature = "rust_inspect"))]
+    fn rust_inspect_lookup_path(_canonical_path: &str) -> Option<&str> {
+        None
     }
 
     fn rust_path_base_and_args(&self, path: &str) -> (String, Vec<ResolvedType>) {
@@ -462,7 +501,7 @@ impl TypeChecker {
     /// Extract the cheap Rust identity already known to the checker for compatibility checks.
     ///
     /// This must stay metadata-light. `types_compatible(...)` calls it frequently, so it may only use symbol-local
-    /// metadata already attached during import collection. Fresh rust-metadata extraction from this path would leak a
+    /// metadata already attached during import collection. Fresh rust-inspect extraction from this path would leak a
     /// heavy workspace/indexing concern into ordinary semantic checks.
     fn rust_identity_for_type(&self, ty: &ResolvedType) -> Option<(String, Option<String>, Vec<ResolvedType>)> {
         match ty {
@@ -533,7 +572,7 @@ impl TypeChecker {
         sig.params.first().is_some_and(Self::rust_param_is_receiver)
     }
 
-    /// Build a conservative function type from Rust metadata.
+    /// Build a conservative function type from rust-inspect metadata.
     ///
     /// When `drop_receiver` is true and the Rust signature starts with `self`, that first parameter is omitted because
     /// method-call syntax already supplies the receiver expression.
@@ -606,7 +645,7 @@ impl TypeChecker {
         normalized.strip_prefix('&').map(|inner| (false, inner))
     }
 
-    /// Map structured rust-metadata [`RustTypeShape`] into a [`ResolvedType`] for field access and pattern typing.
+    /// Map structured rust-inspect [`RustTypeShape`] into a [`ResolvedType`] for field access and pattern typing.
     ///
     /// `Option`/`Result` become [`ResolvedType::Generic`] with constructor names `Option` and `Result`. Concrete paths
     /// use [`Self::render_rust_shape_path`] so generic arguments stay attached to [`ResolvedType::RustPath`].

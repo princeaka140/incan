@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 use crate::backend::ProjectGenerator;
 use crate::backend::ir::detect_serde_non_import_usage;
 use crate::cli::prelude::ParsedModule;
@@ -21,6 +21,8 @@ use crate::frontend::{diagnostics, lexer, parser, vocab_desugar_pass};
 use crate::lockfile::CargoFeatureSelection;
 use crate::manifest::ProjectManifest;
 use crate::manifest::{DependencySource, DependencySpec};
+#[cfg(feature = "rust_inspect")]
+use crate::rust_inspect::{Inspector, InspectorConfig};
 use incan_core::lang::stdlib::{self, StdlibExtraCrateSource};
 
 /// Maximum source file size (100 MB)
@@ -253,12 +255,12 @@ pub(crate) fn merge_project_requirement_dependencies(
     Ok(())
 }
 
-/// Generate the rust-metadata workspace that semantic Rust extraction should query for this project.
+/// Generate the rust-inspect workspace that semantic Rust extraction should query for this project.
 ///
 /// The generated workspace intentionally uses the Rust import spelling for dependency keys, while preserving the
 /// published Cargo package name separately when the two differ.
-#[cfg(feature = "rust-metadata")]
-pub(crate) fn ensure_rust_metadata_workspace(
+#[cfg(feature = "rust_inspect")]
+pub(crate) fn ensure_rust_inspect_workspace(
     project_root: &Path,
     project_name: &str,
     rust_edition: Option<String>,
@@ -266,8 +268,8 @@ pub(crate) fn ensure_rust_metadata_workspace(
     project_requirements: &ProjectRequirements,
     cargo_lock_payload: Option<String>,
 ) -> CliResult<PathBuf> {
-    let rust_metadata_manifest_dir = project_root.join("target").join("incan_lock");
-    let mut generator = ProjectGenerator::new(&rust_metadata_manifest_dir, project_name, true);
+    let rust_inspect_manifest_dir = project_root.join("target").join("incan_lock");
+    let mut generator = ProjectGenerator::new(&rust_inspect_manifest_dir, project_name, true);
     generator.set_dependencies(resolved.dependencies.clone());
     generator.set_dev_dependencies(resolved.dev_dependencies.clone());
     generator.set_include_dev_dependencies(true);
@@ -278,18 +280,131 @@ pub(crate) fn ensure_rust_metadata_workspace(
     for dep in resolved.dependencies.iter().chain(resolved.dev_dependencies.iter()) {
         referenced_crates.insert(dep.crate_name.replace('-', "_"));
     }
-    let mut rust_metadata_stub = String::new();
+    let mut rust_inspect_stub = String::new();
     for crate_name in referenced_crates {
-        rust_metadata_stub.push_str(format!("use {crate_name} as _;\n").as_str());
+        rust_inspect_stub.push_str(format!("use {crate_name} as _;\n").as_str());
     }
-    rust_metadata_stub.push_str("fn main() {}");
-    generator.generate(rust_metadata_stub.as_str()).map_err(|e| {
+    rust_inspect_stub.push_str("fn main() {}");
+    generator.generate(rust_inspect_stub.as_str()).map_err(|e| {
         CliError::failure(format!(
-            "Failed to generate rust-metadata lock project at {}: {e}",
-            rust_metadata_manifest_dir.display()
+            "Failed to generate rust-inspect lock project at {}: {e}",
+            rust_inspect_manifest_dir.display()
         ))
     })?;
-    Ok(rust_metadata_manifest_dir)
+    Ok(rust_inspect_manifest_dir)
+}
+
+/// Collect canonical rust-inspect query paths from parsed `rust::` imports.
+#[cfg(feature = "rust_inspect")]
+pub(crate) fn collect_rust_inspect_query_paths(modules: &[ParsedModule]) -> Vec<String> {
+    fn env_flag_enabled(name: &str) -> bool {
+        std::env::var_os(name).is_some_and(|value| {
+            let value = value.to_string_lossy();
+            matches!(value.as_ref(), "1" | "true" | "TRUE" | "on" | "ON")
+        })
+    }
+
+    fn should_prewarm_item(item_name: &str) -> bool {
+        let stripped = item_name.trim_start_matches("r#");
+        if matches!(
+            stripped,
+            "bool"
+                | "char"
+                | "str"
+                | "f32"
+                | "f64"
+                | "i8"
+                | "i16"
+                | "i32"
+                | "i64"
+                | "i128"
+                | "isize"
+                | "u8"
+                | "u16"
+                | "u32"
+                | "u64"
+                | "u128"
+                | "usize"
+        ) {
+            return false;
+        }
+        stripped
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_lowercase() || ch == '_')
+    }
+
+    // Default policy: prewarm likely callable *user* imports only. This avoids eager extraction of heavyweight
+    // type/module imports (especially `incan_stdlib::*`) that can force expensive rust-analyzer def-map walks during
+    // `incan test`.
+    // Set `INCAN_RUST_INSPECT_PREWARM_ALL=1` to restore full eager prewarm for debugging/regressions.
+    let prewarm_all = env_flag_enabled("INCAN_RUST_INSPECT_PREWARM_ALL");
+    let mut paths: BTreeSet<String> = BTreeSet::new();
+    for module in modules {
+        for decl in &module.ast.declarations {
+            let crate::frontend::ast::Declaration::Import(import) = &decl.node else {
+                continue;
+            };
+            match &import.kind {
+                ImportKind::RustCrate { crate_name, path, .. } if prewarm_all => {
+                    let mut segments = Vec::with_capacity(path.len() + 1);
+                    segments.push(crate_name.replace('-', "_"));
+                    segments.extend(path.iter().cloned());
+                    if !segments.is_empty() {
+                        paths.insert(segments.join("::"));
+                    }
+                }
+                ImportKind::RustCrate { .. } => {}
+                ImportKind::RustFrom {
+                    crate_name,
+                    path,
+                    items,
+                    ..
+                } => {
+                    let mut base = Vec::with_capacity(path.len() + 1);
+                    base.push(crate_name.replace('-', "_"));
+                    base.extend(path.iter().cloned());
+                    let base = base.join("::");
+                    if base.is_empty() {
+                        continue;
+                    }
+                    if !prewarm_all && base.starts_with("incan_stdlib::") {
+                        continue;
+                    }
+                    let primitive_ns = matches!(base.as_str(), "std::primitive" | "core::primitive");
+                    for item in items {
+                        if !primitive_ns && (prewarm_all || should_prewarm_item(&item.name)) {
+                            paths.insert(format!("{base}::{}", item.name));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    paths.into_iter().collect()
+}
+
+/// Eagerly load rust-inspect metadata before typechecking/codegen hot paths.
+#[cfg(feature = "rust_inspect")]
+pub(crate) fn prewarm_rust_inspect_workspace(manifest_dir: &Path, query_paths: &[String]) -> CliResult<()> {
+    let prewarm_enabled = std::env::var_os("INCAN_RUST_INSPECT_PREWARM").is_some_and(|value| {
+        let value = value.to_string_lossy();
+        matches!(value.as_ref(), "1" | "true" | "TRUE" | "on" | "ON")
+    });
+    if !prewarm_enabled {
+        return Ok(());
+    }
+    if query_paths.is_empty() {
+        return Ok(());
+    }
+    let inspector = Inspector::new(InspectorConfig::new(manifest_dir.to_path_buf()));
+    inspector.prewarm(query_paths.iter().cloned(), &|_| ()).map_err(|err| {
+        CliError::failure(format!(
+            "failed to prewarm rust-inspect cache from {}: {err}",
+            manifest_dir.display()
+        ))
+    })
 }
 
 /// Resolve the source path for a stdlib module path (e.g. `["std", "testing"]`).
@@ -1384,9 +1499,9 @@ pub def main() -> int:
         Ok(())
     }
 
-    #[cfg(feature = "rust-metadata")]
+    #[cfg(feature = "rust_inspect")]
     #[test]
-    fn ensure_rust_metadata_workspace_uses_rust_safe_dependency_keys() -> Result<(), Box<dyn std::error::Error>> {
+    fn ensure_rust_inspect_workspace_uses_rust_safe_dependency_keys() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let requirements = ProjectRequirements::default();
         let resolved = ResolvedDependencies {
@@ -1402,7 +1517,7 @@ pub def main() -> int:
             dev_dependencies: Vec::new(),
         };
 
-        let out_dir = ensure_rust_metadata_workspace(
+        let out_dir = ensure_rust_inspect_workspace(
             tmp.path(),
             "metadata_probe",
             Some("2021".to_string()),
@@ -1416,19 +1531,19 @@ pub def main() -> int:
 
         assert!(
             cargo_toml.contains("[dependencies.datafusion_substrait]"),
-            "expected rust-safe dependency key in generated rust-metadata workspace, got:\n{cargo_toml}"
+            "expected rust-safe dependency key in generated rust-inspect workspace, got:\n{cargo_toml}"
         );
         assert!(
             cargo_toml.contains("package = \"datafusion-substrait\""),
-            "expected original package name preserved in generated rust-metadata workspace, got:\n{cargo_toml}"
+            "expected original package name preserved in generated rust-inspect workspace, got:\n{cargo_toml}"
         );
         assert!(
             cargo_lock.contains("metadata_probe"),
-            "expected rust-metadata workspace to write the provided Cargo.lock payload"
+            "expected rust-inspect workspace to write the provided Cargo.lock payload"
         );
         assert!(
             main_rs.contains("use datafusion_substrait as _;"),
-            "expected rust-metadata workspace stub to reference the aliased dependency crate, got:\n{main_rs}"
+            "expected rust-inspect workspace stub to reference the aliased dependency crate, got:\n{main_rs}"
         );
         Ok(())
     }

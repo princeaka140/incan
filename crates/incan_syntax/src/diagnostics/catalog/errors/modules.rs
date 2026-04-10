@@ -51,7 +51,7 @@ pub fn rust_item_not_public(local_name: &str, canonical_path: &str, span: Span) 
         span,
     )
     .with_hint("Import a public item or expose it from the Rust crate with `pub`")
-    .with_note("RFC 041 requires visibility-aware Rust metadata for `rust::` imports")
+    .with_note("RFC 041 requires visibility-aware rust-inspect metadata for `rust::` imports")
 }
 
 /// Rust `core`/`alloc` imports are reserved for future no_std/target work.

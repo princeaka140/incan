@@ -29,7 +29,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::env;
-#[cfg(feature = "rust-metadata")]
+#[cfg(feature = "rust_inspect")]
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -324,9 +324,9 @@ pub struct IrCodegen<'a> {
     declared_crate_names: Option<HashSet<String>>,
     /// Consumer-side `pub::` dependency metadata used by internal typechecking.
     library_manifest_index: Option<Arc<LibraryManifestIndex>>,
-    /// Manifest/workspace root for rust-metadata-backed typechecking during IR generation.
-    #[cfg(feature = "rust-metadata")]
-    rust_metadata_manifest_dir: Option<PathBuf>,
+    /// Manifest/workspace root for rust-inspect-backed typechecking during IR generation.
+    #[cfg(feature = "rust_inspect")]
+    rust_inspect_manifest_dir: Option<PathBuf>,
 }
 
 impl<'a> IrCodegen<'a> {
@@ -342,8 +342,8 @@ impl<'a> IrCodegen<'a> {
             emit_zen_in_main: false,
             declared_crate_names: None,
             library_manifest_index: None,
-            #[cfg(feature = "rust-metadata")]
-            rust_metadata_manifest_dir: None,
+            #[cfg(feature = "rust_inspect")]
+            rust_inspect_manifest_dir: None,
         }
     }
 
@@ -359,10 +359,10 @@ impl<'a> IrCodegen<'a> {
         self.library_manifest_index = Some(Arc::new(index));
     }
 
-    /// Set the manifest/workspace root used for rust-metadata-backed typechecking during IR generation.
-    #[cfg(feature = "rust-metadata")]
-    pub fn set_rust_metadata_manifest_dir(&mut self, dir: PathBuf) {
-        self.rust_metadata_manifest_dir = Some(dir);
+    /// Set the manifest/workspace root used for rust-inspect-backed typechecking during IR generation.
+    #[cfg(feature = "rust_inspect")]
+    pub fn set_rust_inspect_manifest_dir(&mut self, dir: PathBuf) {
+        self.rust_inspect_manifest_dir = Some(dir);
     }
 
     /// Get the Rust crates imported via `import rust::` or `from rust::`
@@ -388,9 +388,9 @@ impl<'a> IrCodegen<'a> {
         if let Some(index) = self.library_manifest_index.clone() {
             tc.set_library_manifest_index_shared(index);
         }
-        #[cfg(feature = "rust-metadata")]
-        if let Some(dir) = self.rust_metadata_manifest_dir.clone() {
-            tc.set_rust_metadata_manifest_dir(dir);
+        #[cfg(feature = "rust_inspect")]
+        if let Some(dir) = self.rust_inspect_manifest_dir.clone() {
+            tc.set_rust_inspect_manifest_dir(dir);
         }
     }
 
@@ -937,7 +937,7 @@ mod tests {
     use crate::frontend::{lexer, parser};
     use crate::library_manifest::{ConstExport, FunctionExport, LibraryManifest, ModelExport, ParamExport, TypeRef};
     use std::collections::HashMap;
-    #[cfg(feature = "rust-metadata")]
+    #[cfg(feature = "rust_inspect")]
     use std::fs;
 
     fn must_ok<T, E: std::fmt::Debug>(result: Result<T, E>) -> T {
@@ -966,8 +966,8 @@ mod tests {
         must_ok(parser::parse(&tokens))
     }
 
-    #[cfg(feature = "rust-metadata")]
-    fn seeded_rust_metadata_workspace() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
+    #[cfg(feature = "rust_inspect")]
+    fn seeded_rust_inspect_workspace() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         fs::write(
             tmp.path().join("Cargo.toml"),
@@ -978,6 +978,14 @@ edition = "2021"
 "#,
         )?;
         Ok(tmp)
+    }
+
+    #[cfg(feature = "rust_inspect")]
+    fn prewarm_metadata(manifest_dir: &std::path::Path, paths: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
+        let inspector =
+            crate::rust_inspect::Inspector::new(crate::rust_inspect::InspectorConfig::new(manifest_dir.to_path_buf()));
+        inspector.prewarm(paths.iter().map(|p| (*p).to_string()).collect::<Vec<_>>(), &|_| ())?;
+        Ok(())
     }
 
     fn db_module_program() -> Program {
@@ -1451,7 +1459,7 @@ def main() -> None:
         assert!(!code.contains("use pub::widgets"));
     }
 
-    #[cfg(feature = "rust-metadata")]
+    #[cfg(feature = "rust_inspect")]
     #[test]
     fn test_codegen_borrows_rust_backed_free_function_args_from_metadata() -> Result<(), Box<dyn std::error::Error>> {
         use crate::frontend::typechecker::TypeChecker;
@@ -1467,11 +1475,11 @@ def forward(value: Thing) -> None:
         let tokens = must_ok(lexer::lex(source));
         let ast = must_ok(parser::parse(&tokens));
 
-        let tmp = seeded_rust_metadata_workspace()?;
+        let tmp = seeded_rust_inspect_workspace()?;
         let manifest_dir = tmp.path().to_path_buf();
         let mut tc = TypeChecker::new();
-        tc.set_rust_metadata_manifest_dir(manifest_dir.clone());
-        tc.rust_metadata_cache
+        tc.set_rust_inspect_manifest_dir(manifest_dir.clone());
+        tc.rust_inspect_cache
             .insert_test_item(
                 &manifest_dir,
                 RustItemMetadata {
@@ -1489,7 +1497,7 @@ def forward(value: Thing) -> None:
                     }),
                 },
             )
-            .map_err(|e| std::io::Error::other(format!("seed rust metadata function: {e}")))?;
+            .map_err(|e| std::io::Error::other(format!("seed rust-inspect function: {e}")))?;
         tc.check_program(&ast)
             .map_err(|errs| std::io::Error::other(format!("typecheck failed: {errs:?}")))?;
 
@@ -1514,7 +1522,7 @@ def forward(value: Thing) -> None:
         Ok(())
     }
 
-    #[cfg(feature = "rust-metadata")]
+    #[cfg(feature = "rust_inspect")]
     #[test]
     fn test_codegen_borrows_async_rust_backed_free_function_args_from_metadata()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1534,11 +1542,11 @@ async def run(state: State, plan: Plan) -> None:
         let tokens = must_ok(lexer::lex(source));
         let ast = must_ok(parser::parse(&tokens));
 
-        let tmp = seeded_rust_metadata_workspace()?;
+        let tmp = seeded_rust_inspect_workspace()?;
         let manifest_dir = tmp.path().to_path_buf();
         let mut tc = TypeChecker::new();
-        tc.set_rust_metadata_manifest_dir(manifest_dir.clone());
-        tc.rust_metadata_cache
+        tc.set_rust_inspect_manifest_dir(manifest_dir.clone());
+        tc.rust_inspect_cache
             .insert_test_item(
                 &manifest_dir,
                 RustItemMetadata {
@@ -1562,7 +1570,7 @@ async def run(state: State, plan: Plan) -> None:
                     }),
                 },
             )
-            .map_err(|e| std::io::Error::other(format!("seed rust metadata function: {e}")))?;
+            .map_err(|e| std::io::Error::other(format!("seed rust-inspect function: {e}")))?;
         tc.check_program(&ast)
             .map_err(|errs| std::io::Error::other(format!("typecheck failed: {errs:?}")))?;
 
@@ -1587,12 +1595,12 @@ async def run(state: State, plan: Plan) -> None:
         Ok(())
     }
 
-    #[cfg(feature = "rust-metadata")]
+    #[cfg(feature = "rust_inspect")]
     #[test]
-    fn test_codegen_borrows_async_rust_backed_free_function_args_from_real_rust_metadata()
+    fn test_codegen_borrows_async_rust_backed_free_function_args_from_real_rust_inspect()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::frontend::typechecker::TypeChecker;
-        use crate::rust_metadata::write_async_result_probe_crate;
+        use crate::rust_inspect::write_async_result_probe_crate;
 
         let source = r#"
 from std.async import sleep
@@ -1611,7 +1619,15 @@ async def run(state: State, plan: Plan) -> None:
         write_async_result_probe_crate(tmp.path())?;
 
         let mut tc = TypeChecker::new();
-        tc.set_rust_metadata_manifest_dir(tmp.path().to_path_buf());
+        tc.set_rust_inspect_manifest_dir(tmp.path().to_path_buf());
+        prewarm_metadata(
+            tmp.path(),
+            &[
+                "ra_async_result_probe::State",
+                "ra_async_result_probe::Plan",
+                "ra_async_result_probe::consume",
+            ],
+        )?;
         tc.check_program(&ast)
             .map_err(|errs| std::io::Error::other(format!("typecheck failed: {errs:?}")))?;
 
@@ -1636,14 +1652,14 @@ async def run(state: State, plan: Plan) -> None:
         Ok(())
     }
 
-    #[cfg(feature = "rust-metadata")]
+    #[cfg(feature = "rust_inspect")]
     #[test]
     fn test_codegen_borrows_async_rust_backed_free_function_args_from_generated_lock_workspace()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::backend::project::ProjectGenerator;
         use crate::frontend::typechecker::TypeChecker;
         use crate::manifest::{DependencySource, DependencySpec};
-        use crate::rust_metadata::write_hyphenated_function_probe_crate;
+        use crate::rust_inspect::write_hyphenated_function_probe_crate;
 
         let source = r#"
 from std.async import sleep
@@ -1676,7 +1692,11 @@ async def run(state: State, plan: Plan) -> None:
         generator.generate("fn main() {}\n")?;
 
         let mut tc = TypeChecker::new();
-        tc.set_rust_metadata_manifest_dir(lock_root.clone());
+        tc.set_rust_inspect_manifest_dir(lock_root.clone());
+        prewarm_metadata(
+            &lock_root,
+            &["foo_bar::State", "foo_bar::Plan", "foo_bar::consumer::consume"],
+        )?;
         tc.check_program(&ast)
             .map_err(|errs| std::io::Error::other(format!("typecheck failed: {errs:?}")))?;
 
@@ -1701,13 +1721,13 @@ async def run(state: State, plan: Plan) -> None:
         Ok(())
     }
 
-    #[cfg(feature = "rust-metadata")]
+    #[cfg(feature = "rust_inspect")]
     #[test]
     fn test_nested_module_codegen_borrows_async_rust_args_from_generated_lock_workspace()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::backend::project::ProjectGenerator;
         use crate::manifest::{DependencySource, DependencySpec};
-        use crate::rust_metadata::write_hyphenated_function_probe_crate;
+        use crate::rust_inspect::write_hyphenated_function_probe_crate;
 
         let main_module = parse_program(
             r#"
@@ -1747,7 +1767,7 @@ async def run(state: State, plan: Plan) -> None:
 
         let worker_path = vec!["worker".to_string()];
         let mut codegen = IrCodegen::new();
-        codegen.set_rust_metadata_manifest_dir(lock_root);
+        codegen.set_rust_inspect_manifest_dir(lock_root);
         codegen.add_module_with_path_segments("worker", &dep_module, worker_path.clone());
 
         let (_main_code, rust_modules) =
@@ -1761,11 +1781,11 @@ async def run(state: State, plan: Plan) -> None:
         Ok(())
     }
 
-    #[cfg(feature = "rust-metadata")]
+    #[cfg(feature = "rust_inspect")]
     #[test]
     fn test_codegen_borrows_async_rust_args_after_rust_method_return() -> Result<(), Box<dyn std::error::Error>> {
         use crate::frontend::typechecker::TypeChecker;
-        use crate::rust_metadata::write_async_result_probe_crate;
+        use crate::rust_inspect::write_async_result_probe_crate;
 
         let source = r#"
 from std.async import sleep
@@ -1786,7 +1806,15 @@ async def run(plan: Plan) -> None:
         write_async_result_probe_crate(tmp.path())?;
 
         let mut tc = TypeChecker::new();
-        tc.set_rust_metadata_manifest_dir(tmp.path().to_path_buf());
+        tc.set_rust_inspect_manifest_dir(tmp.path().to_path_buf());
+        prewarm_metadata(
+            tmp.path(),
+            &[
+                "ra_async_result_probe::SessionContext",
+                "ra_async_result_probe::Plan",
+                "ra_async_result_probe::consume",
+            ],
+        )?;
         tc.check_program(&ast)
             .map_err(|errs| std::io::Error::other(format!("typecheck failed: {errs:?}")))?;
 
@@ -1811,11 +1839,11 @@ async def run(plan: Plan) -> None:
         Ok(())
     }
 
-    #[cfg(feature = "rust-metadata")]
+    #[cfg(feature = "rust_inspect")]
     #[test]
-    fn test_ir_codegen_uses_configured_rust_metadata_workspace_for_async_borrows()
+    fn test_ir_codegen_uses_configured_rust_inspect_workspace_for_async_borrows()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::rust_metadata::write_hyphenated_function_probe_crate;
+        use crate::rust_inspect::write_hyphenated_function_probe_crate;
 
         let tmp = tempfile::tempdir()?;
         let dep_root = tmp.path().join("foo-bar-dep");
@@ -1844,7 +1872,7 @@ async def run(state: State, plan: Plan) -> None:
 "#;
         let ast = parse_program(source);
         let mut codegen = IrCodegen::new();
-        codegen.set_rust_metadata_manifest_dir(host_root);
+        codegen.set_rust_inspect_manifest_dir(host_root);
         let code = must_ok(codegen.try_generate(&ast));
 
         assert!(

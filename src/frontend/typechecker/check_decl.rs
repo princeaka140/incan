@@ -160,11 +160,11 @@ impl TypeChecker {
     /// 1. Local rusttype-declared methods.
     /// 2. Backing Rust methods from metadata (when available).
     ///
-    /// Returns `(candidates, rust_metadata_available)`. The second flag lets callers distinguish "no match because
+    /// Returns `(candidates, rust_inspect_available)`. The second flag lets callers distinguish "no match because
     /// metadata is unavailable" from "no match with authoritative metadata".
     fn interop_adapter_candidates_for_name(&self, nt: &NewtypeDecl, name: &str) -> (Vec<InteropAdapterSig>, bool) {
         let mut candidates: Vec<InteropAdapterSig> = Vec::new();
-        let mut rust_metadata_available = false;
+        let mut rust_inspect_available = false;
 
         if let Some(TypeInfo::Newtype(info)) = self.lookup_type_info(&nt.name) {
             if let Some(method) = info.methods.get(name) {
@@ -180,7 +180,7 @@ impl TypeChecker {
                 && let ResolvedType::RustPath(path) = &info.underlying
                 && let Some(meta) = self.rust_item_metadata_for_path(path)
             {
-                rust_metadata_available = true;
+                rust_inspect_available = true;
                 if let RustItemKind::Type(type_info) = &meta.kind {
                     for method in type_info.methods.iter().filter(|m| m.name == name) {
                         let has_receiver = Self::rust_signature_has_receiver(&method.signature);
@@ -204,15 +204,15 @@ impl TypeChecker {
             }
         }
 
-        (candidates, rust_metadata_available)
+        (candidates, rust_inspect_available)
     }
 
     /// Decide whether missing-adapter diagnostics should be deferred until metadata is available.
     ///
     /// For rusttypes backed by a Rust path, missing metadata should not become a hard error in the typechecker;
     /// lowering/rustc will still validate concrete callability later.
-    fn maybe_defer_interop_adapter_missing(&self, nt: &NewtypeDecl, rust_metadata_available: bool) -> bool {
-        if rust_metadata_available {
+    fn maybe_defer_interop_adapter_missing(&self, nt: &NewtypeDecl, rust_inspect_available: bool) -> bool {
+        if rust_inspect_available {
             return false;
         }
         self.lookup_type_info(&nt.name).is_some_and(|info| {
@@ -238,9 +238,9 @@ impl TypeChecker {
     ) -> Option<InteropAdapterSig> {
         match &edge.node.adapter.node {
             Expr::Ident(name) => {
-                let (mut candidates, rust_metadata_available) = self.interop_adapter_candidates_for_name(nt, name);
+                let (mut candidates, rust_inspect_available) = self.interop_adapter_candidates_for_name(nt, name);
                 if candidates.is_empty() {
-                    if self.maybe_defer_interop_adapter_missing(nt, rust_metadata_available) {
+                    if self.maybe_defer_interop_adapter_missing(nt, rust_inspect_available) {
                         return None;
                     }
                     self.errors.push(errors::unknown_symbol(name, edge.node.adapter.span));
@@ -272,9 +272,9 @@ impl TypeChecker {
                     ));
                     return None;
                 }
-                let (candidates, rust_metadata_available) = self.interop_adapter_candidates_for_name(nt, method);
+                let (candidates, rust_inspect_available) = self.interop_adapter_candidates_for_name(nt, method);
                 if candidates.is_empty() {
-                    if self.maybe_defer_interop_adapter_missing(nt, rust_metadata_available) {
+                    if self.maybe_defer_interop_adapter_missing(nt, rust_inspect_available) {
                         return None;
                     }
                     self.errors
@@ -282,7 +282,7 @@ impl TypeChecker {
                     return None;
                 }
                 // Qualified references follow ordinary lookup precedence:
-                // local rusttype methods first, then backing Rust metadata methods.
+                // local rusttype methods first, then backing rust-inspect methods.
                 candidates.into_iter().next()
             }
             _ => {

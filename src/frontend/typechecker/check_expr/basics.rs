@@ -63,7 +63,7 @@ impl TypeChecker {
                         .insert((span.start, span.end), IdentKind::RustImport);
                     return ResolvedType::Unknown;
                 }
-                // RFC 041: carry canonical Rust path and (when available) extracted Rust metadata.
+                // RFC 041: carry canonical Rust path and (when available) extracted rust-inspect metadata.
                 let resolved = match &info.metadata {
                     Some(meta) => match &meta.kind {
                         incan_core::interop::RustItemKind::Function(sig) => {

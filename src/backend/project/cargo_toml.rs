@@ -71,7 +71,7 @@ struct LibTarget {
 ///
 /// Cargo lets a dependency key differ from the published package name via `package = "..."`. Generated manifests use
 /// the Rust-import-safe dependency key here so the key matches the crate spelling that downstream code and
-/// rust-metadata queries use.
+/// rust-inspect queries use.
 fn rendered_dependency_key(spec: &DependencySpec) -> String {
     spec.crate_name.replace('-', "_")
 }

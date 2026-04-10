@@ -319,10 +319,10 @@ impl TypeChecker {
 
     /// Whether a [`SymbolKind::Variant`] from the symbol table actually describes this match scrutinee.
     ///
-    /// Rust metadata and library manifests register variant names (e.g. `Root`) at module scope. A `rusttype` alias
-    /// such as `PlanRel` uses a **different** Incan name than the backing Rust enum (`Sender`), so we must not let an
-    /// unrelated `Root` stub with empty payload metadata shadow [`Self::rust_enum_constructor_payload_types`], or
-    /// payload bindings in the pattern are never registered and the arm body sees `Unknown symbol`.
+    /// rust-inspect metadata and library manifests register variant names (e.g. `Root`) at module scope. A `rusttype`
+    /// alias such as `PlanRel` uses a **different** Incan name than the backing Rust enum (`Sender`), so we must not
+    /// let an unrelated `Root` stub with empty payload metadata shadow [`Self::rust_enum_constructor_payload_types`],
+    /// or payload bindings in the pattern are never registered and the arm body sees `Unknown symbol`.
     fn match_variant_symbol_applies_to_scrutinee(
         &self,
         expected_ty: &ResolvedType,

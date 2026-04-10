@@ -119,10 +119,10 @@ impl TypeChecker {
         Some(field_info)
     }
 
-    /// Resolve and validate a method call on a Rust metadata-backed path.
+    /// Resolve and validate a method call on a rust-inspect-backed path.
     ///
     /// Returns:
-    /// - `None` when Rust metadata is unavailable (caller should preserve permissive fallback behavior)
+    /// - `None` when rust-inspect data is unavailable (caller should preserve permissive fallback behavior)
     /// - `Some(ty)` when metadata exists and the call was resolved (or diagnosed as invalid)
     fn resolve_rust_path_method_call(
         &mut self,
@@ -429,7 +429,7 @@ impl TypeChecker {
     /// against the Incan-declared return type. If they differ in a coercible way (e.g. `&str` vs `String`), record a
     /// return coercion for `span` so lowering can wrap the call in `InteropCoerce`.
     ///
-    /// This runs unconditionally but is a no-op when the metadata cache is empty (i.e. when the `rust-metadata` feature
+    /// This runs unconditionally but is a no-op when the metadata cache is empty (i.e. when the `rust-inspect` feature
     /// is not enabled or no workspace was loaded).
     fn maybe_record_rusttype_return_coercion(
         &mut self,

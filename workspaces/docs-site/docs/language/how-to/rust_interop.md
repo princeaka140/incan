@@ -403,7 +403,7 @@ def inspect(x: Option[PlanRel]) -> None:
             pass
 ```
 
-For a single tuple-field variant, the typechecker models the payload as a `RustPath` of the form `{backing_rust_path}::{Variant}` (aligned with how member paths are composed for imported ADTs). Multiple positional sub-patterns are accepted but typed permissively until richer Rust metadata is available.
+For a single tuple-field variant, the typechecker models the payload as a `RustPath` of the form `{backing_rust_path}::{Variant}` (aligned with how member paths are composed for imported ADTs). Multiple positional sub-patterns are accepted but typed permissively until richer `rust-inspect` metadata is available.
 
 If the scrutinee is typed as a bare imported Rust path (not a `rusttype` alias), the type prefix in the pattern is not cross-checked against that path; prefer spelling the `rusttype` wrapper and matching on `PlanRel.Variant(...)` so the prefix matches your Incan type name.
 
