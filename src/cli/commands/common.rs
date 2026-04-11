@@ -24,6 +24,8 @@ use crate::manifest::{DependencySource, DependencySpec};
 #[cfg(feature = "rust_inspect")]
 use crate::rust_inspect::{Inspector, InspectorConfig};
 use incan_core::lang::stdlib::{self, StdlibExtraCrateSource};
+#[cfg(feature = "rust_inspect")]
+use sha2::{Digest, Sha256};
 
 /// Maximum source file size (100 MB)
 ///
@@ -255,10 +257,172 @@ pub(crate) fn merge_project_requirement_dependencies(
     Ok(())
 }
 
+#[cfg(feature = "rust_inspect")]
+const RUST_INSPECT_WORKSPACE_FINGERPRINT_FILE: &str = ".incan_rust_inspect_fingerprint";
+
+#[cfg(feature = "rust_inspect")]
+const RUST_INSPECT_WORKSPACE_FINGERPRINT_PREFIX: &str = "v1:";
+
+/// Counts how many times the rust-inspect stub workspace is fully regenerated (not skipped via fingerprint).
+/// Used by unit tests in this module; serialized with [`RUST_INSPECT_WORKSPACE_TEST_LOCK`].
+#[cfg(all(test, feature = "rust_inspect"))]
+pub(crate) static TEST_RUST_INSPECT_WORKSPACE_GENERATIONS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(all(test, feature = "rust_inspect"))]
+static RUST_INSPECT_WORKSPACE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(feature = "rust_inspect")]
+fn normalized_stdlib_features_for_rust_inspect_fingerprint(features: &[String]) -> Vec<String> {
+    let mut normalized: Vec<String> = features
+        .iter()
+        .map(|feature| feature.trim().to_string())
+        .filter(|feature| !feature.is_empty())
+        .collect();
+    normalized.sort();
+    normalized.dedup();
+    normalized
+}
+
+#[cfg(feature = "rust_inspect")]
+fn hash_dependency_spec_for_rust_inspect(hasher: &mut Sha256, spec: &DependencySpec) {
+    use crate::manifest::GitReference;
+
+    hasher.update(spec.crate_name.as_bytes());
+    hasher.update(b"\0");
+    match &spec.version {
+        Some(v) => {
+            hasher.update(b"ver\0");
+            hasher.update(v.as_bytes());
+            hasher.update(b"\0");
+        }
+        None => hasher.update(b"nover\0"),
+    }
+    let mut feats = spec.features.clone();
+    feats.sort();
+    for f in feats {
+        hasher.update(f.as_bytes());
+        hasher.update(b"\0");
+    }
+    hasher.update([if spec.default_features { 1 } else { 0 }]);
+    hasher.update([if spec.optional { 1 } else { 0 }]);
+    match &spec.package {
+        Some(p) => {
+            hasher.update(b"pkg\0");
+            hasher.update(p.as_bytes());
+            hasher.update(b"\0");
+        }
+        None => hasher.update(b"nopkg\0"),
+    }
+    match &spec.source {
+        DependencySource::Registry => hasher.update(b"src_reg\0"),
+        DependencySource::Git { url, reference } => {
+            hasher.update(b"src_git\0");
+            hasher.update(url.as_bytes());
+            hasher.update(b"\0");
+            match reference {
+                GitReference::Branch(s) => {
+                    hasher.update(b"git_br\0");
+                    hasher.update(s.as_bytes());
+                    hasher.update(b"\0");
+                }
+                GitReference::Tag(s) => {
+                    hasher.update(b"git_tag\0");
+                    hasher.update(s.as_bytes());
+                    hasher.update(b"\0");
+                }
+                GitReference::Rev(s) => {
+                    hasher.update(b"git_rev\0");
+                    hasher.update(s.as_bytes());
+                    hasher.update(b"\0");
+                }
+            }
+        }
+        DependencySource::Path { path } => {
+            hasher.update(b"src_path\0");
+            hasher.update(path.as_os_str().as_encoded_bytes());
+            hasher.update(b"\0");
+        }
+    }
+    hasher.update(b"|dep|\0");
+}
+
+/// Stable fingerprint for inputs that define the generated rust-inspect Cargo workspace under `target/incan_lock`.
+#[cfg(feature = "rust_inspect")]
+fn rust_inspect_workspace_fingerprint(
+    project_name: &str,
+    rust_edition: Option<&str>,
+    resolved: &ResolvedDependencies,
+    stdlib_features: &[String],
+    cargo_lock_payload: Option<&str>,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"incan_rust_inspect_workspace/1\0");
+    hasher.update(project_name.as_bytes());
+    hasher.update(b"\0");
+    match rust_edition {
+        Some(e) => {
+            hasher.update(b"ed\0");
+            hasher.update(e.as_bytes());
+            hasher.update(b"\0");
+        }
+        None => hasher.update(b"noed\0"),
+    }
+    // Matches `ProjectGenerator::new(..., is_binary: true)` + `set_include_dev_dependencies(true)` for this workspace.
+    hasher.update(b"layout_bin_devdeps\0");
+
+    let stdlib = normalized_stdlib_features_for_rust_inspect_fingerprint(stdlib_features);
+    for f in &stdlib {
+        hasher.update(f.as_bytes());
+        hasher.update(b"\0");
+    }
+    hasher.update(b"|\0");
+
+    let mut deps = resolved.dependencies.clone();
+    deps.sort_by(|a, b| a.crate_name.cmp(&b.crate_name));
+    for dep in &mut deps {
+        *dep = dep.clone().normalized();
+    }
+    hasher.update(b"deps\0");
+    for dep in &deps {
+        hash_dependency_spec_for_rust_inspect(&mut hasher, dep);
+    }
+    hasher.update(b"|\0");
+
+    let mut dev_deps = resolved.dev_dependencies.clone();
+    dev_deps.sort_by(|a, b| a.crate_name.cmp(&b.crate_name));
+    for dep in &mut dev_deps {
+        *dep = dep.clone().normalized();
+    }
+    hasher.update(b"dev_deps\0");
+    for dep in &dev_deps {
+        hash_dependency_spec_for_rust_inspect(&mut hasher, dep);
+    }
+    hasher.update(b"|\0");
+
+    match cargo_lock_payload {
+        Some(lock) => {
+            hasher.update(b"lock\0");
+            hasher.update(lock.as_bytes());
+        }
+        None => hasher.update(b"nolock\0"),
+    }
+
+    format!(
+        "{}{}",
+        RUST_INSPECT_WORKSPACE_FINGERPRINT_PREFIX,
+        hex::encode(hasher.finalize())
+    )
+}
+
 /// Generate the rust-inspect workspace that semantic Rust extraction should query for this project.
 ///
 /// The generated workspace intentionally uses the Rust import spelling for dependency keys, while preserving the
 /// published Cargo package name separately when the two differ.
+///
+/// When the same inputs are seen again (for example across multiple `incan test` cases in one package), regeneration is
+/// skipped if `target/incan_lock/.incan_rust_inspect_fingerprint` matches the computed digest and expected artifacts
+/// exist.
 #[cfg(feature = "rust_inspect")]
 pub(crate) fn ensure_rust_inspect_workspace(
     project_root: &Path,
@@ -269,6 +433,27 @@ pub(crate) fn ensure_rust_inspect_workspace(
     cargo_lock_payload: Option<String>,
 ) -> CliResult<PathBuf> {
     let rust_inspect_manifest_dir = project_root.join("target").join("incan_lock");
+    let fingerprint_path = rust_inspect_manifest_dir.join(RUST_INSPECT_WORKSPACE_FINGERPRINT_FILE);
+    let cargo_toml_path = rust_inspect_manifest_dir.join("Cargo.toml");
+    let main_rs_path = rust_inspect_manifest_dir.join("src").join("main.rs");
+
+    let fingerprint = rust_inspect_workspace_fingerprint(
+        project_name,
+        rust_edition.as_deref(),
+        resolved,
+        &project_requirements.stdlib_features,
+        cargo_lock_payload.as_deref(),
+    );
+
+    let fingerprint_matches = match fs::read_to_string(&fingerprint_path) {
+        Ok(existing) => existing.trim() == fingerprint.as_str(),
+        Err(_) => false,
+    };
+
+    if cargo_toml_path.is_file() && main_rs_path.is_file() && fingerprint_matches {
+        return Ok(rust_inspect_manifest_dir);
+    }
+
     let mut generator = ProjectGenerator::new(&rust_inspect_manifest_dir, project_name, true);
     generator.set_dependencies(resolved.dependencies.clone());
     generator.set_dev_dependencies(resolved.dev_dependencies.clone());
@@ -285,12 +470,24 @@ pub(crate) fn ensure_rust_inspect_workspace(
         rust_inspect_stub.push_str(format!("use {crate_name} as _;\n").as_str());
     }
     rust_inspect_stub.push_str("fn main() {}");
+
+    #[cfg(all(test, feature = "rust_inspect"))]
+    TEST_RUST_INSPECT_WORKSPACE_GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
     generator.generate(rust_inspect_stub.as_str()).map_err(|e| {
         CliError::failure(format!(
             "Failed to generate rust-inspect lock project at {}: {e}",
             rust_inspect_manifest_dir.display()
         ))
     })?;
+
+    if let Err(err) = fs::write(&fingerprint_path, &fingerprint) {
+        return Err(CliError::failure(format!(
+            "Failed to write rust-inspect workspace fingerprint {}: {err}",
+            fingerprint_path.display()
+        )));
+    }
+
     Ok(rust_inspect_manifest_dir)
 }
 
@@ -1501,7 +1698,73 @@ pub def main() -> int:
 
     #[cfg(feature = "rust_inspect")]
     #[test]
+    fn rust_inspect_workspace_fingerprint_is_deterministic() {
+        let requirements = ProjectRequirements::default();
+        let resolved = ResolvedDependencies {
+            dependencies: vec![DependencySpec {
+                crate_name: "serde".to_string(),
+                version: Some("1".to_string()),
+                features: vec!["derive".to_string()],
+                default_features: true,
+                source: DependencySource::Registry,
+                optional: false,
+                package: None,
+            }],
+            dev_dependencies: Vec::new(),
+        };
+        let fp_a = super::rust_inspect_workspace_fingerprint(
+            "probe",
+            Some("2021"),
+            &resolved,
+            &requirements.stdlib_features,
+            Some("lock-bytes"),
+        );
+        let fp_b = super::rust_inspect_workspace_fingerprint(
+            "probe",
+            Some("2021"),
+            &resolved,
+            &requirements.stdlib_features,
+            Some("lock-bytes"),
+        );
+        assert_eq!(fp_a, fp_b);
+        assert!(fp_a.starts_with(super::RUST_INSPECT_WORKSPACE_FINGERPRINT_PREFIX));
+    }
+
+    #[cfg(feature = "rust_inspect")]
+    #[test]
+    fn rust_inspect_workspace_fingerprint_changes_when_lock_payload_changes() {
+        let requirements = ProjectRequirements::default();
+        let resolved = ResolvedDependencies {
+            dependencies: Vec::new(),
+            dev_dependencies: Vec::new(),
+        };
+        let fp_one = super::rust_inspect_workspace_fingerprint(
+            "p",
+            None,
+            &resolved,
+            &requirements.stdlib_features,
+            Some("lock-a"),
+        );
+        let fp_two = super::rust_inspect_workspace_fingerprint(
+            "p",
+            None,
+            &resolved,
+            &requirements.stdlib_features,
+            Some("lock-b"),
+        );
+        assert_ne!(fp_one, fp_two);
+    }
+
+    #[cfg(feature = "rust_inspect")]
+    #[test]
     fn ensure_rust_inspect_workspace_uses_rust_safe_dependency_keys() -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::atomic::Ordering;
+
+        let _serial = super::RUST_INSPECT_WORKSPACE_TEST_LOCK
+            .lock()
+            .map_err(|e| format!("rust-inspect workspace test lock poisoned: {e}"))?;
+        super::TEST_RUST_INSPECT_WORKSPACE_GENERATIONS.store(0, Ordering::SeqCst);
+
         let tmp = tempfile::tempdir()?;
         let requirements = ProjectRequirements::default();
         let resolved = ResolvedDependencies {
@@ -1525,6 +1788,12 @@ pub def main() -> int:
             &requirements,
             Some("[[package]]\nname = \"metadata_probe\"\n".to_string()),
         )?;
+        assert_eq!(
+            super::TEST_RUST_INSPECT_WORKSPACE_GENERATIONS.load(Ordering::SeqCst),
+            1,
+            "expected one rust-inspect workspace generation"
+        );
+
         let cargo_toml = fs::read_to_string(out_dir.join("Cargo.toml"))?;
         let cargo_lock = fs::read_to_string(out_dir.join("Cargo.lock"))?;
         let main_rs = fs::read_to_string(out_dir.join("src").join("main.rs"))?;
@@ -1545,6 +1814,63 @@ pub def main() -> int:
             main_rs.contains("use datafusion_substrait as _;"),
             "expected rust-inspect workspace stub to reference the aliased dependency crate, got:\n{main_rs}"
         );
+        Ok(())
+    }
+
+    #[cfg(feature = "rust_inspect")]
+    #[test]
+    fn ensure_rust_inspect_workspace_skips_regeneration_when_unchanged() -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::atomic::Ordering;
+
+        let _serial = super::RUST_INSPECT_WORKSPACE_TEST_LOCK
+            .lock()
+            .map_err(|e| format!("rust-inspect workspace test lock poisoned: {e}"))?;
+        super::TEST_RUST_INSPECT_WORKSPACE_GENERATIONS.store(0, Ordering::SeqCst);
+
+        let tmp = tempfile::tempdir()?;
+        let requirements = ProjectRequirements::default();
+        let resolved = ResolvedDependencies {
+            dependencies: vec![DependencySpec {
+                crate_name: "serde".to_string(),
+                version: Some("1".to_string()),
+                features: Vec::new(),
+                default_features: true,
+                source: DependencySource::Registry,
+                optional: false,
+                package: None,
+            }],
+            dev_dependencies: Vec::new(),
+        };
+        let lock = Some("[[package]]\nname = \"skip_probe\"\n".to_string());
+
+        ensure_rust_inspect_workspace(
+            tmp.path(),
+            "skip_probe",
+            Some("2021".to_string()),
+            &resolved,
+            &requirements,
+            lock.clone(),
+        )?;
+        assert_eq!(
+            super::TEST_RUST_INSPECT_WORKSPACE_GENERATIONS.load(Ordering::SeqCst),
+            1,
+            "first call should generate the workspace"
+        );
+
+        ensure_rust_inspect_workspace(
+            tmp.path(),
+            "skip_probe",
+            Some("2021".to_string()),
+            &resolved,
+            &requirements,
+            lock,
+        )?;
+        assert_eq!(
+            super::TEST_RUST_INSPECT_WORKSPACE_GENERATIONS.load(Ordering::SeqCst),
+            1,
+            "second call with identical inputs should skip regeneration"
+        );
+
         Ok(())
     }
 }
