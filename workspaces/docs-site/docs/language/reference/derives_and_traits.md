@@ -173,8 +173,7 @@ Covered below in [Traits (authoring)](#requires-adopter-contract).
 
 ## Generic instance methods
 
-Instance methods on `class`, `model`, `trait`, and `newtype` declarations may declare their own type parameters using
-the same syntax as top-level generic functions:
+Instance methods on `class`, `model`, `trait`, and `newtype` may declare method-level type parameters using the same syntax as top-level generic functions:
 
 ```incan
 class Box:
@@ -182,7 +181,14 @@ class Box:
         return value
 ```
 
-This is method-level polymorphism. The type parameters belong to the method, not to the enclosing type.
+This is method-level polymorphism: method type parameters belong to the method, not to the enclosing type.
+
+This does **not** replace normal method signatures. Non-generic methods still use the standard form:
+
+```incan
+def describe(self, verbose: bool) -> str:
+    ...
+```
 
 Rules to keep in mind:
 
@@ -213,7 +219,59 @@ type Wrapper[U] = newtype U:
         return value
 ```
 
-Method generic syntax is intentionally aligned with function generic syntax. If you already know how to read `def f[T](...)`, you already know how to read `def method[T](...)`.
+Method generic syntax is additive and aligned with function generics: `def method[T](...)` extends, but does not replace, `def method(...)`.
+
+### Call-site type arguments
+
+Generic calls normally infer type parameters from value arguments. You may also provide explicit type arguments at the call site.
+
+Why this feature exists (design rationale):
+
+- [Why call-site type arguments exist](../explanation/call_site_type_arguments.md)
+
+Call-site type arguments go in square brackets immediately after the function or method name and before value arguments.
+
+**Syntax**:
+
+- Function: `callee[type_args](value_args...)`
+- Method: `receiver.method[type_args](value_args...)`
+
+`type_args` is comma-separated. Each entry is either a type expression or `_`. If brackets are present, arity must match the callee's type parameter count, including `_` slots.
+
+**Single type parameter**:
+
+You may call with no brackets (fully inferred) or one explicit type argument:
+
+```incan
+rows_inferred = session.read_csv(str("orders.csv"))         # inferred when context/value args are enough
+rows_typed = session.read_csv[Order](str("orders.csv"))     # explicit row type at the API boundary
+```
+
+**Multiple type parameters**:
+
+For multi-parameter generics, either infer all slots or provide one bracket entry per slot:
+
+```incan
+parsed = decode_rows(str("orders.csv"))                                 # T and E inferred
+parsed_typed = decode_rows[Order, CsvDecodeError](str("orders.csv"))    # both explicit
+parsed_partial = decode_rows[Order, _](str("orders.csv"))               # T explicit, E inferred via `_`
+```
+
+**The `_` placeholder**:
+
+`_` means "infer this slot". It still counts toward arity: `decode_rows[Order](...)` is invalid for a two-parameter generic, while `decode_rows[Order, _](...)` is valid.
+
+**Type checking order**:
+
+Explicit slots are applied first. `_` slots are inferred from value arguments and normal compatibility checks. If a slot remains unresolved, the compiler reports a call-site type error.
+
+**What is not supported**:
+
+Explicit brackets are supported only for direct calls resolved as Incan functions/methods. Using brackets on other call shapes is an error (not ignored), for example:
+
+- Built-in calls like `len[int](...)`
+- Calls to functions imported from Rust (`from rust::...`)
+- Calling a generic function **through a variable** (e.g. `read = session.read_csv; read[Order](...)`), where the callee is not a direct name or method
 
 ---
 

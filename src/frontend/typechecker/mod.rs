@@ -139,6 +139,18 @@ pub struct TypeCheckInfo {
     pub regular_method_arg_shape_preserving_calls: HashSet<(usize, usize, String)>,
     /// Module-visible static bindings keyed by local name for lowering/runtime emission.
     pub static_bindings: HashMap<String, StaticBindingInfo>,
+    /// RFC 054: For call expressions that used explicit bracketed type arguments, maps the **full call expression
+    /// span** `(start, end)` to the final monomorphized type arguments in callee type-parameter order.
+    ///
+    /// Populated only after a successful generic function or method check when `[...]` was present; lowering prefers
+    /// this over re-lowering AST type nodes so `_` placeholders never reach codegen as `IrType::Unknown`.
+    ///
+    /// ## Span stability
+    ///
+    /// Keys use the same `(start, end)` byte range the typechecker records for the call/`MethodCall` expression and
+    /// that [`AstLowering::lower_expr`](crate::backend::ir::lower::AstLowering::lower_expr) receives as `expr_span`
+    /// for those nodes, so lookup stays consistent across phases without holding AST node identities.
+    pub call_site_monomorph_type_args: HashMap<(usize, usize), Vec<ResolvedType>>,
 }
 
 /// How an identifier expression resolved in the symbol table.
@@ -1222,7 +1234,7 @@ impl TypeChecker {
                 self.collect_static_dependencies_from_expr(&inner.node, deps, visiting_functions);
             }
             Expr::Yield(None) => {}
-            Expr::Call(func, args) => {
+            Expr::Call(func, _type_args, args) => {
                 self.collect_static_dependencies_from_expr(&func.node, deps, visiting_functions);
                 self.collect_static_dependencies_from_call_args(args, deps, visiting_functions);
                 if let Expr::Ident(function_name) = &func.node
@@ -1254,7 +1266,7 @@ impl TypeChecker {
             Expr::Field(object, _) => {
                 self.collect_static_dependencies_from_expr(&object.node, deps, visiting_functions);
             }
-            Expr::MethodCall(object, _, args) => {
+            Expr::MethodCall(object, _, _type_args, args) => {
                 self.collect_static_dependencies_from_expr(&object.node, deps, visiting_functions);
                 self.collect_static_dependencies_from_call_args(args, deps, visiting_functions);
             }
@@ -1371,7 +1383,7 @@ impl TypeChecker {
             Expr::Unary(_, inner) | Expr::Try(inner) | Expr::Paren(inner) | Expr::Yield(Some(inner)) => {
                 self.collect_static_initializer_static_writes_from_expr(inner, current_static, visiting_functions);
             }
-            Expr::Call(func, args) => {
+            Expr::Call(func, _type_args, args) => {
                 self.collect_static_initializer_static_writes_from_expr(func, current_static, visiting_functions);
                 self.collect_static_initializer_static_writes_from_call_args(args, current_static, visiting_functions);
                 if let Expr::Ident(function_name) = &func.node
@@ -1388,7 +1400,7 @@ impl TypeChecker {
                     visiting_functions.remove(function_name);
                 }
             }
-            Expr::MethodCall(object, _, args) => {
+            Expr::MethodCall(object, _, _type_args, args) => {
                 self.collect_static_initializer_static_writes_from_expr(object, current_static, visiting_functions);
                 self.collect_static_initializer_static_writes_from_call_args(args, current_static, visiting_functions);
             }
@@ -1888,7 +1900,7 @@ impl TypeChecker {
                     self.validate_stdlib_type_usage_inner(&elem.node, elem.span);
                 }
             }
-            Type::Unit | Type::SelfType => {}
+            Type::Unit | Type::SelfType | Type::Infer => {}
         }
     }
 
@@ -2103,6 +2115,7 @@ impl TypeChecker {
         match (actual, expected) {
             (ResolvedType::Unknown, _) | (_, ResolvedType::Unknown) => true,
             (ResolvedType::TypeVar(_), _) | (_, ResolvedType::TypeVar(_)) => true,
+            (ResolvedType::CallSiteInfer, _) | (_, ResolvedType::CallSiteInfer) => true,
 
             // ---- Context: RFC 042 — `expected` is a trait reference (`Named` or nullary trait on RHS) ----
             (ResolvedType::Named(type_name), ResolvedType::Named(trait_name))

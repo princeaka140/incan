@@ -1,6 +1,6 @@
 # RFC 054: Explicit call-site generic arguments for function and method calls
 
-- **Status:** Draft
+- **Status:** Implemented
 - **Created:** 2026-04-11
 - **Author(s):** Danny Meijer (@dannymeijer)
 - **Related:**
@@ -9,7 +9,7 @@
 - **Issue:** #266
 - **RFC PR:** —
 - **Written against:** v0.1
-- **Shipped in:** —
+- **Shipped in:** v0.2
 
 ## Summary
 
@@ -307,28 +307,7 @@ Error messages should include:
 
 ## Implementation architecture
 
-### Parser
-
-- Extend call expression grammar to accept optional generic arguments
-- Parse type arguments as a comma-separated list of `type | _`
-- Store generic arguments in the AST node for call expressions
-
-### Typechecker
-
-- Validate arity of explicit type arguments against function/method type parameters
-- Apply explicit arguments before inference
-- Report clear errors for arity mismatches
-
-### Lowering
-
-- Preserve explicit type arguments through IR
-- Ensure type arguments are available at emission time
-
-### Emission
-
-- For Incan output: preserve call-site syntax
-- For Rust output: use turbofish syntax where applicable
-- Omit turbofish when call-site type arguments are omitted
+Pipeline impact matches **Layers affected** below: optional bracketed type arguments on calls; arity and inference ordering as in **Reference-level explanation**; implementations must keep explicit type arguments available through lowering so emission can render Incan call syntax and Rust turbofish (including cases where Rust needs help beyond Incan source).
 
 ## Layers affected
 
@@ -338,6 +317,61 @@ Error messages should include:
 - **Emission**: turbofish syntax for Rust; call-site syntax for Incan
 - **Formatter**: support for new syntax with appropriate spacing
 - **LSP / Tooling**: completion for generic arguments; hover showing type parameter info
+
+## Implementation Plan
+
+### Phase 1: Parser + AST
+
+- Parse optional bracketed type arguments on direct calls and method calls (`callee[T](...)`, `recv.m[T](...)`), including `type | _` entries.
+
+### Phase 2: Typechecker
+
+- Apply explicit type arguments before inference; keep `_` slots open; arity and nongeneric-callee diagnostics per **Design Decisions**.
+
+### Phase 3: Lowering + Emission
+
+- Retain explicit type arguments through IR; emit Incan call syntax and Rust turbofish (inherent / trait / UFCS shapes as needed).
+
+### Phase 4: Formatter, LSP, Tests, Docs
+
+- Formatter round-trip for call-site brackets; LSP completion/hover where applicable; parser, typechecker, and codegen tests; user-facing docs as needed.
+
+## Implementation log
+
+### Spec / design
+
+- [x] Design locked in **Design Decisions** (static route vs RFC 028 overload boundary).
+
+### Parser / AST
+
+- [x] Call and method-call grammar with `call_site_type_args`.
+- [x] Parser tests for explicit type arguments on calls and method calls (including `_` placeholders).
+
+### Typechecker
+
+- [x] Explicit function and method type arguments specialize generic parameters; arity enforcement.
+- [x] `_` placeholders in bracket lists participate in arity; partial explicit + inference; diagnostics when a slot stays unresolved; nonempty brackets rejected on unsupported call forms (builtins, Rust imports, indirect calls, etc.).
+
+### Lowering / IR + Emission
+
+- [x] Explicit type arguments preserved for codegen; Rust turbofish coverage in tests (including mixed explicit + `_` via typechecker monomorph snapshot).
+
+### Formatter
+
+- [x] Format `Call` / `MethodCall` with nonempty `type_args` brackets.
+
+### LSP / Tooling
+
+- [x] Completion / hover for call-site generic arguments (`src/lsp/call_site_type_args.rs`, wired from `src/lsp/backend.rs`; `[` completion trigger).
+
+### Tests
+
+- [x] Typechecker tests: `explicit_call_type_args_*`, `explicit_method_type_args_*`, `_` / unsupported-call coverage.
+- [x] Codegen tests: explicit function and method call type args; mixed explicit + `_` turbofish.
+
+### Docs
+
+- [x] RFC status and implementation plan updated on the implementation branch.
 
 ## Design Decisions
 

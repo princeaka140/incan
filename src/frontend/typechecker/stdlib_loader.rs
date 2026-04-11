@@ -714,6 +714,7 @@ fn ast_type_to_resolved(ty: &ast::Type, type_params: &[String]) -> ResolvedType 
                 .collect();
             ResolvedType::Tuple(elem_types)
         }
+        ast::Type::Infer => ResolvedType::CallSiteInfer,
     }
 }
 

@@ -14,6 +14,7 @@
 
 use crate::frontend::ast::*;
 use crate::frontend::diagnostics::errors;
+use crate::frontend::resolved_type_subst::{substitute_resolved_type, type_param_subst_map_call_site};
 use crate::frontend::symbols::*;
 use crate::frontend::typechecker::helpers::{collection_type_id, dict_ty, list_ty, option_ty, result_ty, set_ty};
 use incan_core::interop::{CoercionPolicy, RustFunctionSig, admitted_builtin_coercion, is_rust_capability_bound};
@@ -579,10 +580,34 @@ impl TypeChecker {
         &mut self,
         func_name: &str,
         info: &FunctionInfo,
+        explicit_type_args: &[Spanned<Type>],
         args: &[CallArg],
         call_span: Span,
     ) -> ResolvedType {
-        let arg_types = self.check_call_arg_types_for_params(args, &info.params);
+        let mut seeded_type_bindings: std::collections::HashMap<String, ResolvedType> =
+            std::collections::HashMap::new();
+        if !explicit_type_args.is_empty() {
+            if explicit_type_args.len() != info.type_params.len() {
+                self.errors.push(errors::explicit_type_arg_arity(
+                    func_name,
+                    info.type_params.len(),
+                    explicit_type_args.len(),
+                    call_span,
+                ));
+            } else {
+                let resolved_explicit: Vec<ResolvedType> = explicit_type_args
+                    .iter()
+                    .map(|ty| self.resolve_type_checked(ty))
+                    .collect();
+                seeded_type_bindings = type_param_subst_map_call_site(&info.type_params, &resolved_explicit);
+            }
+        }
+        let params_with_explicit: Vec<(String, ResolvedType)> = info
+            .params
+            .iter()
+            .map(|(name, ty)| (name.clone(), substitute_resolved_type(ty, &seeded_type_bindings)))
+            .collect();
+        let arg_types = self.check_call_arg_types_for_params(args, &params_with_explicit);
         let mut positional: Vec<(ResolvedType, Span)> = Vec::new();
         let mut named: std::collections::HashMap<&str, (ResolvedType, Span)> = std::collections::HashMap::new();
 
@@ -597,8 +622,8 @@ impl TypeChecker {
         }
 
         let mut pos_idx = 0usize;
-        let mut type_bindings: std::collections::HashMap<String, ResolvedType> = std::collections::HashMap::new();
-        for (param_name, param_ty) in &info.params {
+        let mut type_bindings = seeded_type_bindings;
+        for (param_name, param_ty) in &params_with_explicit {
             let arg = if let Some(v) = named.get(param_name.as_str()) {
                 Some(v)
             } else if pos_idx < positional.len() {
@@ -622,7 +647,168 @@ impl TypeChecker {
         }
         self.emit_explicit_bound_errors(func_name, &info.type_param_bounds, &type_bindings, call_span);
 
-        info.return_type.clone()
+        let explicit_arity_ok = explicit_type_args.is_empty() || explicit_type_args.len() == info.type_params.len();
+        if !explicit_type_args.is_empty() && explicit_arity_ok {
+            self.assert_call_site_type_params_inferred(func_name, &info.type_params, &type_bindings, call_span);
+            self.record_call_site_monomorph_if_complete(call_span, &info.type_params, &type_bindings);
+        }
+
+        substitute_resolved_type(&info.return_type, &type_bindings)
+    }
+
+    fn assert_call_site_type_params_inferred(
+        &mut self,
+        callee: &str,
+        type_params: &[String],
+        bindings: &std::collections::HashMap<String, ResolvedType>,
+        span: Span,
+    ) {
+        for p in type_params {
+            let ok = match bindings.get(p) {
+                Some(ty) => !matches!(ty, ResolvedType::Unknown | ResolvedType::CallSiteInfer),
+                None => false,
+            };
+            if !ok {
+                self.errors
+                    .push(errors::call_site_type_inference_unresolved(callee, p, span));
+            }
+        }
+    }
+
+    fn record_call_site_monomorph_if_complete(
+        &mut self,
+        call_span: Span,
+        type_params: &[String],
+        bindings: &std::collections::HashMap<String, ResolvedType>,
+    ) {
+        let mut out: Vec<ResolvedType> = Vec::new();
+        for p in type_params {
+            let Some(ty) = bindings.get(p) else {
+                return;
+            };
+            if matches!(ty, ResolvedType::Unknown | ResolvedType::CallSiteInfer) {
+                return;
+            }
+            out.push(ty.clone());
+        }
+        self.type_info
+            .call_site_monomorph_type_args
+            .insert((call_span.start, call_span.end), out);
+    }
+
+    /// Type-check a resolved [`MethodInfo`] for a call site that may include explicit bracketed type arguments (RFC
+    /// 054).
+    ///
+    /// Pipeline role: invoked from [`TypeChecker::resolve_named_method`] after a concrete method has been chosen
+    /// (inherent or trait).
+    ///
+    /// This runs the full generic call-site path for methods:
+    /// - Validates arity when `explicit_type_args` is nonempty.
+    /// - Builds a partial substitution map (skipping [`ResolvedType::CallSiteInfer`] for `_` slots), applies it to the
+    ///   method’s declared parameter and return types, then substitutes call-site `Self` via
+    ///   [`TypeChecker::method_types_substituting_call_site_self`].
+    /// - Validates value arguments against the specialized formals, then runs [`Self::infer_type_param_bindings`] so
+    ///   remaining type parameters are filled from argument types.
+    /// - Enforces explicit `with` bounds, requires every method type parameter to be concretely bound when brackets
+    ///   were present, and records [`TypeCheckInfo::call_site_monomorph_type_args`] for lowering.
+    ///
+    /// # Parameters
+    ///
+    /// - `method`: Method name (for diagnostics).
+    /// - `method_info`: Declared [`MethodInfo`] for that method (owned and temporarily mutated for substitution).
+    /// - `explicit_type_args`: AST types inside `[...]` before `(`; empty if the call omitted brackets.
+    /// - `args` / `arg_types`: Call arguments and their already-checked types (parallel to `args`).
+    /// - `call_site_span`: Span of the whole `MethodCall` expression (monomorph snapshot key).
+    /// - `receiver_ty`: Resolved type of the receiver expression.
+    ///
+    /// # Returns
+    ///
+    /// The method’s return type after substituting inferred bindings into `return_type` (post–`Self` substitution).
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::frontend::typechecker::check_expr) fn check_generic_method_call(
+        &mut self,
+        method: &str,
+        mut method_info: MethodInfo,
+        explicit_type_args: &[Spanned<Type>],
+        args: &[CallArg],
+        arg_types: &[ResolvedType],
+        call_site_span: Span,
+        receiver_ty: &ResolvedType,
+    ) -> ResolvedType {
+        let mut type_bindings: std::collections::HashMap<String, ResolvedType> = std::collections::HashMap::new();
+        let explicit_arity_ok =
+            explicit_type_args.is_empty() || explicit_type_args.len() == method_info.type_params.len();
+
+        // ---- RFC 054: explicit bracketed type arguments (partial map; `_` → CallSiteInfer omitted) ----
+        if !explicit_type_args.is_empty() {
+            if !explicit_arity_ok {
+                self.errors.push(errors::explicit_type_arg_arity(
+                    method,
+                    method_info.type_params.len(),
+                    explicit_type_args.len(),
+                    call_site_span,
+                ));
+            } else {
+                let resolved: Vec<ResolvedType> = explicit_type_args
+                    .iter()
+                    .map(|ty| self.resolve_type_checked(ty))
+                    .collect();
+                type_bindings = type_param_subst_map_call_site(&method_info.type_params, &resolved);
+                method_info.params = method_info
+                    .params
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), substitute_resolved_type(ty, &type_bindings)))
+                    .collect();
+                method_info.return_type = substitute_resolved_type(&method_info.return_type, &type_bindings);
+            }
+        }
+
+        // ---- Call-site `Self`, value-arg compatibility ----
+        let (params, return_type) = self.method_types_substituting_call_site_self(&method_info, receiver_ty);
+        self.validate_method_call_args(&params, args, arg_types);
+
+        // ---- Infer remaining method type parameters from formal/actual pairs ----
+        let mut positional: Vec<&ResolvedType> = Vec::new();
+        let mut named: std::collections::HashMap<&str, &ResolvedType> = std::collections::HashMap::new();
+        for (arg, ty) in args.iter().zip(arg_types.iter()) {
+            match arg {
+                CallArg::Positional(_) => positional.push(ty),
+                CallArg::Named(name, _) => {
+                    named.insert(name.as_str(), ty);
+                }
+            }
+        }
+
+        let mut pos_idx = 0usize;
+        for (param_name, param_ty) in &params {
+            let arg_ty = if let Some(t) = named.get(param_name.as_str()) {
+                Some(*t)
+            } else if pos_idx < positional.len() {
+                let t = positional[pos_idx];
+                pos_idx += 1;
+                Some(t)
+            } else {
+                None
+            };
+            if let Some(arg_ty) = arg_ty {
+                self.infer_type_param_bindings(param_ty, arg_ty, &mut type_bindings);
+            }
+        }
+
+        self.emit_explicit_bound_errors(method, &method_info.type_param_bounds, &type_bindings, call_site_span);
+
+        // ---- Require concrete bindings; snapshot monomorphs for lowering when brackets were used ----
+        if !explicit_type_args.is_empty() && explicit_arity_ok {
+            self.assert_call_site_type_params_inferred(
+                method,
+                &method_info.type_params,
+                &type_bindings,
+                call_site_span,
+            );
+            self.record_call_site_monomorph_if_complete(call_site_span, &method_info.type_params, &type_bindings);
+        }
+
+        substitute_resolved_type(&return_type, &type_bindings)
     }
 
     /// Infer concrete type bindings for generic type parameters from a parameter/argument type pair.
@@ -736,7 +922,10 @@ impl TypeChecker {
         }
         match ty {
             // Unknown / still-generic types are kept permissive to avoid cascading errors.
-            ResolvedType::Unknown | ResolvedType::TypeVar(_) | ResolvedType::RustPath(_) => true,
+            ResolvedType::Unknown
+            | ResolvedType::TypeVar(_)
+            | ResolvedType::RustPath(_)
+            | ResolvedType::CallSiteInfer => true,
             ResolvedType::Int
             | ResolvedType::Float
             | ResolvedType::Bool
@@ -1432,6 +1621,7 @@ impl TypeChecker {
     pub(in crate::frontend::typechecker::check_expr) fn check_call(
         &mut self,
         callee: &Spanned<Expr>,
+        type_args: &[Spanned<Type>],
         args: &[CallArg],
         span: Span,
     ) -> ResolvedType {
@@ -1445,6 +1635,10 @@ impl TypeChecker {
                 && let Some(TypeInfo::Enum(enum_info)) = self.lookup_type_info(enum_name)
                 && enum_info.variants.iter().any(|v| v == variant_name)
             {
+                if !type_args.is_empty() {
+                    self.errors
+                        .push(errors::explicit_call_site_type_args_not_supported(span));
+                }
                 self.check_call_args(args);
                 return ResolvedType::Named(enum_name.clone());
             }
@@ -1455,6 +1649,10 @@ impl TypeChecker {
             && let Expr::Ident(module) = &base.node
             && module == math::MATH_MODULE_NAME
         {
+            if !type_args.is_empty() {
+                self.errors
+                    .push(errors::explicit_call_site_type_args_not_supported(span));
+            }
             self.check_call_args(args);
             if math::fn_from_str(method.as_str()).is_some() {
                 return ResolvedType::Float;
@@ -1475,15 +1673,26 @@ impl TypeChecker {
             }
 
             if let Some(result) = self.check_builtin_call(name, args, span) {
+                if !type_args.is_empty() {
+                    self.errors
+                        .push(errors::explicit_call_site_type_args_not_supported(span));
+                    return ResolvedType::Unknown;
+                }
                 return result;
             }
 
             if let Some(sym) = self.lookup_symbol(name).cloned() {
                 match sym.kind {
                     SymbolKind::Function(func_info) => {
-                        return self.validate_function_call(name, &func_info, args, span);
+                        return self.validate_function_call(name, &func_info, type_args, args, span);
                     }
                     SymbolKind::RustItem(info) => {
+                        if !type_args.is_empty() {
+                            self.errors
+                                .push(errors::explicit_call_site_type_args_not_supported(span));
+                            self.check_call_args(args);
+                            return ResolvedType::Unknown;
+                        }
                         if let Some(meta) = &info.metadata
                             && let incan_core::interop::RustItemKind::Function(sig) = &meta.kind
                         {
@@ -1557,6 +1766,10 @@ impl TypeChecker {
             }
         }
 
+        if !type_args.is_empty() {
+            self.errors
+                .push(errors::explicit_call_site_type_args_not_supported(span));
+        }
         let callee_ty = self.check_expr(callee);
         self.check_call_args(args);
 

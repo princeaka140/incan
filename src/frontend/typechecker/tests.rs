@@ -832,7 +832,7 @@ def f() -> None:
     let tokens = lexer::lex(source).map_err(|errs| std::io::Error::other(format!("lex failed: {errs:?}")))?;
     let ast = parser::parse(&tokens).map_err(|errs| std::io::Error::other(format!("parse failed: {errs:?}")))?;
     let mut checker = TypeChecker::new();
-    checker.set_rust_inspect_manifest_dir(PathBuf::from("/__incan_nonexistent_metadata_root__"));
+    // Leave rust-inspect disabled for this checker: no manifest dir means cache-only permissive fallback.
     let result = checker.check_program(&ast);
     assert!(
         result.is_ok(),
@@ -5415,4 +5415,142 @@ def main() -> None:
   let _ = backend.enable_optimizer
 "#;
     assert_check_ok(source);
+}
+
+#[test]
+fn explicit_call_type_args_specialize_generic_function_params() {
+    assert_check_ok(
+        r#"
+def id[T](x: T) -> T:
+  return x
+
+def run() -> int:
+  return id[int](1)
+"#,
+    );
+}
+
+#[test]
+fn explicit_call_type_args_enforce_function_type_arg_arity() {
+    let source = r#"
+def id[T](x: T) -> T:
+  return x
+
+def run() -> int:
+  return id[int, str](1)
+"#;
+    let errs = check_str(source).expect_err("expected explicit type arg arity error");
+    assert!(
+        errs.iter()
+            .any(|e| e.message.contains("expects 1 explicit type argument(s), got 2")),
+        "expected explicit type argument arity diagnostic, got {errs:?}"
+    );
+}
+
+#[test]
+fn explicit_method_type_args_specialize_generic_method_params() {
+    assert_check_ok(
+        r#"
+class Box:
+  def get[T](self, value: T) -> T:
+    return value
+
+def run() -> int:
+  let b = Box()
+  return b.get[int](1)
+"#,
+    );
+}
+
+#[test]
+fn explicit_method_type_args_enforce_generic_contract() {
+    let source = r#"
+class Box:
+  def get[T](self, value: T) -> T:
+    return value
+
+def run() -> int:
+  let b = Box()
+  return b.get[int](str("x"))
+"#;
+    let errs = check_str(source).expect_err("expected explicit method type arg mismatch");
+    assert!(
+        errs.iter().any(|e| e.message.contains("expected 'int', found 'str'")),
+        "expected type mismatch after explicit method type specialization, got {errs:?}"
+    );
+}
+
+#[test]
+fn explicit_call_type_args_infer_placeholder_filled_from_value_args() {
+    assert_check_ok(
+        r#"
+def pair_map[T, U](x: T, y: U) -> int:
+  return 0
+
+def run() -> int:
+  return pair_map[int, _](1, 2)
+"#,
+    );
+}
+
+#[test]
+fn explicit_call_type_args_all_infer_placeholders_filled_from_value_args() {
+    assert_check_ok(
+        r#"
+def id[T](x: T) -> T:
+  return x
+
+def run() -> int:
+  return id[_](1)
+"#,
+    );
+}
+
+#[test]
+fn explicit_call_type_args_infer_placeholder_reports_when_unresolved() {
+    let source = r#"
+def mystery[T]() -> int:
+  return 0
+
+def run() -> int:
+  return mystery[_]()
+"#;
+    let errs = check_str(source).expect_err("expected inference unresolved when no value args bind T");
+    assert!(
+        errs.iter()
+            .any(|e| e.message.contains("Could not infer type parameter")),
+        "expected call-site `_` unresolved diagnostic, got {errs:?}"
+    );
+}
+
+#[test]
+fn explicit_call_type_args_rejected_on_builtin_callee() {
+    let source = r#"
+def run() -> int:
+  return len[int]([1, 2])
+"#;
+    let errs = check_str(source).expect_err("expected unsupported explicit type args on builtin");
+    assert!(
+        errs.iter()
+            .any(|e| e.message.contains("not supported for this call form")),
+        "expected unsupported call-site type args diagnostic, got {errs:?}"
+    );
+}
+
+#[test]
+fn explicit_call_type_args_rejected_on_indirect_function_value_call() {
+    let source = r#"
+def id[T](x: T) -> T:
+  return x
+
+def run() -> int:
+  let f = id
+  return f[int](1)
+"#;
+    let errs = check_str(source).expect_err("expected unsupported explicit type args on indirect call");
+    assert!(
+        errs.iter()
+            .any(|e| e.message.contains("not supported for this call form")),
+        "expected unsupported call-site type args diagnostic, got {errs:?}"
+    );
 }

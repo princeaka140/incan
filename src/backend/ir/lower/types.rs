@@ -213,6 +213,7 @@ impl AstLowering {
             ResolvedType::TypeVar(name) => IrType::Generic(name.clone()),
             ResolvedType::SelfType => IrType::SelfType,
             ResolvedType::RustPath(path) => IrType::Struct(path.clone()),
+            ResolvedType::CallSiteInfer => IrType::Unknown,
             ResolvedType::Unknown => IrType::Unknown,
         }
     }
@@ -309,6 +310,7 @@ impl AstLowering {
                     .collect(),
             ),
             ast::Type::SelfType => IrType::SelfType,
+            ast::Type::Infer => IrType::Unknown,
         }
     }
 

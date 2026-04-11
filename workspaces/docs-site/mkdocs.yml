@@ -175,6 +175,7 @@ nav:
           - Consts: language/explanation/consts.md
           - Module static storage: language/explanation/static_storage.md
           - Derives & traits (explained): language/explanation/derives_and_traits.md
+          - Why call-site type args exist: language/explanation/call_site_type_arguments.md
           - How derives work: language/explanation/how_derives_work.md
           - Enums: language/explanation/enums.md
           - Error handling: language/explanation/error_handling.md

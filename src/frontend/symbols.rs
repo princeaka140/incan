@@ -564,6 +564,8 @@ pub enum ResolvedType {
     /// Lowers to backend `IrType::Unknown` until dedicated IR typing exists; provenance also lives on
     /// [`SymbolKind::RustItem`].
     RustPath(String),
+    /// Call-site `_` placeholder in bracketed type arguments (RFC 054); resolved away before lowering.
+    CallSiteInfer,
     /// Unknown/error type
     Unknown,
 }
@@ -672,6 +674,7 @@ impl std::fmt::Display for ResolvedType {
             ResolvedType::Ref(inner) => write!(f, "&{}", inner),
             ResolvedType::RefMut(inner) => write!(f, "&mut {}", inner),
             ResolvedType::RustPath(path) => write!(f, "rust::{}", path),
+            ResolvedType::CallSiteInfer => write!(f, "_"),
             ResolvedType::Unknown => write!(f, "?"),
         }
     }
@@ -800,6 +803,7 @@ pub fn resolve_type(ty: &Type, symbols: &SymbolTable) -> ResolvedType {
             ResolvedType::Tuple(resolved_elems)
         }
         Type::SelfType => ResolvedType::SelfType,
+        Type::Infer => ResolvedType::CallSiteInfer,
     }
 }
 

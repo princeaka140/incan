@@ -61,7 +61,7 @@ impl AstLowering {
             ast::Pattern::Literal(lit) => {
                 // Lower the literal to an IR expression
                 // If lowering fails (unlikely for literals), fall back to wildcard
-                self.lower_expr(&ast::Expr::Literal(lit.clone()))
+                self.lower_expr(&ast::Expr::Literal(lit.clone()), ast::Span::default())
                     .map(Pattern::Literal)
                     .unwrap_or(Pattern::Wildcard)
             }

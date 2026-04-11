@@ -750,6 +750,7 @@ impl TypeChecker {
             | ResolvedType::TypeVar(_)
             | ResolvedType::SelfType
             | ResolvedType::RustPath(_)
+            | ResolvedType::CallSiteInfer
             | ResolvedType::Unknown => {}
         }
     }
