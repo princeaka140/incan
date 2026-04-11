@@ -45,8 +45,14 @@ fn strip_ansi_escapes(text: &str) -> String {
     out
 }
 
-/// Locate the `incan` debug binary, respecting `CARGO_TARGET_DIR` when set.
+/// Locate the `incan` binary for subprocess tests.
+///
+/// Uses `CARGO_BIN_EXE_incan` when present (integration tests under `cargo test`) so we always run the artifact from
+/// the current build, including when `CARGO_TARGET_DIR` is not the default `target/`.
 fn incan_debug_binary() -> std::path::PathBuf {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_incan") {
+        return path.into();
+    }
     if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
         let p = std::path::PathBuf::from(&target_dir).join("debug/incan");
         if p.exists() {
@@ -1396,8 +1402,8 @@ def main() -> None:
 /// End-to-end integration tests for `incan test`.
 ///
 /// These tests exercise the full pipeline: write an Incan test file → run `incan test` via the CLI → verify
-/// stdout/stderr/exit code.  They catch integration bugs like missing `fn main()` or broken parametrize expansion that
-/// unit tests cannot detect.
+/// stdout/stderr/exit code. They catch integration bugs like broken per-file `cargo test` harness wiring or parametrize
+/// expansion that unit tests cannot detect.
 mod test_runner_e2e {
     use super::incan_debug_binary;
     use std::process::Command;
@@ -1470,6 +1476,43 @@ def test_addition() -> None:
         assert!(
             stdout.contains("PASSED") || stdout.contains("passed"),
             "expected PASSED in output.\nstdout:\n{}",
+            stdout,
+        );
+    }
+
+    #[test]
+    fn e2e_two_tests_in_one_file_share_single_cargo_batch() {
+        let dir = write_test_project(
+            "test_pair.incn",
+            r#"
+from std.testing import assert_eq
+
+def test_one() -> None:
+    assert_eq(1, 1)
+
+def test_two() -> None:
+    assert_eq(2, 2)
+"#,
+        );
+
+        let output = run_incan_test(&dir);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            output.status.success(),
+            "expected both tests to succeed.\nstdout:\n{}\nstderr:\n{}",
+            stdout,
+            stderr,
+        );
+        assert!(
+            stdout.contains("test_pair.incn::test_one") && stdout.contains("test_pair.incn::test_two"),
+            "expected each test name in reporter output.\nstdout:\n{}",
+            stdout,
+        );
+        assert!(
+            stdout.match_indices("PASSED").count() >= 2,
+            "expected two passing results (per-test PASSED lines).\nstdout:\n{}",
             stdout,
         );
     }
@@ -2145,12 +2188,10 @@ mod rfc031_pub_import_integration_tests {
     use super::*;
     use incan::library_manifest::{FunctionExport, LibraryManifest, ModelExport, ParamExport, TypeRef};
     use sha2::{Digest, Sha256};
+    use std::path::PathBuf;
 
     fn incan_bin_path() -> std::path::PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join("debug")
-            .join("incan")
+        super::incan_debug_binary()
     }
 
     fn write_project_files(
@@ -2192,6 +2233,18 @@ mod rfc031_pub_import_integration_tests {
             .args(["test", target.to_string_lossy().as_ref()])
             .env("CARGO_NET_OFFLINE", "true")
             .output()?)
+    }
+
+    fn test_runner_batch_manifest_path(file_path: &Path) -> PathBuf {
+        let canonical = std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
+        let mut hasher = Sha256::new();
+        hasher.update(canonical.to_string_lossy().as_bytes());
+        let digest = hex::encode(hasher.finalize());
+        let suffix = format!("batch_{}", &digest[..16]);
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/incan_tests")
+            .join(suffix)
+            .join("Cargo.toml")
     }
 
     fn run_build_lib(project_root: &Path) -> Result<std::process::Output, Box<dyn std::error::Error>> {
@@ -3369,9 +3422,16 @@ mod rfc031_pub_import_integration_tests {
 
         let build_toml = std::fs::read_to_string(build_out_dir.join("Cargo.toml"))?;
         let lock_toml = std::fs::read_to_string(project_root.join("target/incan_lock/Cargo.toml"))?;
-        let test_toml = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("target/incan_tests/test_provider_parity/Cargo.toml"),
-        )?;
+        let test_manifest_path = test_runner_batch_manifest_path(&project_root.join("tests/test_provider.incn"));
+        let test_toml = std::fs::read_to_string(&test_manifest_path).map_err(|err| {
+            std::io::Error::new(
+                err.kind(),
+                format!(
+                    "failed reading test runner Cargo.toml at {}: {err}",
+                    test_manifest_path.display()
+                ),
+            )
+        })?;
 
         for cargo_toml in [&build_toml, &lock_toml, &test_toml] {
             assert!(
