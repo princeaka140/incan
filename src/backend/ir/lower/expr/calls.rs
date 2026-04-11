@@ -12,6 +12,22 @@ use crate::frontend::ast;
 use crate::frontend::typechecker::RustArgCoercionKind;
 
 impl AstLowering {
+    /// Prefer monomorphized call-site type args from the typechecker (RFC 054); otherwise lower AST types.
+    pub(super) fn lower_call_site_type_args(
+        &self,
+        call_span: ast::Span,
+        type_args: &[ast::Spanned<ast::Type>],
+    ) -> Vec<IrType> {
+        if let Some(info) = self.type_info.as_ref()
+            && let Some(resolved) = info
+                .call_site_monomorph_type_args
+                .get(&(call_span.start, call_span.end))
+        {
+            return resolved.iter().map(|t| self.lower_resolved_type(t)).collect();
+        }
+        type_args.iter().map(|ty| self.lower_type(&ty.node)).collect()
+    }
+
     fn call_arg_expr(arg: &ast::CallArg) -> &ast::Spanned<ast::Expr> {
         match arg {
             ast::CallArg::Positional(e) | ast::CallArg::Named(_, e) => e,
@@ -158,6 +174,7 @@ impl AstLowering {
         f: &ast::Spanned<ast::Expr>,
         type_args: &[ast::Spanned<ast::Type>],
         args: &[ast::CallArg],
+        call_span: ast::Span,
     ) -> Result<(IrExprKind, IrType), LoweringError> {
         // Check if this is a struct/model/class constructor call
         if let ast::Expr::Ident(name) = &f.node {
@@ -187,7 +204,7 @@ impl AstLowering {
         // Regular function call (user-defined or unknown)
         let func = self.lower_expr_spanned(f)?;
         let mut args_ir = self.lower_call_args(args)?;
-        let lowered_type_args = type_args.iter().map(|ty| self.lower_type(&ty.node)).collect();
+        let lowered_type_args = self.lower_call_site_type_args(call_span, type_args);
         for (arg_ir, arg_ast) in args_ir.iter_mut().zip(args.iter()) {
             let arg_span = Self::call_arg_expr(arg_ast).span;
             arg_ir.expr = self.wrap_with_rust_arg_coercion(arg_ir.expr.clone(), arg_span)?;
@@ -421,7 +438,7 @@ mod tests {
         );
 
         let lowered = lowering
-            .lower_expr(&expr)
+            .lower_expr(&expr, Span::new(0, 100))
             .map_err(|err| format!("expected successful lowering, got {err:?}"))?;
 
         match lowered.kind {
@@ -457,7 +474,7 @@ mod tests {
         );
 
         let lowered = lowering
-            .lower_expr(&expr)
+            .lower_expr(&expr, Span::new(0, 100))
             .map_err(|err| format!("expected successful lowering, got {err:?}"))?;
 
         match lowered.kind {

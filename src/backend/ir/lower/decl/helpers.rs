@@ -102,6 +102,7 @@ impl AstLowering {
                 IrType::Tuple(items.iter().map(|item| Self::lower_bound_type(&item.node)).collect())
             }
             ast::Type::SelfType => IrType::SelfType,
+            ast::Type::Infer => IrType::Unknown,
         }
     }
 
@@ -393,6 +394,7 @@ impl AstLowering {
                 format!("({inner})")
             }
             ast::Type::SelfType => "Self".to_string(),
+            ast::Type::Infer => "_".to_string(),
         }
     }
 }

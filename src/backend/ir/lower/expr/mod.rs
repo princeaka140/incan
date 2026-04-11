@@ -62,7 +62,7 @@ impl AstLowering {
     /// This wraps [`Self::lower_expr`] and then overrides the inferred IR type using the typechecker span-to-type map.
     /// This is a stepping stone toward fully typed lowering.
     pub fn lower_expr_spanned(&mut self, expr: &Spanned<ast::Expr>) -> Result<TypedExpr, LoweringError> {
-        let mut lowered = self.lower_expr(&expr.node)?;
+        let mut lowered = self.lower_expr(&expr.node, expr.span)?;
         if let Some(info) = &self.type_info {
             if let Some(res_ty) = info.expr_type(expr.span) {
                 // Preserve reference wrappers introduced by lowering (e.g. mutable parameters are tracked as
@@ -114,7 +114,11 @@ impl AstLowering {
     /// - Collections (list, dict, set, tuple)
     /// - Comprehensions (list, dict)
     /// - Closures and async/await
-    pub fn lower_expr(&mut self, expr: &ast::Expr) -> Result<TypedExpr, LoweringError> {
+    ///
+    /// `expr_span` must be the span of the whole `expr` node (as in [`Self::lower_expr_spanned`]). It is required for
+    /// [`Expr::Call`](ast::Expr::Call) and [`Expr::MethodCall`](ast::Expr::MethodCall) so lowering can align with the
+    /// typechecker’s span-keyed metadata (RFC 054 monomorph snapshots).
+    pub fn lower_expr(&mut self, expr: &ast::Expr, expr_span: ast::Span) -> Result<TypedExpr, LoweringError> {
         let (kind, ty) = match expr {
             // ---- Identifiers ----
             ast::Expr::Ident(name) => {
@@ -247,14 +251,16 @@ impl AstLowering {
 
             // ---- Function / constructor calls (delegated to calls submodule) ----
             ast::Expr::Call(f, type_args, args) => {
-                return self.lower_call_expr(f, type_args, args).map(|(k, t)| TypedExpr::new(k, t));
+                return self
+                    .lower_call_expr(f, type_args, args, expr_span)
+                    .map(|(k, t)| TypedExpr::new(k, t));
             }
 
             // ---- Method calls ----
             ast::Expr::MethodCall(o, m, type_args, args) => {
                 let receiver = self.lower_expr_spanned(o)?;
                 let mut args_ir = self.lower_call_args(args)?;
-                let lowered_type_args = type_args.iter().map(|ty| self.lower_type(&ty.node)).collect();
+                let lowered_type_args = self.lower_call_site_type_args(expr_span, type_args);
                 for (arg_ir, arg_ast) in args_ir.iter_mut().zip(args.iter()) {
                     let arg_span = match arg_ast {
                         ast::CallArg::Positional(expr) | ast::CallArg::Named(_, expr) => expr.span,

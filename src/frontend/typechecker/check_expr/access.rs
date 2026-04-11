@@ -170,8 +170,14 @@ impl TypeChecker {
         }
     }
 
-    /// Validate method call arguments against a method signature.
-    fn validate_method_call_args(
+    /// Check value arguments at a method call site against already-resolved formal parameter types.
+    ///
+    /// `params` is the method’s `(name, type)` list after any call-site `Self` substitution (and, for RFC 054, after
+    /// substituting explicit bracketed type arguments into the signature). `arg_types` must be the types of `args`
+    /// in order as produced by the caller (typically by running the expression checker on each argument expression).
+    /// Emits a type-mismatch diagnostic when a provided argument is incompatible with the corresponding formal
+    /// parameter; missing arguments are not reported here (arity is handled elsewhere).
+    pub(in crate::frontend::typechecker::check_expr) fn validate_method_call_args(
         &mut self,
         params: &[(String, ResolvedType)],
         args: &[CallArg],
@@ -288,7 +294,7 @@ impl TypeChecker {
             ResolvedType::Ref(_) | ResolvedType::RefMut(_) | ResolvedType::Function(_, _) | ResolvedType::SelfType => {
                 true
             }
-            ResolvedType::TypeVar(_) => false,
+            ResolvedType::TypeVar(_) | ResolvedType::CallSiteInfer => false,
             // RFC 041: provenance is known, but Incan does not yet query Rust for `Copy`/`Clone`; do not assume.
             ResolvedType::RustPath(_) => false,
             ResolvedType::Unknown => true,
@@ -360,11 +366,17 @@ impl TypeChecker {
         }
     }
 
-    /// Build formal parameter types and return type for a call, replacing `Self` with `receiver_ty`.
+    /// Build formal parameter types and return type for a method call, replacing [`ResolvedType::SelfType`] with the
+    /// instantiated receiver.
     ///
-    /// [`MethodInfo`] from collection stores `Self` literally; both inherent and trait dispatch must substitute using
-    /// the **instantiated** receiver before argument checking and before reporting the callee's result type.
-    fn method_types_substituting_call_site_self(
+    /// [`MethodInfo`] in the symbol table stores `Self` literally. At a call site, `Self` means the concrete receiver
+    /// type (for example the `T` of `List[T]` when calling on a `List[int]` value). Both inherent and trait dispatch
+    /// use this before [`Self::validate_method_call_args`] and before RFC 054 explicit type-argument substitution and
+    /// inference (`check_generic_method_call` in the `calls` submodule).
+    ///
+    /// Returns `(params, return_type)` with `Self` resolved; method-level type parameters may still appear as
+    /// [`ResolvedType::TypeVar`] until inference completes.
+    pub(in crate::frontend::typechecker::check_expr) fn method_types_substituting_call_site_self(
         &self,
         method_info: &MethodInfo,
         receiver_ty: &ResolvedType,
@@ -400,58 +412,28 @@ impl TypeChecker {
         receiver_ty: &ResolvedType,
     ) -> Option<ResolvedType> {
         if let Some(method_info) = methods.get(method) {
-            let mut method_info = method_info.clone();
-            if !explicit_type_args.is_empty() {
-                if explicit_type_args.len() != method_info.type_params.len() {
-                    self.errors.push(errors::explicit_type_arg_arity(
-                        method,
-                        method_info.type_params.len(),
-                        explicit_type_args.len(),
-                        call_site_span,
-                    ));
-                } else {
-                    let resolved: Vec<ResolvedType> =
-                        explicit_type_args.iter().map(|ty| self.resolve_type_checked(ty)).collect();
-                    let subst = type_param_subst_map(&method_info.type_params, &resolved);
-                    method_info.params = method_info
-                        .params
-                        .iter()
-                        .map(|(name, ty)| (name.clone(), substitute_resolved_type(ty, &subst)))
-                        .collect();
-                    method_info.return_type = substitute_resolved_type(&method_info.return_type, &subst);
-                }
-            }
-            let (params, return_type) = self.method_types_substituting_call_site_self(&method_info, receiver_ty);
-            self.validate_method_call_args(&params, args, arg_types);
-            return Some(return_type);
+            return Some(self.check_generic_method_call(
+                method,
+                method_info.clone(),
+                explicit_type_args,
+                args,
+                arg_types,
+                call_site_span,
+                receiver_ty,
+            ));
         }
         if let Some(traits) = traits {
             for trait_name in traits {
                 if let Some(method_info) = self.trait_method_info_resolved(trait_name, method, call_site_span) {
-                    let mut method_info = method_info;
-                    if !explicit_type_args.is_empty() {
-                        if explicit_type_args.len() != method_info.type_params.len() {
-                            self.errors.push(errors::explicit_type_arg_arity(
-                                method,
-                                method_info.type_params.len(),
-                                explicit_type_args.len(),
-                                call_site_span,
-                            ));
-                        } else {
-                            let resolved: Vec<ResolvedType> =
-                                explicit_type_args.iter().map(|ty| self.resolve_type_checked(ty)).collect();
-                            let subst = type_param_subst_map(&method_info.type_params, &resolved);
-                            method_info.params = method_info
-                                .params
-                                .iter()
-                                .map(|(name, ty)| (name.clone(), substitute_resolved_type(ty, &subst)))
-                                .collect();
-                            method_info.return_type = substitute_resolved_type(&method_info.return_type, &subst);
-                        }
-                    }
-                    let (params, return_type) = self.method_types_substituting_call_site_self(&method_info, receiver_ty);
-                    self.validate_method_call_args(&params, args, arg_types);
-                    return Some(return_type);
+                    return Some(self.check_generic_method_call(
+                        method,
+                        method_info,
+                        explicit_type_args,
+                        args,
+                        arg_types,
+                        call_site_span,
+                        receiver_ty,
+                    ));
                 }
             }
         }

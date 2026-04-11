@@ -436,6 +436,7 @@ impl Formatter {
             }
             Type::SelfType => self.writer.write("Self"),
             Type::Unit => self.writer.write("None"),
+            Type::Infer => self.writer.write("_"),
         }
     }
 }

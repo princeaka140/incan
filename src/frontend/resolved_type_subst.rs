@@ -18,6 +18,25 @@ pub(crate) fn type_param_subst_map(params: &[String], args: &[ResolvedType]) -> 
         .collect()
 }
 
+/// Like [`type_param_subst_map`], but omits entries where the explicit argument is [`ResolvedType::CallSiteInfer`]
+/// (`_` at the call site, RFC 054) so those parameters stay as [`ResolvedType::TypeVar`] until inference fills them.
+pub(crate) fn type_param_subst_map_call_site(
+    params: &[String],
+    args: &[ResolvedType],
+) -> HashMap<String, ResolvedType> {
+    params
+        .iter()
+        .zip(args.iter())
+        .filter_map(|(p, a)| {
+            if matches!(a, ResolvedType::CallSiteInfer) {
+                None
+            } else {
+                Some((p.clone(), a.clone()))
+            }
+        })
+        .collect()
+}
+
 /// Apply `map` throughout `ty`, replacing [`ResolvedType::TypeVar`] leaves when a binding exists.
 pub(crate) fn substitute_resolved_type(ty: &ResolvedType, map: &HashMap<String, ResolvedType>) -> ResolvedType {
     match ty {
@@ -35,6 +54,7 @@ pub(crate) fn substitute_resolved_type(ty: &ResolvedType, map: &HashMap<String, 
         }
         ResolvedType::Ref(inner) => ResolvedType::Ref(Box::new(substitute_resolved_type(inner, map))),
         ResolvedType::RefMut(inner) => ResolvedType::RefMut(Box::new(substitute_resolved_type(inner, map))),
+        ResolvedType::CallSiteInfer => ty.clone(),
         _ => ty.clone(),
     }
 }

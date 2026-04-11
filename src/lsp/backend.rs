@@ -1,4 +1,7 @@
 //! LSP (Language Server Protocol) backend implementation for Incan
+//!
+//! Call-site explicit generics (`callee[T](...)`, `recv.m[U](...)`) get type-oriented completions and hover
+//! (see `call_site_type_args.rs`, RFC 054).
 
 #[cfg(feature = "rust_inspect")]
 use std::collections::BTreeSet;
@@ -30,6 +33,7 @@ use crate::frontend::module::resolve_import_path;
 use crate::frontend::{lexer, parser, typechecker, vocab_desugar_pass};
 #[cfg(feature = "rust_inspect")]
 use crate::lockfile::CargoFeatureSelection;
+use crate::lsp::call_site_type_args;
 use crate::lsp::diagnostics::{compile_error_to_diagnostic, position_to_offset, span_to_range};
 use crate::manifest::ProjectManifest;
 use incan_core::interop::{RustItemKind, RustModuleChildKind, RustTraitAssoc};
@@ -945,6 +949,7 @@ fn format_type(ty: &Type) -> String {
         }
         Type::Unit => "()".to_string(),
         Type::SelfType => "Self".to_string(),
+        Type::Infer => "_".to_string(),
     }
 }
 
@@ -1325,7 +1330,7 @@ impl LanguageServer for IncanLanguageServer {
                 document_symbol_provider: Some(OneOf::Left(true)),
                 // Completions (basic)
                 completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec![".".to_string(), ":".to_string()]),
+                    trigger_characters: Some(vec![".".to_string(), ":".to_string(), "[".to_string()]),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -1451,6 +1456,32 @@ impl LanguageServer for IncanLanguageServer {
                         value: markdown,
                     }),
                     range: Some(span_to_range(&doc.source, rust_symbol.span.start, rust_symbol.span.end)),
+                }));
+            }
+
+            // Call-site explicit type arguments: `f[T](...)`, `_.method[U](...)`
+            if let Some(ty_spanned) = call_site_type_args::call_site_innermost_type_at_offset(ast, offset) {
+                let display = format_type(&ty_spanned.node);
+                let markdown = match &ty_spanned.node {
+                    Type::Infer => "```incan\n_\n```\n\n*Call-site inference placeholder* — this type parameter is filled from the value arguments (RFC 054)."
+                        .to_string(),
+                    Type::Simple(name) => {
+                        let mut md = format!("```incan\n{display}\n```");
+                        if self.find_definition(ast, name).is_some() {
+                            md.push_str("\n\n*Type argument* — local declaration; use go-to-definition for its source.");
+                        } else {
+                            md.push_str("\n\n*Type argument* — builtin or unqualified type name.");
+                        }
+                        md
+                    }
+                    _ => format!("```incan\n{display}\n```\n\n*Type argument* at call site (RFC 054)."),
+                };
+                return Ok(Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: markdown,
+                    }),
+                    range: Some(span_to_range(&doc.source, ty_spanned.span.start, ty_spanned.span.end)),
                 }));
             }
         }
@@ -1600,6 +1631,14 @@ impl LanguageServer for IncanLanguageServer {
         // ---- Context: Rust-origin member completions (`Alias.<member>`) ----
         if let Some(rust_member_items) = rust_member_completions(&line_prefix, &doc.rust_origin_symbols) {
             return Ok(Some(CompletionResponse::Array(rust_member_items)));
+        }
+
+        // ---- Context: call-site type arguments (`callee[T](...)`, `recv.m[U](...)`, including `_`) ----
+        if let Some(off) = position_to_offset(&doc.source, position)
+            && call_site_type_args::offset_in_call_site_type_argument_list(&doc.source, off)
+        {
+            let items = call_site_type_args::call_site_type_argument_completion_items(doc.ast.as_ref());
+            return Ok(Some(CompletionResponse::Array(items)));
         }
 
         // ---- General completions (not in a specific context) ----

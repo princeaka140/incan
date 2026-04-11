@@ -1917,4 +1917,21 @@ def run() -> int:
             "expected explicit method type args to emit Rust turbofish, got:\n{code}"
         );
     }
+
+    #[test]
+    fn test_codegen_emits_full_turbofish_for_mixed_explicit_and_inferred_type_args() {
+        let source = r#"
+def pair_map[T, U](x: T, y: U) -> int:
+  return 0
+
+def run() -> int:
+  return pair_map[int, _](1, 2)
+"#;
+        let ast = parse_program(source);
+        let code = must_ok(IrCodegen::new().try_generate(&ast));
+        assert!(
+            code.contains("pair_map::<i64, i64>") || code.contains("pair_map :: < i64 , i64 >"),
+            "expected full turbofish for mixed explicit/`_` call-site generics, got:\n{code}"
+        );
+    }
 }

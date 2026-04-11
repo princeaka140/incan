@@ -67,6 +67,10 @@ class Box:
 
 The important distinction is that these are method-scoped type parameters, not hidden type parameters on the enclosing type. A generic `model Shelf[U]` may still define a method like `def swap[T](...)`, where `U` belongs to the type and `T` belongs only to that method.
 
+For the rationale behind explicit call-site generics (`f[T](...)` / `obj.m[T](...)`), see:
+
+- [Why call-site type arguments exist](call_site_type_arguments.md)
+
 ## Debug vs Display: two string representations
 
 Incan intentionally separates two kinds of “stringification”:

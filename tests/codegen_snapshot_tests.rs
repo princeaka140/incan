@@ -868,6 +868,13 @@ fn test_generic_methods_codegen() {
 }
 
 #[test]
+fn test_explicit_call_site_generics_codegen() {
+    let source = load_test_file("explicit_call_site_generics");
+    let rust_code = generate_rust(&source);
+    insta::assert_snapshot!("explicit_call_site_generics", rust_code);
+}
+
+#[test]
 fn test_models_codegen() {
     let source = load_test_file("models");
     let rust_code = generate_rust(&source);

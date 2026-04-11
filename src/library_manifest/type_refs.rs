@@ -57,6 +57,7 @@ pub(super) fn type_ref_from_resolved(ty: &ResolvedType) -> TypeRef {
             inner: Box::new(type_ref_from_resolved(inner)),
         },
         ResolvedType::RustPath(_) => TypeRef::Unknown,
+        ResolvedType::CallSiteInfer => TypeRef::Unknown,
         ResolvedType::Unknown => TypeRef::Unknown,
     }
 }

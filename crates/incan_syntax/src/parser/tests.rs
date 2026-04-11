@@ -1866,6 +1866,57 @@ def main() -> int:
     }
 
     #[test]
+    fn test_parse_function_call_with_infer_type_arg_placeholder() -> Result<(), Vec<CompileError>> {
+        let source = "def run() -> int:\n  return pair_map[int, _](1, 2)\n";
+        let program = parse_str(source)?;
+        let function = match &program.declarations[0].node {
+            Declaration::Function(f) => f,
+            _ => panic!("Expected function"),
+        };
+        let return_expr = match &function.body[0].node {
+            Statement::Return(Some(expr)) => expr,
+            _ => panic!("Expected return expression"),
+        };
+        match &return_expr.node {
+            Expr::Call(callee, type_args, args) => {
+                assert!(matches!(callee.node, Expr::Ident(ref name) if name == "pair_map"));
+                assert_eq!(type_args.len(), 2);
+                assert!(matches!(type_args[0].node, Type::Simple(ref name) if name == "int"));
+                assert!(matches!(type_args[1].node, Type::Infer));
+                assert_eq!(args.len(), 2);
+            }
+            other => panic!("Expected explicit-generic call with infer, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_method_call_with_infer_type_arg_placeholder() -> Result<(), Vec<CompileError>> {
+        let source = "def run(box: Boxed[int]) -> int:\n  return box.unwrap[int, _](0)\n";
+        let program = parse_str(source)?;
+        let function = match &program.declarations[0].node {
+            Declaration::Function(f) => f,
+            _ => panic!("Expected function"),
+        };
+        let return_expr = match &function.body[0].node {
+            Statement::Return(Some(expr)) => expr,
+            _ => panic!("Expected return expression"),
+        };
+        match &return_expr.node {
+            Expr::MethodCall(base, method, type_args, args) => {
+                assert!(matches!(base.node, Expr::Ident(ref name) if name == "box"));
+                assert_eq!(method, "unwrap");
+                assert_eq!(type_args.len(), 2);
+                assert!(matches!(type_args[0].node, Type::Simple(ref name) if name == "int"));
+                assert!(matches!(type_args[1].node, Type::Infer));
+                assert_eq!(args.len(), 1);
+            }
+            other => panic!("Expected explicit-generic method call with infer, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_parse_fstring_expr_span_list_comp_filter_call() -> Result<(), Vec<CompileError>> {
         let source = "def render(items: List[int]) -> str:\n  return f\"values: {[x for x in items if unknown_pred(x)]}\"\n";
         let program = parse_str(source)?;

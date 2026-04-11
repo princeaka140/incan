@@ -1,6 +1,6 @@
 # RFC 054: Explicit call-site generic arguments for function and method calls
 
-- **Status:** In Progress
+- **Status:** Implemented
 - **Created:** 2026-04-11
 - **Author(s):** Danny Meijer (@dannymeijer)
 - **Related:**
@@ -9,7 +9,7 @@
 - **Issue:** #266
 - **RFC PR:** —
 - **Written against:** v0.1
-- **Shipped in:** —
+- **Shipped in:** v0.2
 
 ## Summary
 
@@ -336,7 +336,7 @@ Pipeline impact matches **Layers affected** below: optional bracketed type argum
 
 - Formatter round-trip for call-site brackets; LSP completion/hover where applicable; parser, typechecker, and codegen tests; user-facing docs as needed.
 
-## Progress Checklist
+## Implementation log
 
 ### Spec / design
 
@@ -345,16 +345,16 @@ Pipeline impact matches **Layers affected** below: optional bracketed type argum
 ### Parser / AST
 
 - [x] Call and method-call grammar with `call_site_type_args`.
-- [x] Parser tests for explicit type arguments on calls and method calls.
+- [x] Parser tests for explicit type arguments on calls and method calls (including `_` placeholders).
 
 ### Typechecker
 
 - [x] Explicit function and method type arguments specialize generic parameters; arity enforcement.
-- [ ] Remaining edge cases aligned with **Future work** (e.g. chained calls, qualified callees) as needed.
+- [x] `_` placeholders in bracket lists participate in arity; partial explicit + inference; diagnostics when a slot stays unresolved; nonempty brackets rejected on unsupported call forms (builtins, Rust imports, indirect calls, etc.).
 
 ### Lowering / IR + Emission
 
-- [x] Explicit type arguments preserved for codegen; Rust turbofish coverage in tests.
+- [x] Explicit type arguments preserved for codegen; Rust turbofish coverage in tests (including mixed explicit + `_` via typechecker monomorph snapshot).
 
 ### Formatter
 
@@ -362,12 +362,12 @@ Pipeline impact matches **Layers affected** below: optional bracketed type argum
 
 ### LSP / Tooling
 
-- [ ] Completion / hover for call-site generic arguments (RFC **Layers affected**).
+- [x] Completion / hover for call-site generic arguments (`src/lsp/call_site_type_args.rs`, wired from `src/lsp/backend.rs`; `[` completion trigger).
 
 ### Tests
 
-- [x] Typechecker tests: `explicit_call_type_args_*`, `explicit_method_type_args_*`.
-- [x] Codegen tests: explicit function and method call type args.
+- [x] Typechecker tests: `explicit_call_type_args_*`, `explicit_method_type_args_*`, `_` / unsupported-call coverage.
+- [x] Codegen tests: explicit function and method call type args; mixed explicit + `_` turbofish.
 
 ### Docs
 

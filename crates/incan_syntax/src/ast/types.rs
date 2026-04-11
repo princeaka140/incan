@@ -26,6 +26,8 @@ pub enum Type {
     Tuple(Vec<Spanned<Type>>),
     /// Self type - refers to the implementing type in traits
     SelfType,
+    /// Call-site type inference placeholder (`_` in `f[int, _](...)`), RFC 054.
+    Infer,
 }
 
 impl fmt::Display for Type {
@@ -73,6 +75,7 @@ impl fmt::Display for Type {
                 write!(f, ")")
             }
             Type::SelfType => write!(f, "Self"),
+            Type::Infer => write!(f, "_"),
         }
     }
 }
