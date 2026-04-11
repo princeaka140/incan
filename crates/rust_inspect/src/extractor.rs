@@ -546,11 +546,7 @@ fn type_shape_contains_unknown(shape: &RustTypeShape) -> bool {
 /// rust-analyzer sometimes degrades borrowed parameter displays to `&?` even when the written source still carries a
 /// concrete imported or local pointee type. When that happens, the source annotation is the more faithful contract and
 /// should drive metadata so downstream typechecking/codegen can keep the concrete borrow boundary.
-fn source_function_param_type_display(
-    f: Function,
-    param: &ra_ap_hir::Param<'_>,
-    db: &RootDatabase,
-) -> Option<String> {
+fn source_function_param_type_display(f: Function, param: &ra_ap_hir::Param<'_>, db: &RootDatabase) -> Option<String> {
     let source = f.source(db)?;
     let param_list = source.value.param_list()?;
     let self_offset = usize::from(param_list.self_param().is_some());
