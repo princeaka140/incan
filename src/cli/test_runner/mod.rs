@@ -21,7 +21,7 @@ pub use types::{
 };
 
 use discovery::get_autouse_fixtures;
-use execution::run_single_test;
+use execution::run_file_tests_batch;
 use reporter::{print_test_result, style};
 
 const RED: &str = "1;31";
@@ -217,67 +217,95 @@ pub fn run_tests(config: TestRunConfig<'_>) -> CliResult<ExitCode> {
     let mut xfailed = 0;
     let mut xpassed = 0;
 
-    for test in filtered_tests {
+    let mut idx = 0usize;
+    while idx < filtered_tests.len() {
+        let test = &filtered_tests[idx];
+
         if let Some(TestMarker::Skip(reason)) = test.markers.iter().find(|m| matches!(m, TestMarker::Skip(_))) {
             let result = TestResult::Skipped(reason.clone());
-            print_test_result(&test, &result, verbose, use_color);
+            print_test_result(test, &result, verbose, use_color);
             skipped += 1;
-            results.push((test, result));
+            results.push((test.clone(), result));
+            idx += 1;
             continue;
         }
 
-        let is_xfail = test.markers.iter().any(|m| matches!(m, TestMarker::XFail(_)));
+        let file_path = test.file_path.clone();
+        let batch_start = idx;
+        idx += 1;
+        while idx < filtered_tests.len() {
+            let t = &filtered_tests[idx];
+            if t.markers.iter().any(|m| matches!(m, TestMarker::Skip(_))) {
+                break;
+            }
+            if t.file_path != file_path {
+                break;
+            }
+            idx += 1;
+        }
 
-        let result = run_single_test(
-            &test,
+        let batch = &filtered_tests[batch_start..idx];
+        let batch_results = run_file_tests_batch(
+            batch,
             &mut prep_cache,
             locked,
             frozen,
             &cargo_features,
             cargo_no_default_features,
             cargo_all_features,
+            stop_on_fail,
         );
 
-        let result = if is_xfail {
-            match result {
-                TestResult::Passed(d) => {
-                    xpassed += 1;
-                    TestResult::XPassed(d)
-                }
-                TestResult::Failed(d, _) => {
-                    let reason = test
-                        .markers
-                        .iter()
-                        .find_map(|m| {
-                            if let TestMarker::XFail(r) = m {
-                                Some(r.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or_default();
-                    xfailed += 1;
-                    TestResult::XFailed(d, reason)
-                }
-                other => other,
-            }
-        } else {
-            match &result {
-                TestResult::Passed(_) => passed += 1,
-                TestResult::Failed(_, _) => failed += 1,
-                _ => {}
-            }
-            result
-        };
+        let mut stop_after_batch = false;
+        for (test, result) in batch_results {
+            let is_xfail = test.markers.iter().any(|m| matches!(m, TestMarker::XFail(_)));
 
-        print_test_result(&test, &result, verbose, use_color);
+            let result = if is_xfail {
+                match result {
+                    TestResult::Passed(d) => {
+                        xpassed += 1;
+                        TestResult::XPassed(d)
+                    }
+                    TestResult::Failed(d, _) => {
+                        let reason = test
+                            .markers
+                            .iter()
+                            .find_map(|m| {
+                                if let TestMarker::XFail(r) = m {
+                                    Some(r.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_default();
+                        xfailed += 1;
+                        TestResult::XFailed(d, reason)
+                    }
+                    other => other,
+                }
+            } else {
+                match &result {
+                    TestResult::Passed(_) => passed += 1,
+                    TestResult::Failed(_, _) => failed += 1,
+                    _ => {}
+                }
+                result
+            };
 
-        if stop_on_fail && matches!(result, TestResult::Failed(_, _)) {
+            print_test_result(&test, &result, verbose, use_color);
             results.push((test, result));
-            break;
+
+            if stop_on_fail
+                && let Some((_, r)) = results.last()
+                && matches!(r, TestResult::Failed(_, _))
+            {
+                stop_after_batch = true;
+            }
         }
 
-        results.push((test, result));
+        if stop_after_batch {
+            break;
+        }
     }
 
     let failures: Vec<_> = results
