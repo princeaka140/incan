@@ -776,6 +776,9 @@ impl Formatter {
     }
 
     fn format_param(&mut self, param: &Param) {
+        if param.is_mut {
+            self.writer.write("mut ");
+        }
         self.writer.write(&param.name);
         self.writer.write(": ");
         self.format_type(&param.ty.node);

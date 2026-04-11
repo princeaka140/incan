@@ -375,6 +375,7 @@ impl TypeChecker {
 
     #[cfg(feature = "rust_inspect")]
     pub(crate) fn rust_item_metadata_for_path(&self, canonical_path: &str) -> Option<RustItemMetadata> {
+        let canonical_path = Self::normalize_rust_namespace_path(canonical_path);
         let lookup_path = Self::rust_inspect_lookup_path(canonical_path)?;
         let dir = self.rust_inspect_manifest_dir.as_ref()?;
         match self.rust_inspect_cache.get_cached(dir, lookup_path) {
@@ -393,6 +394,7 @@ impl TypeChecker {
 
     #[cfg(feature = "rust_inspect")]
     pub(crate) fn rust_item_metadata_for_path_blocking(&self, canonical_path: &str) -> Option<RustItemMetadata> {
+        let canonical_path = Self::normalize_rust_namespace_path(canonical_path);
         let lookup_path = Self::rust_inspect_lookup_path(canonical_path)?;
         let dir = self.rust_inspect_manifest_dir.as_ref()?;
         // stdlib interop paths are conventionally stable and intentionally stay cache-only.
@@ -470,12 +472,20 @@ impl TypeChecker {
         None
     }
 
+    /// Strip the synthetic `rust::` namespace prefix used in Incan source paths.
+    ///
+    /// rust-inspect canonical item keys are crate-rooted Rust paths (`crate_name::...`), so compatibility checks and
+    /// metadata lookups should normalize away the language surface namespace first.
+    fn normalize_rust_namespace_path(path: &str) -> &str {
+        path.strip_prefix("rust::").unwrap_or(path)
+    }
+
     fn rust_path_base_and_args(&self, path: &str) -> (String, Vec<ResolvedType>) {
         let trimmed = path.trim();
         if let Some(start) = trimmed.find('<')
             && trimmed.ends_with('>')
         {
-            let base = trimmed[..start].to_string();
+            let base = Self::normalize_rust_namespace_path(trimmed[..start].trim()).to_string();
             let inner = &trimmed[start + 1..trimmed.len() - 1];
             let args = Self::split_top_level_generic_args(inner)
                 .into_iter()
@@ -483,15 +493,16 @@ impl TypeChecker {
                 .collect();
             return (base, args);
         }
-        (trimmed.to_string(), Vec::new())
+        (Self::normalize_rust_namespace_path(trimmed).to_string(), Vec::new())
     }
 
     fn attached_rust_definition_for_path(&self, canonical_path: &str) -> Option<String> {
+        let canonical_path = Self::normalize_rust_namespace_path(canonical_path);
         self.symbols.all_symbols().iter().find_map(|sym| {
             let SymbolKind::RustItem(info) = &sym.kind else {
                 return None;
             };
-            if info.path != canonical_path {
+            if Self::normalize_rust_namespace_path(info.path.as_str()) != canonical_path {
                 return None;
             }
             info.metadata.as_ref().and_then(|meta| meta.definition_path.clone())
@@ -515,14 +526,22 @@ impl TypeChecker {
                     return None;
                 };
                 let definition = info.metadata.as_ref().and_then(|meta| meta.definition_path.clone());
-                Some((info.path.clone(), definition, Vec::new()))
+                Some((
+                    Self::normalize_rust_namespace_path(info.path.as_str()).to_string(),
+                    definition,
+                    Vec::new(),
+                ))
             }
             ResolvedType::Generic(name, args) => {
                 let SymbolKind::RustItem(info) = &self.lookup_symbol(name)?.kind else {
                     return None;
                 };
                 let definition = info.metadata.as_ref().and_then(|meta| meta.definition_path.clone());
-                Some((info.path.clone(), definition, args.clone()))
+                Some((
+                    Self::normalize_rust_namespace_path(info.path.as_str()).to_string(),
+                    definition,
+                    args.clone(),
+                ))
             }
             _ => None,
         }
@@ -542,6 +561,11 @@ impl TypeChecker {
         let actual_resolves_to_expected = actual_def.as_deref() == Some(expected_path.as_str());
         let expected_resolves_to_actual = expected_def.as_deref() == Some(actual_path.as_str());
         if !same_base && !same_definition && !actual_resolves_to_expected && !expected_resolves_to_actual {
+            // Without concrete definition metadata for both sides, cross-crate Rust paths can still be equivalent
+            // through re-exports. Keep the Rust-path boundary permissive instead of reporting a false mismatch.
+            if actual_def.is_none() || expected_def.is_none() {
+                return None;
+            }
             return Some(false);
         }
         if actual_args.len() != expected_args.len() {

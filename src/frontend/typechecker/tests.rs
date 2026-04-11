@@ -11,7 +11,7 @@ use crate::library_manifest::{
     ParamExport, StaticExport, TraitExport, TypeParamExport, TypeRef,
 };
 #[cfg(feature = "rust_inspect")]
-use crate::rust_inspect::{Inspector, InspectorConfig, write_substrait_probe_crate};
+use crate::rust_inspect::{Inspector, InspectorConfig, write_borrowed_param_probe_crate, write_substrait_probe_crate};
 #[cfg(feature = "rust_inspect")]
 use incan_core::interop::{
     RustFieldInfo, RustFunctionSig, RustItemKind, RustItemMetadata, RustMethodSig, RustParam, RustTypeInfo,
@@ -1012,6 +1012,18 @@ fn test_types_compatible_accepts_rust_path_alias_with_attached_definition_metada
 
 #[cfg(feature = "rust_inspect")]
 #[test]
+fn test_types_compatible_keeps_rust_paths_permissive_without_definition_metadata() {
+    let checker = TypeChecker::new();
+    let actual = ResolvedType::RustPath("rust::datafusion_substrait::substrait::proto::Plan".to_string());
+    let expected = ResolvedType::Ref(Box::new(ResolvedType::RustPath("substrait::proto::Plan".to_string())));
+    assert!(
+        checker.types_compatible(&actual, &expected),
+        "Rust path compatibility should stay permissive when definition metadata is unavailable"
+    );
+}
+
+#[cfg(feature = "rust_inspect")]
+#[test]
 fn test_rust_inspect_resolves_type_associated_function_field_access() -> Result<(), Box<dyn std::error::Error>> {
     let source = r#"
 from rust::demo import Builder
@@ -1620,6 +1632,34 @@ def inspect(rel: Rel) -> None:
             "expected extracted prost oneof field metadata to typecheck end-to-end: {errs:?}"
         ))
     })?;
+    Ok(())
+}
+
+#[cfg(feature = "rust_inspect")]
+#[test]
+fn test_real_rust_inspect_preserves_concrete_borrowed_param_pointees() -> Result<(), Box<dyn std::error::Error>> {
+    let tmp = tempfile::tempdir()?;
+    write_borrowed_param_probe_crate(tmp.path())?;
+    let inspector = Inspector::new(InspectorConfig::new(tmp.path().to_path_buf()));
+    let query = "ra_borrowed_param_probe::logical_plan::consumer::consume".to_string();
+    inspector.prewarm([query.clone()], &|_| {})?;
+    let hit = inspector.get(query.as_str())?;
+    let RustItemKind::Function(sig) = &hit.metadata.kind else {
+        return Err(std::io::Error::other("expected function metadata from borrowed-param probe").into());
+    };
+    let displays: Vec<&str> = sig.params.iter().map(|param| param.type_display.as_str()).collect();
+    assert_eq!(
+        displays,
+        vec![
+            "&ra_borrowed_param_probe::execution::session_state::SessionState",
+            "&substrait::proto::Plan",
+        ],
+        "borrowed rust-inspect params must preserve concrete pointees"
+    );
+    assert!(
+        sig.is_async,
+        "expected async metadata for borrowed-param probe function"
+    );
     Ok(())
 }
 

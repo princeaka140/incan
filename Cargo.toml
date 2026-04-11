@@ -48,8 +48,9 @@ lsp = ["dep:tower-lsp", "dep:tokio"]
 std_testing = ["dep:incan_semantics_stdlib", "incan_semantics_stdlib/std_testing"]
 std_async = ["dep:incan_semantics_stdlib", "incan_semantics_stdlib/std_async"]
 std_decorators = ["dep:incan_semantics_stdlib", "incan_semantics_stdlib/std_decorators"]
-# Rust dependency metadata via rust-analyzer (`ra_ap_*`). Kept optional for non-CLI/library builds; the CLI enables it
-# so ordinary `rust::` imports can preserve real function/type signatures.
+# Rust dependency inspection via rust-analyzer (`ra_ap_*`) in the `rust_inspect` crate.
+# Kept optional for non-CLI/library builds; the CLI enables it so ordinary `rust::` imports can preserve
+# real function/type signatures.
 rust_inspect = ["dep:rust_inspect"]
 
 [dependencies]
