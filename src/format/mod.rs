@@ -728,6 +728,19 @@ def function() -> int:
     }
 
     #[test]
+    fn test_format_source_preserves_mut_function_params() -> Result<(), FormatError> {
+        let source = r#"def bump(mut session: Session, mut count: int) -> int:
+    return count
+"#;
+        let formatted = assert_format_round_trip_lex_parse(source)?;
+        assert!(
+            formatted.contains("def bump(mut session: Session, mut count: int) -> int:"),
+            "expected mut parameter markers preserved by formatter; got: {formatted}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_format_source_refuses_comment_loss_inline_comment() -> Result<(), FormatError> {
         let source = r#"def foo() -> int:
   x = 1  # keep this comment
