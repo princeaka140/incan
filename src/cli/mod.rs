@@ -184,7 +184,7 @@ pub enum Command {
         cargo_all_features: bool,
     },
 
-    /// Compile and run the program
+    /// Compile and run the program (debug profile by default; opt into release with `--release`)
     Run {
         /// Source file to run
         #[arg(value_name = "FILE", conflicts_with = "command")]
@@ -207,6 +207,9 @@ pub enum Command {
         /// Enable all Cargo features
         #[arg(long = "cargo-all-features")]
         cargo_all_features: bool,
+        /// Build and run with Cargo release profile (optimized, slower cold-start builds)
+        #[arg(long)]
+        release: bool,
     },
 
     /// Format Incan source files
@@ -392,14 +395,17 @@ fn execute(cli: Cli, use_color: bool) -> CliResult<ExitCode> {
             cargo_features,
             cargo_no_default_features,
             cargo_all_features,
+            release,
         }) => execute_run(
-            file,
-            command,
-            locked,
-            frozen,
-            cargo_features,
-            cargo_no_default_features,
-            cargo_all_features,
+            RunInput { file, code: command },
+            RunOptions {
+                locked,
+                frozen,
+                cargo_features,
+                cargo_no_default_features,
+                cargo_all_features,
+                release,
+            },
         ),
         Some(Command::Fmt { path, check, diff }) => commands::format_files(&path.to_string_lossy(), check, diff),
         Some(Command::Test {
@@ -452,17 +458,24 @@ fn execute(cli: Cli, use_color: bool) -> CliResult<ExitCode> {
     }
 }
 
-/// Handle the `run` subcommand with its various forms.
-fn execute_run(
+struct RunInput {
     file: Option<PathBuf>,
     code: Option<String>,
+}
+
+struct RunOptions {
     locked: bool,
     frozen: bool,
     cargo_features: Vec<String>,
     cargo_no_default_features: bool,
     cargo_all_features: bool,
-) -> CliResult<ExitCode> {
-    if let Some(code) = code {
+    release: bool,
+}
+
+/// Handle the `run` subcommand with its various forms.
+fn execute_run(input: RunInput, opts: RunOptions) -> CliResult<ExitCode> {
+    // ---- Context: inline source execution (`incan run -c ...`) ----
+    if let Some(code) = input.code {
         // Run inline code
         if code.is_empty() {
             return Err(CliError::failure("Error: -c/--command requires source code string"));
@@ -487,22 +500,25 @@ fn execute_run(
 
         let result = commands::run_file(
             &tmp_path.to_string_lossy(),
-            locked,
-            frozen,
-            cargo_features.clone(),
-            cargo_no_default_features,
-            cargo_all_features,
+            opts.locked,
+            opts.frozen,
+            opts.cargo_features.clone(),
+            opts.cargo_no_default_features,
+            opts.cargo_all_features,
+            opts.release,
         );
         let _ = fs::remove_file(&tmp_path);
         result
-    } else if let Some(file) = file {
+    // ---- Context: file execution (`incan run path/to/file.incn`) ----
+    } else if let Some(file) = input.file {
         commands::run_file(
             &file.to_string_lossy(),
-            locked,
-            frozen,
-            cargo_features,
-            cargo_no_default_features,
-            cargo_all_features,
+            opts.locked,
+            opts.frozen,
+            opts.cargo_features,
+            opts.cargo_no_default_features,
+            opts.cargo_all_features,
+            opts.release,
         )
     } else {
         Err(CliError::failure("Error: run requires a file path or -c \"code\""))
@@ -622,7 +638,21 @@ mod tests {
     #[test]
     fn test_cli_parse_run() {
         let cli = must_cli(["incan", "run", "test.incn"]);
-        assert!(matches!(cli.command, Some(Command::Run { .. })));
+        if let Some(Command::Run { release, .. }) = cli.command {
+            assert!(!release, "run should default to debug profile");
+        } else {
+            panic!("Expected Run command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_run_release() {
+        let cli = must_cli(["incan", "run", "--release", "test.incn"]);
+        if let Some(Command::Run { release, .. }) = cli.command {
+            assert!(release, "run --release should enable release profile");
+        } else {
+            panic!("Expected Run command");
+        }
     }
 
     #[test]

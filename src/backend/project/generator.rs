@@ -64,6 +64,17 @@ pub struct ProjectGenerator {
     pub(super) cargo_policy_flags: Vec<String>,
     /// Optional Rust edition override.
     pub(super) rust_edition: Option<String>,
+    /// Profile used when building the generated crate for `incan run`.
+    pub(super) run_profile: RunProfile,
+}
+
+/// Cargo profile used for `incan run`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunProfile {
+    /// `cargo build` (debug profile).
+    Debug,
+    /// `cargo build --release` (optimized profile).
+    Release,
 }
 
 impl ProjectGenerator {
@@ -79,6 +90,7 @@ impl ProjectGenerator {
             cargo_lock_payload: None,
             cargo_policy_flags: Vec::new(),
             rust_edition: None,
+            run_profile: RunProfile::Debug,
         }
     }
 
@@ -122,6 +134,11 @@ impl ProjectGenerator {
     /// Override the Rust edition used in Cargo.toml.
     pub fn set_rust_edition(&mut self, edition: Option<String>) {
         self.rust_edition = edition;
+    }
+
+    /// Set the cargo profile used for `incan run`.
+    pub fn set_run_profile(&mut self, profile: RunProfile) {
+        self.run_profile = profile;
     }
 
     /// Ensure the generated `src/` directory exists.

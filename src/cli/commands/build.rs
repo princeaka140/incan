@@ -7,7 +7,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::backend::{IrCodegen, ProjectGenerator};
+use crate::backend::{IrCodegen, ProjectGenerator, RunProfile};
 use crate::cli::{CliError, CliResult, ExitCode};
 use crate::dependency_resolver::resolve_dependencies;
 use crate::frontend::ast::{Declaration, Decorator, ImportKind, Span, Spanned};
@@ -882,8 +882,9 @@ pub fn run_file(
     cargo_features: Vec<String>,
     cargo_no_default_features: bool,
     cargo_all_features: bool,
+    release: bool,
 ) -> CliResult<ExitCode> {
-    let prepared = prepare_project(
+    let mut prepared = prepare_project(
         file_path,
         None,
         locked,
@@ -892,6 +893,11 @@ pub fn run_file(
         cargo_no_default_features,
         cargo_all_features,
     )?;
+    prepared.generator.set_run_profile(if release {
+        RunProfile::Release
+    } else {
+        RunProfile::Debug
+    });
 
     match prepared.generator.run_with_cwd(&prepared.project_root) {
         Ok(result) => {

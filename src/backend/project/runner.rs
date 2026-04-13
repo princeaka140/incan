@@ -7,9 +7,33 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use super::generator::ProjectGenerator;
+use super::generator::{ProjectGenerator, RunProfile};
 
 impl ProjectGenerator {
+    /// Return extra Cargo CLI args required to build with the configured run profile.
+    fn run_profile_build_args(&self) -> &'static [&'static str] {
+        match self.run_profile {
+            RunProfile::Debug => &[],
+            RunProfile::Release => &["--release"],
+        }
+    }
+
+    /// Return the Cargo target subdirectory that contains binaries for the configured run profile.
+    fn run_profile_binary_dir(&self) -> &'static str {
+        match self.run_profile {
+            RunProfile::Debug => "debug",
+            RunProfile::Release => "release",
+        }
+    }
+
+    /// Return a human-readable label for the configured run profile.
+    fn run_profile_label(&self) -> &'static str {
+        match self.run_profile {
+            RunProfile::Debug => "debug",
+            RunProfile::Release => "release",
+        }
+    }
+
     /// Shared Cargo target directory for generated projects under the same parent folder.
     ///
     /// Generated projects like `target/incan/<name>` and `target/incan_tests/<case>` otherwise each get their own
@@ -57,10 +81,12 @@ impl ProjectGenerator {
 
     /// Run the project using cargo.
     ///
-    /// Uses inherited stdio so output streams to terminal in real-time (important for long-running processes like
-    /// web servers).
+    /// Uses inherited stdio so output streams to terminal in real-time (important for long-running processes like web
+    /// servers).
     ///
-    /// Note: This is only used by `incan run` during dev. Production deployments run the generated binary directly.
+    /// Note: This is only used by `incan run` during dev. By default `incan run` uses Cargo's debug profile for fast
+    /// iteration and supports `--release` as an opt-in.
+    /// Production deployments run the generated binary directly.
     pub fn run(&self) -> io::Result<RunResult> {
         self.run_with_cwd(&self.output_dir)
     }
@@ -71,10 +97,17 @@ impl ProjectGenerator {
     /// This keeps runtime-relative paths anchored to the original project root rather than the generated
     /// `target/incan/...` directory.
     pub fn run_with_cwd(&self, cwd: &Path) -> io::Result<RunResult> {
-        // Build first so we can run the binary directly with a custom cwd.
+        // ---- Context: build generated crate with selected run profile ----
         let cargo_target_dir = self.cargo_target_dir();
+        eprintln!(
+            "Building generated project with cargo ({}) profile...",
+            self.run_profile_label()
+        );
         let mut build_command = Command::new("cargo");
-        build_command.arg("build").arg("--release");
+        build_command.arg("build");
+        for arg in self.run_profile_build_args() {
+            build_command.arg(arg);
+        }
         for flag in &self.cargo_policy_flags {
             build_command.arg(flag);
         }
@@ -97,7 +130,9 @@ impl ProjectGenerator {
             });
         }
 
-        let mut child = Command::new(self.binary_path())
+        // ---- Context: execute built binary with caller-provided cwd ----
+        eprintln!("Build finished. Running generated binary...");
+        let mut child = Command::new(self.run_binary_path())
             .current_dir(cwd)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
@@ -117,6 +152,13 @@ impl ProjectGenerator {
     pub fn binary_path(&self) -> PathBuf {
         self.cargo_target_dir().join("release").join(&self.name)
     }
+
+    /// Get the path to the binary produced for `incan run`.
+    pub fn run_binary_path(&self) -> PathBuf {
+        self.cargo_target_dir()
+            .join(self.run_profile_binary_dir())
+            .join(&self.name)
+    }
 }
 
 /// Result of a cargo build.
@@ -134,4 +176,38 @@ pub struct RunResult {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: Option<i32>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_profile_debug_uses_default_cargo_build_args_and_binary_dir() {
+        let generator = ProjectGenerator::new("/tmp/incan_runner_debug", "demo", true);
+        assert!(generator.run_profile_build_args().is_empty());
+        assert_eq!(generator.run_profile_binary_dir(), "debug");
+        let binary_path = generator.run_binary_path();
+        let binary_path_str = binary_path.to_string_lossy();
+        assert!(
+            binary_path_str.contains("/debug/demo"),
+            "expected debug binary path, got: {}",
+            binary_path_str
+        );
+    }
+
+    #[test]
+    fn run_profile_release_uses_release_args_and_binary_dir() {
+        let mut generator = ProjectGenerator::new("/tmp/incan_runner_release", "demo", true);
+        generator.set_run_profile(RunProfile::Release);
+        assert_eq!(generator.run_profile_build_args(), &["--release"]);
+        assert_eq!(generator.run_profile_binary_dir(), "release");
+        let binary_path = generator.run_binary_path();
+        let binary_path_str = binary_path.to_string_lossy();
+        assert!(
+            binary_path_str.contains("/release/demo"),
+            "expected release binary path, got: {}",
+            binary_path_str
+        );
+    }
 }

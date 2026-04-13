@@ -830,6 +830,31 @@ mod codegen_tests {
     }
 
     #[test]
+    fn test_run_c_import_this_release_flag() {
+        let Ok(output) = Command::new(incan_debug_binary())
+            .args(["run", "--release", "-c", "import this"])
+            // This test should not require network access. We expect the workspace dependencies to already be available
+            // (the test suite built them)
+            .env("CARGO_NET_OFFLINE", "true")
+            .output()
+        else {
+            panic!("failed to run incan");
+        };
+        assert!(
+            output.status.success(),
+            "incan run --release -c import this failed: status={:?} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("The Zen of Incan") && stdout.contains("Readability counts"),
+            "stdout missing zen line; got:\n{}",
+            stdout
+        );
+    }
+
+    #[test]
     fn test_build_web_route_uses_proc_macro_passthrough() {
         let project_dir = make_temp_dir("incan_web_proc_macro_test");
         let source_path = project_dir.join("main.incn");
