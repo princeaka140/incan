@@ -52,6 +52,7 @@ fn generate_rust_with_widgets_manifest(source: &str) -> String {
         name: "Widget".to_string(),
         type_params: Vec::new(),
         traits: Vec::new(),
+        derives: Vec::new(),
         fields: Vec::new(),
         methods: Vec::new(),
     });

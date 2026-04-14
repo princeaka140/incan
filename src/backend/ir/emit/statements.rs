@@ -5,6 +5,7 @@
 
 use proc_macro2::TokenStream;
 use quote::quote;
+use std::collections::HashSet;
 
 use super::super::conversions::{ConversionContext, determine_conversion};
 use super::super::expr::{IrExprKind, Pattern};
@@ -12,6 +13,7 @@ use super::super::stmt::{AssignTarget, IrStmt, IrStmtKind};
 use super::super::types::IrType;
 use super::super::types::Mutability;
 use super::{EmitError, IrEmitter};
+use crate::backend::ir::emit::expressions::method_kind_uses_mutable_receiver;
 
 /// Determine whether a `for` loop body requires mutable iteration of the loop variable.
 ///
@@ -84,7 +86,294 @@ fn for_body_needs_mut_iteration(pattern: &Pattern, body: &[IrStmt]) -> bool {
     body.iter().any(|s| stmt_mutates_var(s, loop_var))
 }
 
+/// Return the local `StaticBinding` name at the root of a storage-rooted expression.
+///
+/// This is used by statement-slice analysis to detect aliases like `live` in
+/// `live.append(...)` or `live[i] = ...` so emission can decide whether the local
+/// Rust binding must be declared `mut`.
+fn expr_storage_binding_root_name(expr: &super::super::expr::IrExpr) -> Option<&str> {
+    match &expr.kind {
+        IrExprKind::Var {
+            name,
+            ref_kind: super::super::expr::VarRefKind::StaticBinding,
+            ..
+        } => Some(name.as_str()),
+        IrExprKind::Field { object, .. } | IrExprKind::Index { object, .. } => expr_storage_binding_root_name(object),
+        _ => None,
+    }
+}
+
+/// Collect `StaticBinding` locals whose receiver position implies mutation within one expression tree.
+///
+/// This walk is intentionally conservative: if an expression path can lower to
+/// `binding.with_mut(...)`, the binding name is recorded so the enclosing statement slice
+/// can emit `let mut binding = ...` even when the source-level binding itself is not declared
+/// `mut`.
+fn expr_mutates_storage_binding(expr: &super::super::expr::IrExpr, names: &mut HashSet<String>) {
+    // ---- Context: direct receiver mutations from method-call forms ----
+    match &expr.kind {
+        IrExprKind::MethodCall {
+            receiver,
+            args,
+            arg_policy,
+            ..
+        } => {
+            if !matches!(arg_policy, super::super::expr::MethodCallArgPolicy::PreserveShape)
+                && let Some(name) = expr_storage_binding_root_name(receiver)
+            {
+                names.insert(name.to_string());
+            }
+            expr_mutates_storage_binding(receiver, names);
+            for arg in args {
+                expr_mutates_storage_binding(&arg.expr, names);
+            }
+        }
+        IrExprKind::KnownMethodCall { receiver, kind, args } => {
+            if method_kind_uses_mutable_receiver(kind)
+                && let Some(name) = expr_storage_binding_root_name(receiver)
+            {
+                names.insert(name.to_string());
+            }
+            expr_mutates_storage_binding(receiver, names);
+            for arg in args {
+                expr_mutates_storage_binding(&arg.expr, names);
+            }
+        }
+        // ---- Context: recurse into nested expression trees ----
+        IrExprKind::Block { stmts, value } => {
+            for stmt in stmts {
+                stmt_mutates_storage_binding(stmt, names);
+            }
+            if let Some(value) = value {
+                expr_mutates_storage_binding(value, names);
+            }
+        }
+        IrExprKind::Call { func, args, .. } => {
+            expr_mutates_storage_binding(func, names);
+            for arg in args {
+                expr_mutates_storage_binding(&arg.expr, names);
+            }
+        }
+        IrExprKind::BuiltinCall { args, .. } => {
+            for arg in args {
+                expr_mutates_storage_binding(arg, names);
+            }
+        }
+        IrExprKind::BinOp { left, right, .. } => {
+            expr_mutates_storage_binding(left, names);
+            expr_mutates_storage_binding(right, names);
+        }
+        IrExprKind::UnaryOp { operand, .. }
+        | IrExprKind::Await(operand)
+        | IrExprKind::Try(operand)
+        | IrExprKind::Cast { expr: operand, .. }
+        | IrExprKind::InteropCoerce { expr: operand, .. } => expr_mutates_storage_binding(operand, names),
+        IrExprKind::Field { object, .. } => expr_mutates_storage_binding(object, names),
+        IrExprKind::Index { object, index } => {
+            expr_mutates_storage_binding(object, names);
+            expr_mutates_storage_binding(index, names);
+        }
+        IrExprKind::Slice {
+            target,
+            start,
+            end,
+            step,
+        } => {
+            expr_mutates_storage_binding(target, names);
+            if let Some(start) = start {
+                expr_mutates_storage_binding(start, names);
+            }
+            if let Some(end) = end {
+                expr_mutates_storage_binding(end, names);
+            }
+            if let Some(step) = step {
+                expr_mutates_storage_binding(step, names);
+            }
+        }
+        IrExprKind::List(items) | IrExprKind::Set(items) | IrExprKind::Tuple(items) => {
+            for item in items {
+                expr_mutates_storage_binding(item, names);
+            }
+        }
+        IrExprKind::Dict(pairs) => {
+            for (key, value) in pairs {
+                expr_mutates_storage_binding(key, names);
+                expr_mutates_storage_binding(value, names);
+            }
+        }
+        IrExprKind::Struct { fields, .. } => {
+            for (_, value) in fields {
+                expr_mutates_storage_binding(value, names);
+            }
+        }
+        IrExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            expr_mutates_storage_binding(condition, names);
+            expr_mutates_storage_binding(then_branch, names);
+            if let Some(else_branch) = else_branch {
+                expr_mutates_storage_binding(else_branch, names);
+            }
+        }
+        IrExprKind::Match { scrutinee, arms } => {
+            expr_mutates_storage_binding(scrutinee, names);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    expr_mutates_storage_binding(guard, names);
+                }
+                expr_mutates_storage_binding(&arm.body, names);
+            }
+        }
+        IrExprKind::ListComp {
+            element,
+            iterable,
+            filter,
+            ..
+        } => {
+            expr_mutates_storage_binding(element, names);
+            expr_mutates_storage_binding(iterable, names);
+            if let Some(filter) = filter {
+                expr_mutates_storage_binding(filter, names);
+            }
+        }
+        IrExprKind::DictComp {
+            key,
+            value,
+            iterable,
+            filter,
+            ..
+        } => {
+            expr_mutates_storage_binding(key, names);
+            expr_mutates_storage_binding(value, names);
+            expr_mutates_storage_binding(iterable, names);
+            if let Some(filter) = filter {
+                expr_mutates_storage_binding(filter, names);
+            }
+        }
+        IrExprKind::Range { start, end, .. } => {
+            if let Some(start) = start {
+                expr_mutates_storage_binding(start, names);
+            }
+            if let Some(end) = end {
+                expr_mutates_storage_binding(end, names);
+            }
+        }
+        // ---- Context: leaf expressions have no nested mutation path ----
+        _ => {}
+    }
+}
+
+/// Collect `StaticBinding` locals whose values are mutated anywhere inside one statement.
+///
+/// The resulting names feed statement-slice emission so only storage aliases that truly need
+/// mutable Rust handles are emitted with `let mut`.
+fn stmt_mutates_storage_binding(stmt: &IrStmt, names: &mut HashSet<String>) {
+    match &stmt.kind {
+        // ---- Context: single-expression statement forms ----
+        IrStmtKind::Expr(expr) | IrStmtKind::Return(Some(expr)) => expr_mutates_storage_binding(expr, names),
+        IrStmtKind::Let { value, .. } => expr_mutates_storage_binding(value, names),
+        IrStmtKind::Assign { target, value } => {
+            match target {
+                AssignTarget::StaticBinding(name) => {
+                    names.insert(name.clone());
+                }
+                AssignTarget::Field { object, .. } | AssignTarget::Index { object, .. } => {
+                    if let Some(name) = expr_storage_binding_root_name(object) {
+                        names.insert(name.to_string());
+                    }
+                }
+                AssignTarget::Var(_) | AssignTarget::Static(_) => {}
+            }
+            expr_mutates_storage_binding(value, names);
+        }
+        // ---- Context: recurse into control-flow bodies ----
+        IrStmtKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            expr_mutates_storage_binding(condition, names);
+            for stmt in then_branch {
+                stmt_mutates_storage_binding(stmt, names);
+            }
+            if let Some(else_branch) = else_branch {
+                for stmt in else_branch {
+                    stmt_mutates_storage_binding(stmt, names);
+                }
+            }
+        }
+        IrStmtKind::While { condition, body, .. } => {
+            expr_mutates_storage_binding(condition, names);
+            for stmt in body {
+                stmt_mutates_storage_binding(stmt, names);
+            }
+        }
+        IrStmtKind::For { iterable, body, .. } => {
+            expr_mutates_storage_binding(iterable, names);
+            for stmt in body {
+                stmt_mutates_storage_binding(stmt, names);
+            }
+        }
+        IrStmtKind::Loop { body, .. } | IrStmtKind::Block(body) => {
+            for stmt in body {
+                stmt_mutates_storage_binding(stmt, names);
+            }
+        }
+        IrStmtKind::Match { scrutinee, arms } => {
+            expr_mutates_storage_binding(scrutinee, names);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    expr_mutates_storage_binding(guard, names);
+                }
+                expr_mutates_storage_binding(&arm.body, names);
+            }
+        }
+        // ---- Context: terminal/unsupported statement kinds ----
+        IrStmtKind::Return(None)
+        | IrStmtKind::Break(_)
+        | IrStmtKind::Continue(_)
+        | IrStmtKind::CompoundAssign { .. } => {}
+    }
+}
+
+/// Compute the set of storage-backed local aliases that require mutable Rust bindings.
+///
+/// This is a pre-pass over a statement slice. It preserves warning-free read-only aliases while keeping
+/// mutation-capable aliases compilable.
+fn collect_mutated_storage_bindings(stmts: &[IrStmt]) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for stmt in stmts {
+        stmt_mutates_storage_binding(stmt, &mut names);
+    }
+    names
+}
+
 impl<'a> IrEmitter<'a> {
+    /// Emit a sibling statement slice with precomputed storage-alias mutability context.
+    ///
+    /// The emitter pushes one analysis frame for the slice, emits the statements, then pops the frame. Nested
+    /// blocks/functions get their own independent analysis.
+    pub(super) fn emit_stmts(&self, stmts: &[IrStmt]) -> Result<Vec<TokenStream>, EmitError> {
+        let mutated = collect_mutated_storage_bindings(stmts);
+        self.storage_binding_mut_names.borrow_mut().push(mutated);
+        let emitted = stmts.iter().map(|s| self.emit_stmt(s)).collect::<Result<Vec<_>, _>>();
+        self.storage_binding_mut_names.borrow_mut().pop();
+        emitted
+    }
+
+    /// Check whether the current statement-slice context requires `name` to be emitted as `let mut`.
+    ///
+    /// This is only used for local aliases created from `IrExprKind::StaticBinding`.
+    fn current_storage_binding_needs_mut(&self, name: &str) -> bool {
+        self.storage_binding_mut_names
+            .borrow()
+            .iter()
+            .rev()
+            .any(|names| names.contains(name))
+    }
+
     /// Emit assignment to a local `StaticBinding` variable.
     ///
     /// Plain values are wrapped into `StaticBinding::from_value(...)` so subsequent storage-aware field/index
@@ -163,7 +452,7 @@ impl<'a> IrEmitter<'a> {
                 // expression used in statement position. Emit those inner statements directly so
                 // the introduced bindings remain visible to following statements.
                 if let IrExprKind::Block { stmts, value: None } = &expr.kind {
-                    let inner: Vec<TokenStream> = stmts.iter().map(|s| self.emit_stmt(s)).collect::<Result<_, _>>()?;
+                    let inner = self.emit_stmts(stmts)?;
                     return Ok(quote! { #(#inner)* });
                 }
                 let e = self.emit_expr(expr)?;
@@ -182,7 +471,10 @@ impl<'a> IrEmitter<'a> {
                 let conversion = determine_conversion(value, Some(ty), ConversionContext::Assignment);
                 let converted_v = conversion.apply(v);
 
-                if matches!(mutability, Mutability::Mutable) || matches!(value.kind, IrExprKind::StaticBinding { .. }) {
+                let needs_mut = matches!(mutability, Mutability::Mutable)
+                    || matches!(value.kind, IrExprKind::StaticBinding { .. })
+                        && self.current_storage_binding_needs_mut(name);
+                if needs_mut {
                     Ok(quote! { let mut #n = #converted_v; })
                 } else {
                     Ok(quote! { let #n = #converted_v; })
@@ -190,7 +482,7 @@ impl<'a> IrEmitter<'a> {
             }
             IrStmtKind::Assign { target, value } => {
                 if let AssignTarget::Static(name) = target {
-                    let n = Self::rust_ident(name);
+                    let n = Self::rust_static_ident(name);
                     let v = self.emit_expr(value)?;
                     return Ok(quote! {
                         let __incan_static_rhs = #v;
@@ -266,7 +558,7 @@ impl<'a> IrEmitter<'a> {
                 condition,
                 body,
             } => {
-                let body_stmts: Vec<TokenStream> = body.iter().map(|s| self.emit_stmt(s)).collect::<Result<_, _>>()?;
+                let body_stmts = self.emit_stmts(body)?;
                 let is_infinite = matches!(condition.kind, IrExprKind::Bool(true));
                 if is_infinite {
                     Ok(quote! {
@@ -291,7 +583,7 @@ impl<'a> IrEmitter<'a> {
             } => {
                 let pat = self.emit_pattern(pattern);
                 let iter = self.emit_expr(iterable)?;
-                let body_stmts: Vec<TokenStream> = body.iter().map(|s| self.emit_stmt(s)).collect::<Result<_, _>>()?;
+                let body_stmts = self.emit_stmts(body)?;
                 // For non-copy collections, iterate by reference to avoid move
                 // This handles the common case where a collection is used multiple times
                 // For primitive element types, use .iter().copied() to get values instead of references
@@ -378,7 +670,7 @@ impl<'a> IrEmitter<'a> {
                 })
             }
             IrStmtKind::Loop { label: _, body } => {
-                let body_stmts: Vec<TokenStream> = body.iter().map(|s| self.emit_stmt(s)).collect::<Result<_, _>>()?;
+                let body_stmts = self.emit_stmts(body)?;
                 Ok(quote! {
                     loop {
                         #(#body_stmts)*
@@ -391,13 +683,9 @@ impl<'a> IrEmitter<'a> {
                 else_branch,
             } => {
                 let cond = self.emit_expr(condition)?;
-                let then_stmts: Vec<TokenStream> = then_branch
-                    .iter()
-                    .map(|s| self.emit_stmt(s))
-                    .collect::<Result<_, _>>()?;
+                let then_stmts = self.emit_stmts(then_branch)?;
                 if let Some(else_stmts) = else_branch {
-                    let else_tokens: Vec<TokenStream> =
-                        else_stmts.iter().map(|s| self.emit_stmt(s)).collect::<Result<_, _>>()?;
+                    let else_tokens = self.emit_stmts(else_stmts)?;
                     Ok(quote! {
                         if #cond {
                             #(#then_stmts)*
@@ -435,7 +723,7 @@ impl<'a> IrEmitter<'a> {
                 })
             }
             IrStmtKind::Block(stmts) => {
-                let inner: Vec<TokenStream> = stmts.iter().map(|s| self.emit_stmt(s)).collect::<Result<_, _>>()?;
+                let inner = self.emit_stmts(stmts)?;
                 Ok(quote! {
                     {
                         #(#inner)*
@@ -446,5 +734,168 @@ impl<'a> IrEmitter<'a> {
                 "CompoundAssign should be lowered into a regular assignment before emission".to_string(),
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::ir::FunctionRegistry;
+    use crate::backend::ir::TypedExpr;
+    use crate::backend::ir::expr::{CollectionMethodKind, IrCallArg, MethodKind, VarAccess, VarRefKind};
+
+    #[test]
+    fn immutable_static_binding_let_does_not_emit_mut() -> Result<(), String> {
+        let registry = FunctionRegistry::new();
+        let emitter = IrEmitter::new(&registry);
+        let stmt = IrStmt::new(IrStmtKind::Let {
+            name: "flags".to_string(),
+            ty: IrType::List(Box::new(IrType::Bool)),
+            mutability: Mutability::Immutable,
+            value: TypedExpr::new(
+                IrExprKind::StaticBinding {
+                    name: "ACTIVE_FLAGS".to_string(),
+                },
+                IrType::List(Box::new(IrType::Bool)),
+            ),
+        });
+
+        let emitted = emitter
+            .emit_stmt(&stmt)
+            .map_err(|err| format!("expected successful statement emission, got {err:?}"))?;
+        let rendered = emitted.to_string();
+        assert!(
+            rendered.contains("let flags ="),
+            "expected immutable static binding let emission, got `{rendered}`"
+        );
+        assert!(
+            !rendered.contains("let mut flags"),
+            "read-only static binding let must not emit `mut`, got `{rendered}`"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn mutable_static_binding_let_still_emits_mut() -> Result<(), String> {
+        let registry = FunctionRegistry::new();
+        let emitter = IrEmitter::new(&registry);
+        let stmt = IrStmt::new(IrStmtKind::Let {
+            name: "flags".to_string(),
+            ty: IrType::List(Box::new(IrType::Bool)),
+            mutability: Mutability::Mutable,
+            value: TypedExpr::new(
+                IrExprKind::Var {
+                    name: "flags_src".to_string(),
+                    access: VarAccess::Read,
+                    ref_kind: VarRefKind::Value,
+                },
+                IrType::List(Box::new(IrType::Bool)),
+            ),
+        });
+
+        let emitted = emitter
+            .emit_stmt(&stmt)
+            .map_err(|err| format!("expected successful statement emission, got {err:?}"))?;
+        let rendered = emitted.to_string();
+        assert!(
+            rendered.contains("let mut flags ="),
+            "mutable lets must still emit `mut`, got `{rendered}`"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn storage_mutated_static_binding_let_emits_mut_inside_statement_slice() -> Result<(), String> {
+        let registry = FunctionRegistry::new();
+        let emitter = IrEmitter::new(&registry);
+        let stmts = vec![
+            IrStmt::new(IrStmtKind::Let {
+                name: "live".to_string(),
+                ty: IrType::List(Box::new(IrType::Int)),
+                mutability: Mutability::Immutable,
+                value: TypedExpr::new(
+                    IrExprKind::StaticBinding {
+                        name: "ITEMS".to_string(),
+                    },
+                    IrType::List(Box::new(IrType::Int)),
+                ),
+            }),
+            IrStmt::new(IrStmtKind::Expr(TypedExpr::new(
+                IrExprKind::KnownMethodCall {
+                    receiver: Box::new(TypedExpr::new(
+                        IrExprKind::Var {
+                            name: "live".to_string(),
+                            access: VarAccess::Read,
+                            ref_kind: VarRefKind::StaticBinding,
+                        },
+                        IrType::List(Box::new(IrType::Int)),
+                    )),
+                    kind: MethodKind::Collection(CollectionMethodKind::Append),
+                    args: vec![IrCallArg {
+                        name: None,
+                        expr: TypedExpr::new(IrExprKind::Int(2), IrType::Int),
+                    }],
+                },
+                IrType::Unit,
+            ))),
+        ];
+
+        let emitted = emitter
+            .emit_stmts(&stmts)
+            .map_err(|err| format!("expected successful statement emission, got {err:?}"))?;
+        let rendered = quote! { #(#emitted)* }.to_string();
+        assert!(
+            rendered.contains("let mut live ="),
+            "storage-mutated static binding lets must emit `mut`, got `{rendered}`"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn storage_binding_analysis_matches_method_mutability_policy() -> Result<(), String> {
+        let method_kinds = vec![
+            CollectionMethodKind::Insert,
+            CollectionMethodKind::Remove,
+            CollectionMethodKind::Append,
+            CollectionMethodKind::Pop,
+            CollectionMethodKind::Swap,
+            CollectionMethodKind::Reserve,
+            CollectionMethodKind::ReserveExact,
+            CollectionMethodKind::Get,
+        ];
+
+        for kind in method_kinds {
+            let method_kind = MethodKind::Collection(kind);
+            let mut names = HashSet::new();
+            let stmt = IrStmt::new(IrStmtKind::Expr(TypedExpr::new(
+                IrExprKind::KnownMethodCall {
+                    receiver: Box::new(TypedExpr::new(
+                        IrExprKind::Var {
+                            name: "live".to_string(),
+                            access: VarAccess::Read,
+                            ref_kind: VarRefKind::StaticBinding,
+                        },
+                        IrType::List(Box::new(IrType::Int)),
+                    )),
+                    kind: method_kind,
+                    args: vec![IrCallArg {
+                        name: None,
+                        expr: TypedExpr::new(IrExprKind::Int(1), IrType::Int),
+                    }],
+                },
+                IrType::Unit,
+            )));
+
+            stmt_mutates_storage_binding(&stmt, &mut names);
+            let expected = method_kind_uses_mutable_receiver(&method_kind);
+            let observed = names.contains("live");
+            if observed != expected {
+                return Err(format!(
+                    "storage-binding mutability analysis drifted for {method_kind:?}: expected {expected}, observed {observed}"
+                ));
+            }
+        }
+
+        Ok(())
     }
 }

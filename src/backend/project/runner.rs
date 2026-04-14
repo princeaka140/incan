@@ -10,6 +10,11 @@ use std::process::{Command, Stdio};
 use super::generator::{ProjectGenerator, RunProfile};
 
 impl ProjectGenerator {
+    /// Whether `incan run` must invoke Cargo before executing the generated binary.
+    fn should_build_before_run(&self, project_changed: bool) -> bool {
+        project_changed || !self.run_binary_path().is_file()
+    }
+
     /// Return extra Cargo CLI args required to build with the configured run profile.
     fn run_profile_build_args(&self) -> &'static [&'static str] {
         match self.run_profile {
@@ -88,7 +93,7 @@ impl ProjectGenerator {
     /// iteration and supports `--release` as an opt-in.
     /// Production deployments run the generated binary directly.
     pub fn run(&self) -> io::Result<RunResult> {
-        self.run_with_cwd(&self.output_dir)
+        self.run_with_cwd(&self.output_dir, true)
     }
 
     /// Run the project with a custom working directory.
@@ -96,38 +101,50 @@ impl ProjectGenerator {
     /// This builds the generated Rust project, then runs the resulting binary with `cwd` as the working directory.
     /// This keeps runtime-relative paths anchored to the original project root rather than the generated
     /// `target/incan/...` directory.
-    pub fn run_with_cwd(&self, cwd: &Path) -> io::Result<RunResult> {
-        // ---- Context: build generated crate with selected run profile ----
-        let cargo_target_dir = self.cargo_target_dir();
-        eprintln!(
-            "Building generated project with cargo ({}) profile...",
-            self.run_profile_label()
-        );
-        let mut build_command = Command::new("cargo");
-        build_command.arg("build");
-        for arg in self.run_profile_build_args() {
-            build_command.arg(arg);
-        }
-        for flag in &self.cargo_policy_flags {
-            build_command.arg(flag);
-        }
-        let build_output = build_command
-            // Ensure we don't inherit a broken CA bundle path from the parent env.
-            .env_remove("SSL_CERT_FILE")
-            .env_remove("SSL_CERT_DIR")
-            .env_remove("CURL_CA_BUNDLE")
-            .env_remove("REQUESTS_CA_BUNDLE")
-            .env_remove("CARGO_HTTP_CAINFO")
-            .env("CARGO_TARGET_DIR", &cargo_target_dir)
-            .current_dir(&self.output_dir)
-            .output()?;
-        if !build_output.status.success() {
-            return Ok(RunResult {
-                success: false,
-                stdout: String::from_utf8_lossy(&build_output.stdout).to_string(),
-                stderr: String::from_utf8_lossy(&build_output.stderr).to_string(),
-                exit_code: build_output.status.code(),
-            });
+    ///
+    /// Cargo build output is streamed directly to the terminal so incremental compilation progress remains visible on
+    /// slow first runs and long rebuilds.
+    pub fn run_with_cwd(&self, cwd: &Path, project_changed: bool) -> io::Result<RunResult> {
+        if self.should_build_before_run(project_changed) {
+            // ---- Context: build generated crate with selected run profile ----
+            let cargo_target_dir = self.cargo_target_dir();
+            eprintln!(
+                "Building generated project with cargo ({}) profile...",
+                self.run_profile_label()
+            );
+            let mut build_command = Command::new("cargo");
+            build_command.arg("build");
+            for arg in self.run_profile_build_args() {
+                build_command.arg(arg);
+            }
+            for flag in &self.cargo_policy_flags {
+                build_command.arg(flag);
+            }
+            let build_status = build_command
+                // Ensure we don't inherit a broken CA bundle path from the parent env.
+                .env_remove("SSL_CERT_FILE")
+                .env_remove("SSL_CERT_DIR")
+                .env_remove("CURL_CA_BUNDLE")
+                .env_remove("REQUESTS_CA_BUNDLE")
+                .env_remove("CARGO_HTTP_CAINFO")
+                .env("CARGO_TARGET_DIR", &cargo_target_dir)
+                .current_dir(&self.output_dir)
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .status()?;
+            if !build_status.success() {
+                return Ok(RunResult {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    exit_code: build_status.code(),
+                });
+            }
+        } else {
+            eprintln!(
+                "Generated project unchanged; reusing existing cargo ({}) binary.",
+                self.run_profile_label()
+            );
         }
 
         // ---- Context: execute built binary with caller-provided cwd ----
@@ -181,6 +198,7 @@ pub struct RunResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn run_profile_debug_uses_default_cargo_build_args_and_binary_dir() {
@@ -209,5 +227,35 @@ mod tests {
             "expected release binary path, got: {}",
             binary_path_str
         );
+    }
+
+    #[test]
+    fn unchanged_project_with_existing_binary_skips_cargo_build() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let generator = ProjectGenerator::new(tmp.path(), "demo", true);
+        let binary_path = generator.run_binary_path();
+        let parent = binary_path.parent().ok_or("missing binary parent")?;
+        fs::create_dir_all(parent)?;
+        fs::write(&binary_path, "")?;
+        assert!(
+            !generator.should_build_before_run(false),
+            "existing unchanged binary should skip cargo build"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn changed_project_still_rebuilds_even_when_binary_exists() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let generator = ProjectGenerator::new(tmp.path(), "demo", true);
+        let binary_path = generator.run_binary_path();
+        let parent = binary_path.parent().ok_or("missing binary parent")?;
+        fs::create_dir_all(parent)?;
+        fs::write(&binary_path, "")?;
+        assert!(
+            generator.should_build_before_run(true),
+            "changed generated inputs must rebuild even with an existing binary"
+        );
+        Ok(())
     }
 }

@@ -12,6 +12,7 @@ use incan_core::lang::surface::methods::{dict_methods, list_methods};
 use super::super::super::expr::{IrExpr, IrExprKind, MethodKind, VarAccess};
 use super::super::super::stmt::{AssignTarget, IrStmt, IrStmtKind};
 use super::super::IrEmitter;
+use crate::backend::ir::emit::expressions::method_kind_uses_mutable_receiver;
 
 /// Method names that mutate their receiver, built from `incan_core` registries.
 ///
@@ -317,17 +318,6 @@ impl<'a> IrEmitter<'a> {
 
     /// Check if a method kind is mutating.
     fn is_mutating_method_kind(kind: &MethodKind) -> bool {
-        matches!(
-            kind,
-            MethodKind::Collection(
-                crate::backend::ir::expr::CollectionMethodKind::Append
-                    | crate::backend::ir::expr::CollectionMethodKind::Pop
-                    | crate::backend::ir::expr::CollectionMethodKind::Insert
-                    | crate::backend::ir::expr::CollectionMethodKind::Remove
-                    | crate::backend::ir::expr::CollectionMethodKind::Swap
-                    | crate::backend::ir::expr::CollectionMethodKind::Reserve
-                    | crate::backend::ir::expr::CollectionMethodKind::ReserveExact
-            )
-        )
+        method_kind_uses_mutable_receiver(kind)
     }
 }

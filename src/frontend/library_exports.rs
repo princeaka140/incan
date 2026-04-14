@@ -68,6 +68,8 @@ pub struct CheckedModelExport {
     pub name: String,
     pub type_params: Vec<CheckedTypeParam>,
     pub traits: Vec<String>,
+    /// `@derive(...)` names that must remain available to `pub::` consumers.
+    pub derives: Vec<String>,
     pub fields: Vec<CheckedField>,
     pub methods: Vec<CheckedMethod>,
 }
@@ -78,6 +80,8 @@ pub struct CheckedClassExport {
     pub type_params: Vec<CheckedTypeParam>,
     pub extends: Option<String>,
     pub traits: Vec<String>,
+    /// `@derive(...)` names that must remain available to `pub::` consumers.
+    pub derives: Vec<String>,
     pub fields: Vec<CheckedField>,
     pub methods: Vec<CheckedMethod>,
 }
@@ -262,6 +266,7 @@ fn checked_model_export(model: &ModelDecl, checker: &TypeChecker) -> Option<Chec
     let symbol = checker.lookup_symbol(model.name.as_str())?;
     let SymbolKind::Type(TypeInfo::Model(ModelInfo {
         traits,
+        derives,
         fields,
         methods,
         ..
@@ -274,6 +279,7 @@ fn checked_model_export(model: &ModelDecl, checker: &TypeChecker) -> Option<Chec
         name: model.name.clone(),
         type_params: checked_type_params(&model.type_params, checker),
         traits: sorted_vec(traits.to_vec()),
+        derives: sorted_vec(derives.to_vec()),
         fields: map_fields(fields),
         methods: map_methods(methods),
     })
@@ -284,6 +290,7 @@ fn checked_class_export(class: &ClassDecl, checker: &TypeChecker) -> Option<Chec
     let SymbolKind::Type(TypeInfo::Class(ClassInfo {
         extends,
         traits,
+        derives,
         fields,
         methods,
         ..
@@ -297,6 +304,7 @@ fn checked_class_export(class: &ClassDecl, checker: &TypeChecker) -> Option<Chec
         type_params: checked_type_params(&class.type_params, checker),
         extends: extends.clone(),
         traits: sorted_vec(traits.to_vec()),
+        derives: sorted_vec(derives.to_vec()),
         fields: map_fields(fields),
         methods: map_methods(methods),
     })

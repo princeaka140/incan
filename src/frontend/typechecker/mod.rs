@@ -295,6 +295,20 @@ pub struct TypeChecker {
     pub(crate) dependency_exports: HashMap<String, Vec<ExportedSymbol>>,
     /// Consumer-side dependency library manifests (`pub::`) keyed by library name.
     pub(crate) library_manifests: Arc<LibraryManifestIndex>,
+    /// Internal semantic type cache for `pub::` exports referenced transitively by imported signatures.
+    ///
+    /// These entries are intentionally **not** source-visible names: they exist so values returned from imported
+    /// functions/methods can still participate in method lookup and trait compatibility even when the consumer did not
+    /// explicitly import every referenced carrier type.
+    pub(crate) transitive_pub_types: HashMap<String, Vec<TypeInfo>>,
+    /// Internal semantic trait cache for `pub::` exports referenced transitively by imported signatures.
+    ///
+    /// This keeps trait/supertrait compatibility available for imported function signatures without making those trait
+    /// names ambient in user source.
+    pub(crate) transitive_pub_traits: HashMap<String, Vec<TraitInfo>>,
+    /// Tracks which `pub::` libraries have already seeded the internal transitive semantic caches for this checker
+    /// run.
+    pub(crate) cached_pub_libraries: HashSet<String>,
     /// Module path for the program being checked (if known).
     pub(crate) current_module_path: Option<Vec<String>>,
     /// Declared Rust crate names from `incan.toml [rust-dependencies]` (RFC 023 / RFC 013).
@@ -360,6 +374,9 @@ impl TypeChecker {
             type_info: TypeCheckInfo::default(),
             dependency_exports: HashMap::new(),
             library_manifests: Arc::new(LibraryManifestIndex::default()),
+            transitive_pub_types: HashMap::new(),
+            transitive_pub_traits: HashMap::new(),
+            cached_pub_libraries: HashSet::new(),
             current_module_path: None,
             declared_crate_names: None,
             stdlib_cache: stdlib_loader::StdlibAstCache::new(),
@@ -933,14 +950,14 @@ impl TypeChecker {
         concrete_type_args: &[ResolvedType],
         trait_name: &str,
     ) -> Option<Vec<ResolvedType>> {
-        let adopted = match self.lookup_type_info(type_name) {
+        let adopted = match self.lookup_semantic_type_info(type_name) {
             Some(TypeInfo::Model(model)) => &model.traits,
             Some(TypeInfo::Class(class)) => &class.traits,
             _ => return None,
         };
 
         for adopted_trait in adopted {
-            let Some(adopted_info) = self.lookup_trait_info(adopted_trait) else {
+            let Some(adopted_info) = self.lookup_semantic_trait_info(adopted_trait) else {
                 continue;
             };
             let direct_args: Vec<ResolvedType> = concrete_type_args
@@ -956,9 +973,7 @@ impl TypeChecker {
                 return Some(direct_args);
             }
 
-            let Some(closure) = self.supertrait_closure.get(adopted_trait) else {
-                continue;
-            };
+            let closure = self.semantic_supertrait_closure(adopted_trait);
             let subst =
                 crate::frontend::resolved_type_subst::type_param_subst_map(&adopted_info.type_params, &direct_args);
             for (supertrait_name, supertrait_args) in closure {
@@ -980,9 +995,9 @@ impl TypeChecker {
         if subtrait_name == supertrait_name {
             return true;
         }
-        self.supertrait_closure
-            .get(subtrait_name)
-            .is_some_and(|closure| closure.iter().any(|(n, _)| n == supertrait_name))
+        self.semantic_supertrait_closure(subtrait_name)
+            .iter()
+            .any(|(name, _)| name == supertrait_name)
     }
 
     /// Instantiate `supertrait_name`'s type arguments when `subtrait_name` is known with `subtrait_args`.
@@ -995,7 +1010,7 @@ impl TypeChecker {
         subtrait_args: &[ResolvedType],
         supertrait_name: &str,
     ) -> Option<Vec<ResolvedType>> {
-        let sub_info = self.lookup_trait_info(subtrait_name)?;
+        let sub_info = self.lookup_semantic_trait_info(subtrait_name)?;
         if subtrait_args.len() != sub_info.type_params.len() {
             return None;
         }
@@ -1003,8 +1018,8 @@ impl TypeChecker {
         if subtrait_name == supertrait_name {
             return Some(subtrait_args.to_vec());
         }
-        let closure = self.supertrait_closure.get(subtrait_name)?;
-        for (name, args) in closure {
+        let closure = self.semantic_supertrait_closure(subtrait_name);
+        for (name, args) in &closure {
             if name != supertrait_name {
                 continue;
             }
@@ -1021,7 +1036,7 @@ impl TypeChecker {
     ///
     /// Also treats `@derive(T)` as implementing trait `T` when `T` is a visible trait symbol (e.g. `Clone`).
     pub(crate) fn type_implements_trait(&self, type_name: &str, trait_name: &str) -> bool {
-        let Some(info) = self.lookup_type_info(type_name) else {
+        let Some(info) = self.lookup_semantic_type_info(type_name) else {
             return false;
         };
         let (adopted, derives) = match info {
@@ -1034,15 +1049,17 @@ impl TypeChecker {
             if t == trait_name {
                 return true;
             }
-            if let Some(closure) = self.supertrait_closure.get(t)
-                && closure.iter().any(|(n, _)| n == trait_name)
+            if self
+                .semantic_supertrait_closure(t)
+                .iter()
+                .any(|(name, _)| name == trait_name)
             {
                 return true;
             }
         }
         if let Some(derives) = derives
             && derives.iter().any(|d| d == trait_name)
-            && self.lookup_trait_info(trait_name).is_some()
+            && self.lookup_semantic_trait_info(trait_name).is_some()
         {
             return true;
         }
@@ -1053,7 +1070,7 @@ impl TypeChecker {
     pub(crate) fn trait_names_for_type_methods(&self, adopted: &[String], derives: &[String]) -> Vec<String> {
         let mut out = adopted.to_vec();
         for d in derives {
-            if self.lookup_trait_info(d).is_some() && !out.iter().any(|t| t == d) {
+            if self.lookup_semantic_trait_info(d).is_some() && !out.iter().any(|t| t == d) {
                 out.push(d.clone());
             }
         }
@@ -1101,6 +1118,86 @@ impl TypeChecker {
             SymbolKind::Trait(info) => Some(info),
             _ => None,
         }
+    }
+
+    /// Look up semantic type metadata, including transitive `pub::` exports referenced only through imported
+    /// signatures.
+    ///
+    /// This is intentionally narrower than [`Self::lookup_type_info`]: it is for internal semantic reasoning such as
+    /// method lookup and trait compatibility, not for making unimported provider types available in user source.
+    pub(crate) fn lookup_semantic_type_info(&self, name: &str) -> Option<&TypeInfo> {
+        if let Some(info) = self.lookup_type_info(name) {
+            return Some(info);
+        }
+        let infos = self.transitive_pub_types.get(name)?;
+        (infos.len() == 1).then(|| &infos[0])
+    }
+
+    /// Look up semantic trait metadata, including transitive `pub::` exports referenced only through imported
+    /// signatures.
+    ///
+    /// This keeps imported trait contracts available for internal compatibility checks without widening source-visible
+    /// name resolution.
+    pub(crate) fn lookup_semantic_trait_info(&self, name: &str) -> Option<&TraitInfo> {
+        if let Some(info) = self.lookup_trait_info(name) {
+            return Some(info);
+        }
+        let infos = self.transitive_pub_traits.get(name)?;
+        (infos.len() == 1).then(|| &infos[0])
+    }
+
+    /// Return the transitive supertrait closure for one trait using visible symbols first, then cached `pub::`
+    /// semantic metadata.
+    ///
+    /// The returned `(trait_name, type_arguments)` pairs preserve generic substitution along the supertrait chain just
+    /// like the local collection-phase closure used for in-module traits.
+    pub(crate) fn semantic_supertrait_closure(&self, trait_name: &str) -> Vec<(String, Vec<ResolvedType>)> {
+        if let Some(closure) = self.supertrait_closure.get(trait_name) {
+            return closure.clone();
+        }
+        self.expand_semantic_supertraits_transitively(trait_name)
+    }
+
+    /// Expand transitive supertraits for imported trait metadata that never entered the local declaration collector.
+    fn expand_semantic_supertraits_transitively(&self, trait_name: &str) -> Vec<(String, Vec<ResolvedType>)> {
+        let mut result = Vec::new();
+        let mut seen = HashSet::new();
+        let mut work = Vec::new();
+        let Some(root) = self.lookup_semantic_trait_info(trait_name) else {
+            return result;
+        };
+        work.extend(root.supertraits.clone());
+
+        while let Some((supertrait_name, supertrait_args)) = work.pop() {
+            let key = format!(
+                "{supertrait_name}<{}>",
+                supertrait_args
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            if !seen.insert(key) {
+                continue;
+            }
+            result.push((supertrait_name.clone(), supertrait_args.clone()));
+            let Some(supertrait_info) = self.lookup_semantic_trait_info(supertrait_name.as_str()) else {
+                continue;
+            };
+            let subst = crate::frontend::resolved_type_subst::type_param_subst_map(
+                &supertrait_info.type_params,
+                &supertrait_args,
+            );
+            for (nested_name, nested_args) in &supertrait_info.supertraits {
+                let mapped = nested_args
+                    .iter()
+                    .map(|arg| crate::frontend::resolved_type_subst::substitute_resolved_type(arg, &subst))
+                    .collect();
+                work.push((nested_name.clone(), mapped));
+            }
+        }
+
+        result
     }
 
     /// RFC 042: Snapshot trait metadata into [`TypeCheckInfo`] for backend lowering.
@@ -1961,6 +2058,9 @@ impl TypeChecker {
         self.surface_context = SurfaceContext::from_program(program);
         self.import_aliases = self.surface_context.import_aliases().clone();
         self.supertrait_closure.clear();
+        self.transitive_pub_types.clear();
+        self.transitive_pub_traits.clear();
+        self.cached_pub_libraries.clear();
 
         // `check_with_imports` / `import_module` can queue supertrait bounds while collecting dependency ASTs.
         // Resolve those queued bounds into trait symbols before we collect and resolve the current program.
@@ -2033,6 +2133,110 @@ impl TypeChecker {
         }
     }
 
+    /// Predeclare dependency interface names before collecting imported declarations.
+    ///
+    /// Cross-module public signatures may reference types and traits from other dependency modules, including cyclic
+    /// interfaces such as `session -> dataset -> session`. A predeclaration pass breaks that order sensitivity by
+    /// making type- and trait-like names resolvable before method and function signatures are collected.
+    fn predeclare_dependency_interfaces(&mut self, dependencies: &[(&str, &Program)], public_only: bool) {
+        for (_, dep_ast) in dependencies {
+            for decl in &dep_ast.declarations {
+                if public_only && !is_public_decl(decl) {
+                    continue;
+                }
+                self.predeclare_dependency_decl(decl);
+            }
+        }
+    }
+
+    /// Seed the symbol table with a minimal placeholder for one dependency declaration.
+    ///
+    /// The subsequent `import_module*` pass overwrites these placeholders with full collected metadata. These shells
+    /// exist only so `resolve_type_checked` can keep interface types concrete instead of degrading them to `TypeVar` or
+    /// `Unknown` during cyclic or transitive dependency import collection.
+    fn predeclare_dependency_decl(&mut self, decl: &Spanned<Declaration>) {
+        match &decl.node {
+            Declaration::Model(model) if self.lookup_symbol(model.name.as_str()).is_none() => {
+                self.symbols.define(Symbol {
+                    name: model.name.clone(),
+                    kind: SymbolKind::Type(TypeInfo::Model(ModelInfo {
+                        type_params: model.type_params.iter().map(|tp| tp.name.clone()).collect(),
+                        traits: Vec::new(),
+                        derives: Vec::new(),
+                        fields: HashMap::new(),
+                        methods: HashMap::new(),
+                    })),
+                    span: decl.span,
+                    scope: 0,
+                });
+            }
+            Declaration::Class(class) if self.lookup_symbol(class.name.as_str()).is_none() => {
+                self.symbols.define(Symbol {
+                    name: class.name.clone(),
+                    kind: SymbolKind::Type(TypeInfo::Class(ClassInfo {
+                        type_params: class.type_params.iter().map(|tp| tp.name.clone()).collect(),
+                        extends: class.extends.clone(),
+                        traits: Vec::new(),
+                        derives: Vec::new(),
+                        fields: HashMap::new(),
+                        methods: HashMap::new(),
+                    })),
+                    span: decl.span,
+                    scope: 0,
+                });
+            }
+            Declaration::Trait(tr) if self.lookup_symbol(tr.name.as_str()).is_none() => {
+                self.symbols.define(Symbol {
+                    name: tr.name.clone(),
+                    kind: SymbolKind::Trait(TraitInfo {
+                        type_params: tr.type_params.iter().map(|tp| tp.name.clone()).collect(),
+                        methods: HashMap::new(),
+                        requires: Vec::new(),
+                        supertraits: Vec::new(),
+                    }),
+                    span: decl.span,
+                    scope: 0,
+                });
+            }
+            Declaration::TypeAlias(alias) if self.lookup_symbol(alias.name.as_str()).is_none() => {
+                self.symbols.define(Symbol {
+                    name: alias.name.clone(),
+                    kind: SymbolKind::Type(TypeInfo::TypeAlias),
+                    span: decl.span,
+                    scope: 0,
+                });
+            }
+            Declaration::Newtype(nt) if self.lookup_symbol(nt.name.as_str()).is_none() => {
+                self.symbols.define(Symbol {
+                    name: nt.name.clone(),
+                    kind: SymbolKind::Type(TypeInfo::Newtype(NewtypeInfo {
+                        type_params: nt.type_params.iter().map(|tp| tp.name.clone()).collect(),
+                        is_rusttype: nt.is_rusttype,
+                        has_interop: !nt.interop_edges.is_empty(),
+                        underlying: ResolvedType::Unknown,
+                        method_rebindings: HashMap::new(),
+                        methods: HashMap::new(),
+                    })),
+                    span: decl.span,
+                    scope: 0,
+                });
+            }
+            Declaration::Enum(en) if self.lookup_symbol(en.name.as_str()).is_none() => {
+                self.symbols.define(Symbol {
+                    name: en.name.clone(),
+                    kind: SymbolKind::Type(TypeInfo::Enum(EnumInfo {
+                        type_params: en.type_params.iter().map(|tp| tp.name.clone()).collect(),
+                        variants: en.variants.iter().map(|v| v.node.name.clone()).collect(),
+                        derives: Vec::new(),
+                    })),
+                    span: decl.span,
+                    scope: 0,
+                });
+            }
+            _ => {}
+        }
+    }
+
     /// Check a program that may have dependencies on other modules.
     ///
     /// Convenience wrapper that calls [`import_module`](Self::import_module) for each dependency, then
@@ -2058,6 +2262,7 @@ impl TypeChecker {
             self.dependency_exports
                 .insert(name.to_string(), exported_symbols(dep_ast));
         }
+        self.predeclare_dependency_interfaces(dependencies, true);
         // First: import all dependencies
         for (name, dep_ast) in dependencies {
             self.import_module(dep_ast, name);
@@ -2078,6 +2283,7 @@ impl TypeChecker {
     ) -> Result<(), Vec<CompileError>> {
         // Skip populating dependency exports so visibility checks are bypassed.
         self.dependency_exports.clear();
+        self.predeclare_dependency_interfaces(dependencies, false);
         for (name, dep_ast) in dependencies {
             self.import_module_all(dep_ast, name);
         }
@@ -2095,7 +2301,7 @@ impl TypeChecker {
     #[allow(clippy::only_used_in_recursion)]
     pub(crate) fn types_compatible(&self, actual: &ResolvedType, expected: &ResolvedType) -> bool {
         let has_generic_params = |name: &str| -> bool {
-            match self.lookup_type_info(name) {
+            match self.lookup_semantic_type_info(name) {
                 Some(TypeInfo::Model(model)) => !model.type_params.is_empty(),
                 Some(TypeInfo::Class(class)) => !class.type_params.is_empty(),
                 Some(TypeInfo::Newtype(newtype)) => !newtype.type_params.is_empty(),
@@ -2119,19 +2325,19 @@ impl TypeChecker {
 
             // ---- Context: RFC 042 — `expected` is a trait reference (`Named` or nullary trait on RHS) ----
             (ResolvedType::Named(type_name), ResolvedType::Named(trait_name))
-                if self.lookup_trait_info(trait_name).is_some() =>
+                if self.lookup_semantic_trait_info(trait_name).is_some() =>
             {
-                if self.lookup_trait_info(type_name).is_some() {
+                if self.lookup_semantic_trait_info(type_name).is_some() {
                     self.trait_is_supertrait_of(type_name, trait_name)
                 } else {
                     self.type_implements_trait(type_name, trait_name)
                 }
             }
             (ResolvedType::Generic(type_name, actual_args), ResolvedType::Named(trait_name))
-                if self.lookup_trait_info(trait_name).is_some() =>
+                if self.lookup_semantic_trait_info(trait_name).is_some() =>
             {
-                if self.lookup_trait_info(type_name).is_some() {
-                    let Some(super_info) = self.lookup_trait_info(trait_name) else {
+                if self.lookup_semantic_trait_info(type_name).is_some() {
+                    let Some(super_info) = self.lookup_semantic_trait_info(trait_name) else {
                         return false;
                     };
                     if !super_info.type_params.is_empty() {
@@ -2150,8 +2356,8 @@ impl TypeChecker {
             (
                 ResolvedType::Generic(subtrait_name, actual_args),
                 ResolvedType::Generic(supertrait_name, expected_args),
-            ) if self.lookup_trait_info(subtrait_name).is_some()
-                && self.lookup_trait_info(supertrait_name).is_some() =>
+            ) if self.lookup_semantic_trait_info(subtrait_name).is_some()
+                && self.lookup_semantic_trait_info(supertrait_name).is_some() =>
             {
                 let Some(instantiated) = self.instantiated_supertrait_args(subtrait_name, actual_args, supertrait_name)
                 else {
@@ -2168,15 +2374,15 @@ impl TypeChecker {
 
             // RFC 042: `Concrete[T]` assignable to generic trait annotation `Trait[T]` (and similar).
             (ResolvedType::Generic(type_name, actual_args), ResolvedType::Generic(trait_name, expected_args))
-                if self.lookup_trait_info(trait_name).is_some()
-                    && self.lookup_trait_info(type_name).is_none()
-                    && self.lookup_type_info(type_name).is_some() =>
+                if self.lookup_semantic_trait_info(trait_name).is_some()
+                    && self.lookup_semantic_trait_info(type_name).is_none()
+                    && self.lookup_semantic_type_info(type_name).is_some() =>
             {
                 let Some(instantiated_args) = self.instantiated_trait_args_for_type(type_name, actual_args, trait_name)
                 else {
                     return false;
                 };
-                let concrete_arity_ok = match self.lookup_type_info(type_name) {
+                let concrete_arity_ok = match self.lookup_semantic_type_info(type_name) {
                     Some(TypeInfo::Model(m)) => actual_args.len() == m.type_params.len(),
                     Some(TypeInfo::Class(c)) => actual_args.len() == c.type_params.len(),
                     Some(TypeInfo::Newtype(n)) => actual_args.len() == n.type_params.len(),
@@ -2197,9 +2403,9 @@ impl TypeChecker {
 
             // ---- Context: RFC 042 — `Named` actual vs `Trait` / `Trait[T…]` expected (incl. trait upcast) ----
             (ResolvedType::Named(type_name), ResolvedType::Generic(trait_name, expected_args))
-                if self.lookup_trait_info(trait_name).is_some() =>
+                if self.lookup_semantic_trait_info(trait_name).is_some() =>
             {
-                if self.lookup_trait_info(type_name).is_some() {
+                if self.lookup_semantic_trait_info(type_name).is_some() {
                     let Some(instantiated_args) = self.instantiated_supertrait_args(type_name, &[], trait_name) else {
                         return false;
                     };

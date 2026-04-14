@@ -318,7 +318,7 @@ impl<'a> IrEmitter<'a> {
             let force_calls: Vec<TokenStream> = static_names
                 .iter()
                 .map(|name| {
-                    let ident = Self::rust_ident(name);
+                    let ident = Self::rust_static_ident(name);
                     quote! { std::sync::LazyLock::force(&#ident); }
                 })
                 .collect();

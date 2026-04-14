@@ -101,7 +101,7 @@ impl<'a> IrEmitter<'a> {
         value: &super::super::TypedExpr,
     ) -> Result<TokenStream, EmitError> {
         let vis = self.emit_visibility(visibility);
-        let name_ident = format_ident!("{}", name);
+        let name_ident = Self::rust_static_ident(name);
         let ty_tokens = self.emit_type(ty);
         let previous = self.in_static_initializer.replace(true);
         let emitted_value = self.emit_expr(value);

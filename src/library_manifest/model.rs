@@ -234,6 +234,9 @@ pub struct ModelExport {
     pub type_params: Vec<TypeParamExport>,
     /// Traits implemented by the model.
     pub traits: Vec<String>,
+    /// `@derive(...)` names (empty for manifests predating this field).
+    #[serde(default)]
+    pub derives: Vec<String>,
     pub fields: Vec<FieldExport>,
     pub methods: Vec<MethodExport>,
 }
@@ -247,6 +250,9 @@ pub struct ClassExport {
     pub extends: Option<String>,
     /// Traits implemented by the class.
     pub traits: Vec<String>,
+    /// `@derive(...)` names (empty for manifests predating this field).
+    #[serde(default)]
+    pub derives: Vec<String>,
     pub fields: Vec<FieldExport>,
     pub methods: Vec<MethodExport>,
 }
@@ -506,6 +512,7 @@ fn model_export_from_checked(export: &CheckedModelExport) -> ModelExport {
         name: export.name.clone(),
         type_params: export.type_params.iter().map(type_param_from_checked).collect(),
         traits: export.traits.clone(),
+        derives: export.derives.clone(),
         fields: export.fields.iter().map(field_from_checked).collect(),
         methods: export.methods.iter().map(method_from_checked).collect(),
     }
@@ -517,6 +524,7 @@ fn class_export_from_checked(export: &CheckedClassExport) -> ClassExport {
         type_params: export.type_params.iter().map(type_param_from_checked).collect(),
         extends: export.extends.clone(),
         traits: export.traits.clone(),
+        derives: export.derives.clone(),
         fields: export.fields.iter().map(field_from_checked).collect(),
         methods: export.methods.iter().map(method_from_checked).collect(),
     }

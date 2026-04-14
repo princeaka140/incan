@@ -7,8 +7,9 @@ use crate::frontend::library_manifest_index::{
 };
 use crate::frontend::{lexer, parser};
 use crate::library_manifest::{
-    ConstExport, EnumExport, EnumVariantExport, FunctionExport, LibraryExports, LibraryManifest, ModelExport,
-    ParamExport, StaticExport, TraitExport, TypeParamExport, TypeRef,
+    ClassExport, ConstExport, EnumExport, EnumVariantExport, FunctionExport, LibraryExports, LibraryManifest,
+    MethodExport, ModelExport, ParamExport, ReceiverExport, StaticExport, TraitExport, TypeBoundExport,
+    TypeParamExport, TypeRef,
 };
 #[cfg(feature = "rust_inspect")]
 use crate::rust_inspect::{Inspector, InspectorConfig, write_borrowed_param_probe_crate, write_substrait_probe_crate};
@@ -17,6 +18,8 @@ use incan_core::interop::{
     RustFieldInfo, RustFunctionSig, RustItemKind, RustItemMetadata, RustMethodSig, RustParam, RustTypeInfo,
     RustTypeShape, RustVariantInfo, RustVisibility,
 };
+use incan_core::lang::surface::constructors::{self as surface_constructors, ConstructorId};
+use incan_core::lang::traits::{self as builtin_traits, TraitId};
 use std::collections::HashMap;
 #[cfg(feature = "rust_inspect")]
 use std::fs;
@@ -42,6 +45,14 @@ fn synthetic_artifact_root(name: &str) -> PathBuf {
     root.push("target");
     root.push("lib");
     root
+}
+
+fn clone_trait_name() -> String {
+    builtin_traits::as_str(TraitId::Clone).to_string()
+}
+
+fn none_constructor_name() -> String {
+    surface_constructors::as_str(ConstructorId::None).to_string()
 }
 
 #[cfg(feature = "rust_inspect")]
@@ -133,6 +144,7 @@ fn library_index_with_mylib_exports() -> LibraryManifestIndex {
                 name: "Widget".to_string(),
                 type_params: Vec::new(),
                 traits: Vec::new(),
+                derives: Vec::new(),
                 fields: Vec::new(),
                 methods: Vec::new(),
             }],
@@ -236,6 +248,201 @@ fn library_index_with_trait_export() -> LibraryManifestIndex {
                 "mylib",
                 "mylib",
                 synthetic_artifact_root("mylib_trait_export"),
+            ),
+        },
+    )]))
+}
+
+fn library_index_with_pub_boundary_type_fidelity_exports() -> LibraryManifestIndex {
+    let type_param_t = TypeParamExport {
+        name: "T".to_string(),
+        bounds: Vec::new(),
+    };
+    let manifest = LibraryManifest {
+        name: "pubdemo".to_string(),
+        version: "0.1.0".to_string(),
+        incan_version: crate::version::INCAN_VERSION.to_string(),
+        manifest_format: crate::library_manifest::LIBRARY_MANIFEST_FORMAT,
+        exports: LibraryExports {
+            models: vec![ModelExport {
+                name: "SessionError".to_string(),
+                type_params: Vec::new(),
+                traits: Vec::new(),
+                derives: Vec::new(),
+                fields: Vec::new(),
+                methods: Vec::new(),
+            }],
+            classes: vec![
+                ClassExport {
+                    name: "Session".to_string(),
+                    type_params: Vec::new(),
+                    extends: None,
+                    traits: Vec::new(),
+                    derives: Vec::new(),
+                    fields: Vec::new(),
+                    methods: vec![
+                        MethodExport {
+                            name: "default".to_string(),
+                            type_params: Vec::new(),
+                            receiver: None,
+                            params: Vec::new(),
+                            return_type: TypeRef::Named {
+                                name: "Session".to_string(),
+                            },
+                            is_async: false,
+                            has_body: true,
+                        },
+                        MethodExport {
+                            name: "read_csv".to_string(),
+                            type_params: vec![type_param_t.clone()],
+                            receiver: Some(ReceiverExport::Mutable),
+                            params: vec![
+                                ParamExport {
+                                    name: "logical_name".to_string(),
+                                    ty: TypeRef::Named {
+                                        name: "str".to_string(),
+                                    },
+                                },
+                                ParamExport {
+                                    name: "uri".to_string(),
+                                    ty: TypeRef::Named {
+                                        name: "str".to_string(),
+                                    },
+                                },
+                            ],
+                            return_type: TypeRef::Applied {
+                                name: "Result".to_string(),
+                                args: vec![
+                                    TypeRef::Applied {
+                                        name: "LazyFrame".to_string(),
+                                        args: vec![TypeRef::TypeParam { name: "T".to_string() }],
+                                    },
+                                    TypeRef::Named {
+                                        name: "SessionError".to_string(),
+                                    },
+                                ],
+                            },
+                            is_async: false,
+                            has_body: true,
+                        },
+                        MethodExport {
+                            name: "collect".to_string(),
+                            type_params: vec![type_param_t.clone()],
+                            receiver: Some(ReceiverExport::Immutable),
+                            params: vec![ParamExport {
+                                name: "data".to_string(),
+                                ty: TypeRef::Applied {
+                                    name: "LazyFrame".to_string(),
+                                    args: vec![TypeRef::TypeParam { name: "T".to_string() }],
+                                },
+                            }],
+                            return_type: TypeRef::Applied {
+                                name: "Result".to_string(),
+                                args: vec![
+                                    TypeRef::Applied {
+                                        name: "DataFrame".to_string(),
+                                        args: vec![TypeRef::TypeParam { name: "T".to_string() }],
+                                    },
+                                    TypeRef::Named {
+                                        name: "SessionError".to_string(),
+                                    },
+                                ],
+                            },
+                            is_async: false,
+                            has_body: true,
+                        },
+                    ],
+                },
+                ClassExport {
+                    name: "DataFrame".to_string(),
+                    type_params: vec![type_param_t.clone()],
+                    extends: None,
+                    traits: vec!["BoundedDataSet".to_string()],
+                    derives: vec![clone_trait_name()],
+                    fields: Vec::new(),
+                    methods: Vec::new(),
+                },
+                ClassExport {
+                    name: "LazyFrame".to_string(),
+                    type_params: vec![type_param_t.clone()],
+                    extends: None,
+                    traits: vec!["BoundedDataSet".to_string()],
+                    derives: vec![clone_trait_name()],
+                    fields: Vec::new(),
+                    methods: vec![MethodExport {
+                        name: "collect".to_string(),
+                        type_params: Vec::new(),
+                        receiver: Some(ReceiverExport::Immutable),
+                        params: Vec::new(),
+                        return_type: TypeRef::Applied {
+                            name: "Result".to_string(),
+                            args: vec![
+                                TypeRef::Applied {
+                                    name: "DataFrame".to_string(),
+                                    args: vec![TypeRef::TypeParam { name: "T".to_string() }],
+                                },
+                                TypeRef::Named {
+                                    name: "SessionError".to_string(),
+                                },
+                            ],
+                        },
+                        is_async: false,
+                        has_body: true,
+                    }],
+                },
+            ],
+            functions: vec![FunctionExport {
+                name: "display".to_string(),
+                type_params: vec![type_param_t.clone()],
+                params: vec![ParamExport {
+                    name: "data".to_string(),
+                    ty: TypeRef::Applied {
+                        name: "DataSet".to_string(),
+                        args: vec![TypeRef::TypeParam { name: "T".to_string() }],
+                    },
+                }],
+                return_type: TypeRef::Named {
+                    name: none_constructor_name(),
+                },
+                is_async: false,
+            }],
+            traits: vec![
+                TraitExport {
+                    name: "DataSet".to_string(),
+                    type_params: vec![type_param_t.clone()],
+                    supertraits: Vec::new(),
+                    requires: Vec::new(),
+                    methods: Vec::new(),
+                },
+                TraitExport {
+                    name: "BoundedDataSet".to_string(),
+                    type_params: vec![type_param_t],
+                    supertraits: vec![TypeBoundExport {
+                        name: "DataSet".to_string(),
+                        type_args: vec![TypeRef::TypeParam { name: "T".to_string() }],
+                    }],
+                    requires: Vec::new(),
+                    methods: Vec::new(),
+                },
+            ],
+            enums: Vec::new(),
+            type_aliases: Vec::new(),
+            newtypes: Vec::new(),
+            consts: Vec::new(),
+            statics: Vec::new(),
+        },
+        vocab: None,
+        soft_keywords: Default::default(),
+    };
+
+    LibraryManifestIndex::from_entries(HashMap::from([(
+        "pubdemo".to_string(),
+        LibraryManifestIndexEntry::Loaded {
+            manifest: Box::new(manifest),
+            metadata: LibraryArtifactMetadata::from_crate_root(
+                "pubdemo",
+                "pubdemo",
+                synthetic_artifact_root("pub_boundary_type_fidelity"),
             ),
         },
     )]))
@@ -3295,6 +3502,118 @@ def upcast_bounded[T](v: BoundedDataSet[T]) -> DataSet[T]:
 }
 
 #[test]
+fn test_check_with_imports_preserves_cyclic_dependency_interface_result_types() -> Result<(), Box<dyn std::error::Error>>
+{
+    let dataset_source = r#"
+from session import SessionError
+
+pub class DataFrame[T]:
+  def clone(self) -> Self:
+    return self
+
+pub class LazyFrame[T]:
+  def clone(self) -> Self:
+    return self
+
+  def collect(self) -> Result[DataFrame[T], SessionError]:
+    return Err(str("not implemented"))
+"#;
+    let session_source = r#"
+from dataset import LazyFrame
+
+pub class Session:
+  def read_csv[T](self) -> Result[LazyFrame[T], SessionError]:
+    return Err(str("not implemented"))
+
+pub model SessionError:
+  pub message: str
+"#;
+    let consumer_source = r#"
+from session import Session, SessionError
+
+def main() -> Result[None, SessionError]:
+  session = Session()
+  lines = session.read_csv[int]()?
+  df = lines.clone().collect()?
+  df.clone()
+  return Ok(None)
+"#;
+
+    let dataset_tokens = lexer::lex(dataset_source).map_err(|errs| format!("dataset lex failed: {errs:?}"))?;
+    let dataset_ast = parser::parse(&dataset_tokens).map_err(|errs| format!("dataset parse failed: {errs:?}"))?;
+    let session_tokens = lexer::lex(session_source).map_err(|errs| format!("session lex failed: {errs:?}"))?;
+    let session_ast = parser::parse(&session_tokens).map_err(|errs| format!("session parse failed: {errs:?}"))?;
+    let consumer_tokens = lexer::lex(consumer_source).map_err(|errs| format!("consumer lex failed: {errs:?}"))?;
+    let consumer_ast = parser::parse(&consumer_tokens).map_err(|errs| format!("consumer parse failed: {errs:?}"))?;
+
+    let mut checker = TypeChecker::new();
+    checker
+        .check_with_imports(&consumer_ast, &[("dataset", &dataset_ast), ("session", &session_ast)])
+        .map_err(|errs| format!("typecheck failed: {errs:?}"))?;
+    Ok(())
+}
+
+#[test]
+fn test_check_with_imports_preserves_imported_generic_method_bounds_for_local_derived_types()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dataset_source = r#"
+from session import SessionError
+
+pub class LazyFrame[T with Clone]:
+  def clone(self) -> Self:
+    return self
+
+  def collect(self) -> Result[DataFrame[T], SessionError]:
+    return Err(SessionError(message=str("not implemented")))
+
+pub class DataFrame[T with Clone]:
+  def clone(self) -> Self:
+    return self
+"#;
+    let session_source = r#"
+from dataset import LazyFrame
+
+pub model SessionError:
+  pub message: str
+
+pub class Session:
+  @staticmethod
+  def default() -> Session:
+    return Session()
+
+  def read_csv[T with Clone](self, _logical_name: str, _uri: str) -> Result[LazyFrame[T], SessionError]:
+    return Err(SessionError(message=str("not implemented")))
+"#;
+    let consumer_source = r#"
+from session import Session, SessionError
+
+@derive(Clone)
+pub model OrderLine:
+  pub sku: str
+
+def main() -> Result[None, SessionError]:
+  session = Session.default()
+  lines = session.read_csv[OrderLine](str("orders"), str("input.csv"))?
+  df = lines.clone().collect()?
+  df.clone()
+  return Ok(None)
+"#;
+
+    let dataset_tokens = lexer::lex(dataset_source).map_err(|errs| format!("dataset lex failed: {errs:?}"))?;
+    let dataset_ast = parser::parse(&dataset_tokens).map_err(|errs| format!("dataset parse failed: {errs:?}"))?;
+    let session_tokens = lexer::lex(session_source).map_err(|errs| format!("session lex failed: {errs:?}"))?;
+    let session_ast = parser::parse(&session_tokens).map_err(|errs| format!("session parse failed: {errs:?}"))?;
+    let consumer_tokens = lexer::lex(consumer_source).map_err(|errs| format!("consumer lex failed: {errs:?}"))?;
+    let consumer_ast = parser::parse(&consumer_tokens).map_err(|errs| format!("consumer parse failed: {errs:?}"))?;
+
+    let mut checker = TypeChecker::new();
+    checker
+        .check_with_imports(&consumer_ast, &[("dataset", &dataset_ast), ("session", &session_ast)])
+        .map_err(|errs| format!("typecheck failed: {errs:?}"))?;
+    Ok(())
+}
+
+#[test]
 fn test_types_compatible_trait_to_supertrait_identity() -> Result<(), Vec<CompileError>> {
     let source = r#"
 trait DataSet[T]:
@@ -4894,6 +5213,78 @@ model Cell[T] with ExternBox:
         "Imported trait supertraits should be recorded even when empty"
     );
     Ok(())
+}
+
+#[test]
+fn test_pub_import_transitive_method_return_type_supports_follow_up_method_lookup() {
+    let source = r#"
+from pub::pubdemo import Session, SessionError
+
+model Row:
+  value: int
+
+def main() -> Result[None, SessionError]:
+  mut session = Session.default()
+  lines = session.read_csv[Row]("orders", "orders.csv")?
+  df = lines.collect()?
+  print(df)
+  return Ok(None)
+"#;
+
+    let result = check_str_with_library_index(source, library_index_with_pub_boundary_type_fidelity_exports());
+    assert!(
+        result.is_ok(),
+        "expected transitive pub-returned carrier methods to resolve, got: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn test_pub_import_transitive_derived_method_chain_supports_follow_up_method_lookup() {
+    let source = r#"
+from pub::pubdemo import Session, SessionError
+
+model Row:
+  value: int
+
+def main() -> Result[None, SessionError]:
+  mut session = Session.default()
+  lines = session.read_csv[Row]("orders", "orders.csv")?
+  df = lines.clone().collect()?
+  print(df)
+  return Ok(None)
+"#;
+
+    let result = check_str_with_library_index(source, library_index_with_pub_boundary_type_fidelity_exports());
+    assert!(
+        result.is_ok(),
+        "expected transitive pub derived-method chains to resolve, got: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn test_pub_import_transitive_trait_conformance_accepts_concrete_carrier() {
+    let source = r#"
+from pub::pubdemo import Session, SessionError, display
+
+model Row:
+  value: int
+
+def main() -> Result[None, SessionError]:
+  mut session = Session.default()
+  lines = session.read_csv[Row]("orders", "orders.csv")?
+  df = session.collect(lines)?
+  display(df)
+  return Ok(None)
+"#;
+
+    let result = check_str_with_library_index(source, library_index_with_pub_boundary_type_fidelity_exports());
+    assert!(
+        result.is_ok(),
+        "expected transitive pub trait conformance to resolve, got: {:?}",
+        result.err()
+    );
 }
 
 #[test]
