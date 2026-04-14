@@ -99,6 +99,7 @@ fn disk_cache_invalidates_when_workspace_fingerprint_changes() -> Result<(), Box
             inspector_version: INSPECTOR_VERSION.to_string(),
             workspace_fingerprint: fingerprint,
             items: HashMap::from([("demo::Thing".to_string(), dummy_type_metadata("demo::Thing"))]),
+            misses: HashMap::new(),
         },
     )?;
 
@@ -156,5 +157,61 @@ fn raw_identifier_alias_hits_existing_cached_item() -> Result<(), Box<dyn std::e
 
     let hit = cache.get_or_extract(tmp.path(), "incan_stdlib::r#async::sync::RawSemaphore", &|_| ())?;
     assert_eq!(hit.canonical_path, "incan_stdlib::r#async::sync::RawSemaphore");
+    Ok(())
+}
+
+#[test]
+fn repeated_missing_lookup_hits_negative_cache_without_new_workspace_load()
+-> Result<(), Box<dyn std::error::Error>> {
+    let tmp = tempfile::tempdir()?;
+    fs::write(
+        tmp.path().join("Cargo.toml"),
+        "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )?;
+    fs::create_dir_all(tmp.path().join("src"))?;
+    fs::write(tmp.path().join("src/lib.rs"), "pub fn keep() {}\n")?;
+
+    let cache = RustMetadataCache::new();
+    let query = "std::fs::read_to_string";
+
+    let first = cache.get_or_extract(tmp.path(), query, &|_| ());
+    assert!(matches!(
+        first,
+        Err(RustMetadataError::CrateNotFound(_))
+            | Err(RustMetadataError::PathNotResolved(_))
+            | Err(RustMetadataError::UnsupportedMacro(_))
+    ));
+
+    let root = tmp.path().canonicalize()?;
+    let workspaces_after_first = {
+        let inner = cache
+            .inner
+            .lock()
+            .map_err(|_| std::io::Error::other("poisoned cache"))?;
+        assert!(inner
+            .failed_items
+            .contains_key(&(root.clone(), query.to_string())));
+        inner.workspaces.len()
+    };
+
+    let second = cache.get_or_extract(tmp.path(), query, &|_| ());
+    assert!(matches!(
+        second,
+        Err(RustMetadataError::CrateNotFound(_))
+            | Err(RustMetadataError::PathNotResolved(_))
+            | Err(RustMetadataError::UnsupportedMacro(_))
+    ));
+
+    let workspaces_after_second = {
+        let inner = cache
+            .inner
+            .lock()
+            .map_err(|_| std::io::Error::other("poisoned cache"))?;
+        inner.workspaces.len()
+    };
+    assert_eq!(
+        workspaces_after_second, workspaces_after_first,
+        "negative-cache hit should avoid loading additional workspaces on repeated misses"
+    );
     Ok(())
 }

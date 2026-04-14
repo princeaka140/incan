@@ -1017,6 +1017,7 @@ def main() -> None:
             name: "Widget".to_string(),
             type_params: Vec::new(),
             traits: Vec::new(),
+            derives: Vec::new(),
             fields: Vec::new(),
             methods: Vec::new(),
         });

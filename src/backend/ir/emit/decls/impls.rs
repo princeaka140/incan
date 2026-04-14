@@ -30,11 +30,7 @@ impl<'a> IrEmitter<'a> {
         for method in &impl_block.methods {
             match magic_methods::from_str(method.name.as_str()) {
                 Some(magic_methods::MagicMethodId::Eq) => {
-                    let body_stmts: Vec<TokenStream> = method
-                        .body
-                        .iter()
-                        .map(|s| self.emit_stmt(s))
-                        .collect::<Result<_, _>>()?;
+                    let body_stmts = self.emit_stmts(&method.body)?;
                     trait_impls.push(quote! {
                         impl #generics PartialEq for #target_type #generics_bare {
                             fn eq(&self, other: &Self) -> bool {

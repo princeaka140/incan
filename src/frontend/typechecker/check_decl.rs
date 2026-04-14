@@ -418,14 +418,12 @@ impl TypeChecker {
         let mut names = HashSet::new();
         for trait_ref in traits {
             let trait_name = trait_ref.node.as_str();
-            if let Some(trait_info) = self.lookup_trait_info(trait_name) {
+            if let Some(trait_info) = self.lookup_semantic_trait_info(trait_name) {
                 names.extend(trait_info.methods.keys().cloned());
             }
-            if let Some(closure) = self.supertrait_closure.get(trait_name) {
-                for (sup_name, _) in closure {
-                    if let Some(sup_info) = self.lookup_trait_info(sup_name) {
-                        names.extend(sup_info.methods.keys().cloned());
-                    }
+            for (supertrait_name, _) in self.semantic_supertrait_closure(trait_name) {
+                if let Some(supertrait_info) = self.lookup_semantic_trait_info(supertrait_name.as_str()) {
+                    names.extend(supertrait_info.methods.keys().cloned());
                 }
             }
         }
@@ -522,9 +520,9 @@ impl TypeChecker {
 
     /// True if `ancestor` appears in the transitive supertrait closure of trait `descendant` (RFC 042).
     fn is_strict_supertrait_name(&self, ancestor: &str, descendant: &str) -> bool {
-        self.supertrait_closure
-            .get(descendant)
-            .is_some_and(|c| c.iter().any(|(n, _)| n == ancestor))
+        self.semantic_supertrait_closure(descendant)
+            .iter()
+            .any(|(name, _)| name == ancestor)
     }
 
     /// Drop supertrait obligations shadowed by a more derived trait in the same obligation group.
@@ -543,24 +541,21 @@ impl TypeChecker {
     /// Collect abstract (`...`) methods from a trait and its transitive supertraits with supertrait type args applied.
     fn raw_trait_abstract_method_entries(&self, trait_name: &str) -> Vec<(String, String, MethodInfo)> {
         let mut out = Vec::new();
-        if let Some(root) = self.lookup_trait_info(trait_name) {
+        if let Some(root) = self.lookup_semantic_trait_info(trait_name) {
             for (m, info) in &root.methods {
                 if !info.has_body {
                     out.push((m.clone(), trait_name.to_string(), info.clone()));
                 }
             }
         }
-        let Some(closure) = self.supertrait_closure.get(trait_name) else {
-            return out;
-        };
-        for (sup_name, sup_args) in closure {
-            let Some(sup) = self.lookup_trait_info(sup_name) else {
+        for (supertrait_name, supertrait_args) in self.semantic_supertrait_closure(trait_name) {
+            let Some(supertrait_info) = self.lookup_semantic_trait_info(supertrait_name.as_str()) else {
                 continue;
             };
-            let subst = type_param_subst_map(&sup.type_params, sup_args);
-            for (m, info) in &sup.methods {
+            let subst = type_param_subst_map(&supertrait_info.type_params, &supertrait_args);
+            for (m, info) in &supertrait_info.methods {
                 if !info.has_body {
-                    out.push((m.clone(), sup_name.clone(), substitute_method_info(info, &subst)));
+                    out.push((m.clone(), supertrait_name.clone(), substitute_method_info(info, &subst)));
                 }
             }
         }
@@ -582,22 +577,20 @@ impl TypeChecker {
         ambiguity_span: Span,
     ) -> Option<MethodInfo> {
         let mut entries: Vec<(String, MethodInfo)> = Vec::new();
-        if let Some(root) = self.lookup_trait_info(adopted_trait)
+        if let Some(root) = self.lookup_semantic_trait_info(adopted_trait)
             && let Some(info) = root.methods.get(method)
         {
             entries.push((adopted_trait.to_string(), info.clone()));
         }
-        if let Some(closure) = self.supertrait_closure.get(adopted_trait) {
-            for (sup_name, sup_args) in closure {
-                let Some(sup) = self.lookup_trait_info(sup_name) else {
-                    continue;
-                };
-                let Some(info) = sup.methods.get(method) else {
-                    continue;
-                };
-                let subst = type_param_subst_map(&sup.type_params, sup_args);
-                entries.push((sup_name.clone(), substitute_method_info(info, &subst)));
-            }
+        for (supertrait_name, supertrait_args) in self.semantic_supertrait_closure(adopted_trait) {
+            let Some(supertrait_info) = self.lookup_semantic_trait_info(supertrait_name.as_str()) else {
+                continue;
+            };
+            let Some(info) = supertrait_info.methods.get(method) else {
+                continue;
+            };
+            let subst = type_param_subst_map(&supertrait_info.type_params, &supertrait_args);
+            entries.push((supertrait_name, substitute_method_info(info, &subst)));
         }
         let filtered = self.filter_supertrait_dominated_entries(entries);
         if filtered.is_empty()

@@ -7,7 +7,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::backend::{IrCodegen, ProjectGenerator};
+use crate::backend::{IrCodegen, ProjectGenerator, RunProfile};
 use crate::cli::{CliError, CliResult, ExitCode};
 use crate::dependency_resolver::resolve_dependencies;
 use crate::frontend::ast::{Declaration, Decorator, ImportKind, Span, Spanned};
@@ -42,6 +42,8 @@ use crate::cli::prelude::ParsedModule;
 struct PreparedProject {
     /// The configured project generator
     generator: ProjectGenerator,
+    /// Whether generating the Rust project changed any on-disk project inputs.
+    project_changed: bool,
     /// Output directory path
     out_dir: String,
     /// Project root directory (used as working dir when running)
@@ -222,7 +224,14 @@ fn format_rust_extern_wrapped_diagnostics(stderr: &str, contexts: &[RustExternDe
 
 fn resolve_library_project_root(file_path: Option<&str>) -> CliResult<PathBuf> {
     if let Some(file_path) = file_path {
-        return Ok(resolve_project_root(Path::new(file_path)));
+        let normalized = if Path::new(file_path).is_absolute() {
+            PathBuf::from(file_path)
+        } else {
+            env::current_dir()
+                .map_err(|e| CliError::failure(format!("failed to determine current directory: {e}")))?
+                .join(file_path)
+        };
+        return Ok(resolve_project_root(&normalized));
     }
 
     env::current_dir().map_err(|e| CliError::failure(format!("failed to determine current directory: {e}")))
@@ -346,7 +355,15 @@ fn prepare_project(
     cargo_no_default_features: bool,
     cargo_all_features: bool,
 ) -> CliResult<PreparedProject> {
-    let modules = collect_modules(file_path)?;
+    let normalized_file_path = if Path::new(file_path).is_absolute() {
+        PathBuf::from(file_path)
+    } else {
+        env::current_dir()
+            .map_err(|e| CliError::failure(format!("failed to determine current directory: {e}")))?
+            .join(file_path)
+    };
+    let normalized_file_path_str = normalized_file_path.to_string_lossy().to_string();
+    let modules = collect_modules(&normalized_file_path_str)?;
     let rust_extern_contexts = collect_rust_extern_contexts(&modules);
 
     let Some(main_module) = modules.last() else {
@@ -354,7 +371,7 @@ fn prepare_project(
     };
 
     let dep_modules = &modules[..modules.len() - 1];
-    let path = Path::new(file_path);
+    let path = normalized_file_path.as_path();
     let inferred_project_root = resolve_project_root(path);
     let manifest = ProjectManifest::discover(&inferred_project_root).map_err(|e| CliError::failure(e.to_string()))?;
     let project_root = manifest
@@ -505,7 +522,7 @@ fn prepare_project(
 
     // ---- Generate Rust project files ----
     let has_deps = !dep_modules.is_empty();
-    if has_deps {
+    let project_changed = if has_deps {
         let module_paths: Vec<Vec<String>> = dep_modules.iter().map(|m| m.path_segments.clone()).collect();
         let (main_code, rust_modules) = codegen
             .try_generate_multi_file_nested(&main_module.ast, &module_paths)
@@ -513,18 +530,19 @@ fn prepare_project(
 
         generator
             .generate_nested(&main_code, &rust_modules)
-            .map_err(|e| CliError::failure(format!("Error generating project: {}", e)))?;
+            .map_err(|e| CliError::failure(format!("Error generating project: {}", e)))?
     } else {
         let rust_code = codegen
             .try_generate(&main_module.ast)
             .map_err(|e| CliError::failure(format!("Code generation error: {}", e)))?;
         generator
             .generate(&rust_code)
-            .map_err(|e| CliError::failure(format!("Error generating project: {}", e)))?;
-    }
+            .map_err(|e| CliError::failure(format!("Error generating project: {}", e)))?
+    };
 
     Ok(PreparedProject {
         generator,
+        project_changed,
         out_dir,
         project_root,
         rust_extern_contexts,
@@ -882,8 +900,9 @@ pub fn run_file(
     cargo_features: Vec<String>,
     cargo_no_default_features: bool,
     cargo_all_features: bool,
+    release: bool,
 ) -> CliResult<ExitCode> {
-    let prepared = prepare_project(
+    let mut prepared = prepare_project(
         file_path,
         None,
         locked,
@@ -892,8 +911,16 @@ pub fn run_file(
         cargo_no_default_features,
         cargo_all_features,
     )?;
+    prepared.generator.set_run_profile(if release {
+        RunProfile::Release
+    } else {
+        RunProfile::Debug
+    });
 
-    match prepared.generator.run_with_cwd(&prepared.project_root) {
+    match prepared
+        .generator
+        .run_with_cwd(&prepared.project_root, prepared.project_changed)
+    {
         Ok(result) => {
             if !result.stdout.is_empty() {
                 print!("{}", result.stdout);

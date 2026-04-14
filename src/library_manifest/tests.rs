@@ -83,6 +83,7 @@ fn manifest_io_round_trip_preserves_generic_method_type_params() -> Result<(), B
         type_params: Vec::new(),
         extends: None,
         traits: Vec::new(),
+        derives: Vec::new(),
         fields: Vec::new(),
         methods: vec![MethodExport {
             name: "get".to_string(),
@@ -106,6 +107,36 @@ fn manifest_io_round_trip_preserves_generic_method_type_params() -> Result<(), B
 
     let tmp = tempfile::tempdir()?;
     let path = tmp.path().join("classes.incnlib");
+    manifest.write_to_path(&path)?;
+    let loaded = LibraryManifest::read_from_path(&path)?;
+
+    assert_eq!(loaded, manifest);
+    Ok(())
+}
+
+#[test]
+fn manifest_io_round_trip_preserves_model_and_class_derives() -> Result<(), Box<dyn std::error::Error>> {
+    let mut manifest = LibraryManifest::new("mylib", "0.1.0");
+    manifest.exports.models.push(ModelExport {
+        name: "Record".to_string(),
+        type_params: Vec::new(),
+        traits: Vec::new(),
+        derives: vec!["Clone".to_string()],
+        fields: Vec::new(),
+        methods: Vec::new(),
+    });
+    manifest.exports.classes.push(ClassExport {
+        name: "Carrier".to_string(),
+        type_params: Vec::new(),
+        extends: None,
+        traits: Vec::new(),
+        derives: vec!["Clone".to_string(), "Debug".to_string()],
+        fields: Vec::new(),
+        methods: Vec::new(),
+    });
+
+    let tmp = tempfile::tempdir()?;
+    let path = tmp.path().join("derives.incnlib");
     manifest.write_to_path(&path)?;
     let loaded = LibraryManifest::read_from_path(&path)?;
 

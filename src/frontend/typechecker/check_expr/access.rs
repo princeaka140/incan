@@ -60,7 +60,7 @@ impl TypeChecker {
         field: &str,
         span: Span,
     ) -> Option<ResolvedType> {
-        let type_info = self.lookup_type_info(type_name)?;
+        let type_info = self.lookup_semantic_type_info(type_name)?;
 
         let field_info = match type_info {
             TypeInfo::Model(model) => {
@@ -307,7 +307,7 @@ impl TypeChecker {
             ResolvedType::Generic(name, args) => ResolvedType::Generic(name.clone(), args.clone()),
             ResolvedType::Named(name) => {
                 let n_params = self
-                    .lookup_type_info(name)
+                    .lookup_semantic_type_info(name)
                     .map(|info| match info {
                         TypeInfo::Model(m) => m.type_params.len(),
                         TypeInfo::Class(c) => c.type_params.len(),
@@ -803,7 +803,7 @@ impl TypeChecker {
 
         // Treat Enum.Variant(...) method-style calls as variant constructors
         if let ResolvedType::Named(enum_name) = &base_ty
-            && let Some(TypeInfo::Enum(enum_info)) = self.lookup_type_info(enum_name)
+            && let Some(TypeInfo::Enum(enum_info)) = self.lookup_semantic_type_info(enum_name)
             && enum_info.variants.iter().any(|v| v == method)
         {
             // Args were checked above; no strict arity enforcement here.
@@ -815,7 +815,7 @@ impl TypeChecker {
         // definition. Types defined in `.incn` source are resolved below through their extracted method signatures.
         if let ResolvedType::Named(name) = &base_ty
             && surface_types::from_str(name.as_str()).is_some()
-            && self.lookup_type_info(name).is_none()
+            && self.lookup_semantic_type_info(name).is_none()
         {
             return ResolvedType::Unknown;
         }
@@ -1016,7 +1016,7 @@ impl TypeChecker {
         }
 
         if let ResolvedType::Generic(type_name, _type_args) = &base_ty
-            && let Some(type_info) = self.lookup_type_info(type_name).cloned()
+            && let Some(type_info) = self.lookup_semantic_type_info(type_name).cloned()
         {
             match type_info {
                 TypeInfo::Model(model) => {
@@ -1097,7 +1097,7 @@ impl TypeChecker {
         // If the symbol doesn't exist or isn't a type (e.g., Module/RustItem placeholder), treat it as external and
         // be permissive.
         if let ResolvedType::Named(type_name) = &base_ty {
-            match self.lookup_type_info(type_name).cloned() {
+            match self.lookup_semantic_type_info(type_name).cloned() {
                 None => {
                     // Symbol not found or not a Type - treat as external, be permissive.
                     return ResolvedType::Unknown;
@@ -1198,7 +1198,7 @@ impl TypeChecker {
         // For common external generic types (interop/runtime-provided) that we don't model in the checker, be
         // permissive and do not error on unknown methods.
         if let ResolvedType::Generic(name, _args) = &base_ty
-            && self.lookup_type_info(name).is_none()
+            && self.lookup_semantic_type_info(name).is_none()
         {
             return ResolvedType::Unknown;
         }

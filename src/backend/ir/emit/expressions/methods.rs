@@ -99,7 +99,9 @@ impl<'a> IrEmitter<'a> {
     fn is_incan_owned_nominal_receiver(&self, receiver_ty: &IrType) -> bool {
         match Self::receiver_type_for_method_dispatch(receiver_ty) {
             IrType::Struct(name) => {
-                self.struct_field_names.contains_key(name) || self.rusttype_alias_names.contains(name)
+                self.struct_field_names.contains_key(name)
+                    || self.rusttype_alias_names.contains(name)
+                    || self.type_module_paths.contains_key(name)
             }
             IrType::Enum(name) => self.enum_variant_fields.keys().any(|(enum_name, _)| enum_name == name),
             IrType::Trait(_) => true,
@@ -141,18 +143,7 @@ impl<'a> IrEmitter<'a> {
 
             let rewritten_receiver = Self::rewrite_storage_root_expr(receiver, "__incan_static_value");
             let inner = self.emit_known_method_call(&rewritten_receiver, kind, &rewritten_args)?;
-            let use_mut = matches!(
-                kind,
-                MethodKind::Collection(
-                    CollectionMethodKind::Insert
-                        | CollectionMethodKind::Remove
-                        | CollectionMethodKind::Append
-                        | CollectionMethodKind::Pop
-                        | CollectionMethodKind::Swap
-                        | CollectionMethodKind::Reserve
-                        | CollectionMethodKind::ReserveExact
-                )
-            );
+            let use_mut = super::method_kind_uses_mutable_receiver(kind);
             let wrapped = if use_mut {
                 self.emit_storage_with_mut(receiver, inner)
             } else {

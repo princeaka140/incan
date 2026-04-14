@@ -805,16 +805,13 @@ mod codegen_tests {
     }
 
     #[test]
-    fn test_run_c_import_this() {
-        let Ok(output) = Command::new(incan_debug_binary())
+    fn test_run_c_import_this() -> Result<(), Box<dyn std::error::Error>> {
+        let output = Command::new(incan_debug_binary())
             .args(["run", "-c", "import this"])
             // This test should not require network access. We expect the workspace dependencies to already be available
             // (the test suite built them)
             .env("CARGO_NET_OFFLINE", "true")
-            .output()
-        else {
-            panic!("failed to run incan");
-        };
+            .output()?;
         assert!(
             output.status.success(),
             "incan run -c import this failed: status={:?} stderr={}",
@@ -827,6 +824,60 @@ mod codegen_tests {
             "stdout missing zen line; got:\n{}",
             stdout
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_run_c_import_this_release_flag() -> Result<(), Box<dyn std::error::Error>> {
+        let output = Command::new(incan_debug_binary())
+            .args(["run", "--release", "-c", "import this"])
+            // This test should not require network access. We expect the workspace dependencies to already be available
+            // (the test suite built them)
+            .env("CARGO_NET_OFFLINE", "true")
+            .output()?;
+        assert!(
+            output.status.success(),
+            "incan run --release -c import this failed: status={:?} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("The Zen of Incan") && stdout.contains("Readability counts"),
+            "stdout missing zen line; got:\n{}",
+            stdout
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_run_file_release_flag() -> Result<(), Box<dyn std::error::Error>> {
+        let project_dir = make_temp_dir("incan_run_release_file");
+        let source_path = project_dir.join("main.incn");
+        std::fs::write(
+            &source_path,
+            r#"def main() -> None:
+  println("release file path works")
+"#,
+        )?;
+
+        let output = Command::new(incan_debug_binary())
+            .args(["run", "--release", source_path.to_string_lossy().as_ref()])
+            .env("CARGO_NET_OFFLINE", "true")
+            .output()?;
+        assert!(
+            output.status.success(),
+            "incan run --release <file> failed: status={:?} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("release file path works"),
+            "stdout missing expected output; got:\n{}",
+            stdout
+        );
+        Ok(())
     }
 
     #[test]
@@ -2344,6 +2395,65 @@ mod rfc031_pub_import_integration_tests {
             .output()?)
     }
 
+    fn write_pub_boundary_type_fidelity_library(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let producer_root = root.join("pub_boundary_library");
+        std::fs::create_dir_all(producer_root.join("src"))?;
+        std::fs::write(
+            producer_root.join("incan.toml"),
+            "[project]\nname = \"pub_boundary_core\"\nversion = \"0.1.0\"\n",
+        )?;
+        std::fs::write(
+            producer_root.join("src/dataset.incn"),
+            r#"pub model SessionError:
+  kind: str
+
+pub trait DataSet[T]:
+  def to_substrait_plan(self) -> int: ...
+
+pub trait BoundedDataSet[T] with DataSet[T]:
+  pass
+
+@derive(Clone)
+pub class DataFrame[T] with BoundedDataSet:
+  pub _type_witness: list[T]
+
+  def to_substrait_plan(self) -> int:
+    return 1
+
+@derive(Clone)
+pub class LazyFrame[T] with BoundedDataSet:
+  pub _type_witness: list[T]
+
+  def to_substrait_plan(self) -> int:
+    return 1
+
+  def collect(self) -> Result[DataFrame[T], SessionError]:
+    return Ok(DataFrame[T](_type_witness=[]))
+"#,
+        )?;
+        std::fs::write(
+            producer_root.join("src/functions.incn"),
+            r#"from dataset import DataSet
+
+pub def display[T](data: DataSet[T]) -> None:
+  print(data.to_substrait_plan())
+"#,
+        )?;
+        std::fs::write(
+            producer_root.join("src/lib.incn"),
+            "pub from dataset import SessionError, DataSet, BoundedDataSet, DataFrame, LazyFrame\npub from functions import display\n",
+        )?;
+
+        let producer_build = run_build_lib(&producer_root)?;
+        assert!(
+            producer_build.status.success(),
+            "expected pub-boundary library build to succeed.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&producer_build.stdout),
+            String::from_utf8_lossy(&producer_build.stderr)
+        );
+        Ok(())
+    }
+
     fn write_minimal_library_crate(artifact_root: &Path, package_name: &str) -> Result<(), Box<dyn std::error::Error>> {
         std::fs::create_dir_all(artifact_root.join("src"))?;
         std::fs::write(
@@ -2797,6 +2907,7 @@ mod rfc031_pub_import_integration_tests {
             name: "Widget".to_string(),
             type_params: Vec::new(),
             traits: Vec::new(),
+            derives: Vec::new(),
             fields: Vec::new(),
             methods: Vec::new(),
         });
@@ -2972,6 +3083,7 @@ mod rfc031_pub_import_integration_tests {
             name: "Widget".to_string(),
             type_params: Vec::new(),
             traits: Vec::new(),
+            derives: Vec::new(),
             fields: Vec::new(),
             methods: Vec::new(),
         });
@@ -3157,6 +3269,98 @@ mod rfc031_pub_import_integration_tests {
             "expected consumer build to succeed.\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&consumer_build.stdout),
             String::from_utf8_lossy(&consumer_build.stderr)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn check_pub_boundary_preserves_method_result_types_for_question_mark() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        write_pub_boundary_type_fidelity_library(tmp.path())?;
+
+        let main_path = write_project_files(
+            tmp.path(),
+            "[project]\nname = \"consumer\"\n\n[dependencies]\npubdemo = { path = \"pub_boundary_library\" }\n",
+            r#"from pub::pubdemo import LazyFrame, SessionError
+
+model Row:
+  value: int
+
+def main() -> Result[None, SessionError]:
+  lazy = LazyFrame[Row](_type_witness=[])
+  df = lazy.collect()?
+  print(df.to_substrait_plan())
+  return Ok(None)
+"#,
+        )?;
+
+        let output = run_check(&main_path)?;
+        assert!(
+            output.status.success(),
+            "expected `lazy.collect()?` across pub boundary to typecheck.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn check_pub_boundary_preserves_derived_method_chain_result_types() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        write_pub_boundary_type_fidelity_library(tmp.path())?;
+
+        let main_path = write_project_files(
+            tmp.path(),
+            "[project]\nname = \"consumer\"\n\n[dependencies]\npubdemo = { path = \"pub_boundary_library\" }\n",
+            r#"from pub::pubdemo import LazyFrame, SessionError
+
+model Row:
+  value: int
+
+def main() -> Result[None, SessionError]:
+  lazy = LazyFrame[Row](_type_witness=[])
+  df = lazy.clone().collect()?
+  print(df.to_substrait_plan())
+  return Ok(None)
+"#,
+        )?;
+
+        let output = run_check(&main_path)?;
+        assert!(
+            output.status.success(),
+            "expected `lazy.clone().collect()?` across pub boundary to typecheck.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn check_pub_boundary_preserves_trait_supertype_acceptance() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        write_pub_boundary_type_fidelity_library(tmp.path())?;
+
+        let main_path = write_project_files(
+            tmp.path(),
+            "[project]\nname = \"consumer\"\n\n[dependencies]\npubdemo = { path = \"pub_boundary_library\" }\n",
+            r#"from pub::pubdemo import DataFrame, SessionError, display
+
+model Row:
+  value: int
+
+def main() -> Result[None, SessionError]:
+  df = DataFrame[Row](_type_witness=[])
+  display(df)
+  return Ok(None)
+"#,
+        )?;
+
+        let output = run_check(&main_path)?;
+        assert!(
+            output.status.success(),
+            "expected `DataFrame[T]` to satisfy `DataSet[T]` across pub boundary.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
         Ok(())
     }

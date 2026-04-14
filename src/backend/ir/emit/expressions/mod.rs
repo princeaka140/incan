@@ -53,7 +53,10 @@ use proc_macro2::{Literal, TokenStream};
 use quote::{ToTokens, format_ident, quote};
 
 use super::super::decl::IrInteropAdapterKind;
-use super::super::expr::{IrExprKind, IrInteropCoercionKind, Literal as IrLiteral, TypedExpr, UnaryOp, VarRefKind};
+use super::super::expr::{
+    CollectionMethodKind, IrExprKind, IrInteropCoercionKind, Literal as IrLiteral, MethodKind, TypedExpr, UnaryOp,
+    VarRefKind,
+};
 use super::super::types::IrType;
 use super::{EmitError, IrEmitter};
 
@@ -61,6 +64,25 @@ use super::{EmitError, IrEmitter};
 pub(super) enum StorageRoot {
     Static(String),
     Binding(String),
+}
+
+/// Whether a lowered known method mutates its receiver.
+///
+/// This is the canonical receiver-mutability policy for `MethodKind` in IR emission. Keep method mutability decisions
+/// in one place to avoid drift between statement analysis, parameter mutation scan, and emitted storage-lock behavior.
+pub(in crate::backend::ir::emit) fn method_kind_uses_mutable_receiver(kind: &MethodKind) -> bool {
+    matches!(
+        kind,
+        MethodKind::Collection(
+            CollectionMethodKind::Insert
+                | CollectionMethodKind::Remove
+                | CollectionMethodKind::Append
+                | CollectionMethodKind::Pop
+                | CollectionMethodKind::Swap
+                | CollectionMethodKind::Reserve
+                | CollectionMethodKind::ReserveExact
+        )
+    )
 }
 
 impl<'a> IrEmitter<'a> {
@@ -139,7 +161,7 @@ impl<'a> IrEmitter<'a> {
         let local_name = format_ident!("__incan_static_value");
         match Self::expr_storage_root(expr) {
             Some(StorageRoot::Static(name)) => {
-                let ident = Self::rust_ident(&name);
+                let ident = Self::rust_static_ident(&name);
                 let init_call = self.emit_module_static_init_call();
                 Ok(quote! {{
                     #init_call
@@ -158,7 +180,7 @@ impl<'a> IrEmitter<'a> {
         let local_name = format_ident!("__incan_static_value");
         match Self::expr_storage_root(expr) {
             Some(StorageRoot::Static(name)) => {
-                let ident = Self::rust_ident(&name);
+                let ident = Self::rust_static_ident(&name);
                 let init_call = self.emit_module_static_init_call();
                 Ok(quote! {{
                     #init_call
@@ -232,7 +254,7 @@ impl<'a> IrEmitter<'a> {
             }
 
             IrExprKind::StaticRead { name } => {
-                let n = Self::rust_ident(name);
+                let n = Self::rust_static_ident(name);
                 if *self.in_static_initializer.borrow() {
                     Ok(quote! { #n.get() })
                 } else {
@@ -245,7 +267,7 @@ impl<'a> IrEmitter<'a> {
             }
 
             IrExprKind::StaticBinding { name } => {
-                let n = Self::rust_ident(name);
+                let n = Self::rust_static_ident(name);
                 if *self.in_static_initializer.borrow() {
                     Ok(quote! { incan_stdlib::storage::StaticBinding::from_static(&#n) })
                 } else {
@@ -403,8 +425,7 @@ impl<'a> IrEmitter<'a> {
             }
 
             IrExprKind::Block { stmts, value } => {
-                let stmt_tokens: Vec<TokenStream> =
-                    stmts.iter().map(|s| self.emit_stmt(s)).collect::<Result<_, _>>()?;
+                let stmt_tokens = self.emit_stmts(stmts)?;
                 if let Some(v) = value {
                     let vv = self.emit_expr(v)?;
                     Ok(quote! {
@@ -857,6 +878,63 @@ mod tests {
         assert!(
             !rendered.contains("\"logs\" . to_string ()"),
             "external nominal method call must not use Incan-owned string coercion, got `{rendered}`"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn internal_dependency_nominal_method_call_does_not_borrow_string_arguments() -> Result<(), String> {
+        let registry = FunctionRegistry::new();
+        let mut emitter = IrEmitter::new(&registry);
+        emitter.set_type_module_paths(
+            std::collections::HashMap::from([("Session".to_string(), vec!["session".to_string()])]),
+            std::collections::HashSet::new(),
+        );
+        let expr = TypedExpr::new(
+            IrExprKind::MethodCall {
+                receiver: Box::new(TypedExpr::new(
+                    IrExprKind::Var {
+                        name: "session".to_string(),
+                        access: VarAccess::Read,
+                        ref_kind: VarRefKind::Value,
+                    },
+                    IrType::Struct("Session".to_string()),
+                )),
+                method: "read_csv".to_string(),
+                type_args: vec![IrType::Struct("OrderLine".to_string())],
+                args: vec![
+                    IrCallArg {
+                        name: None,
+                        expr: TypedExpr::new(IrExprKind::String("order_lines".to_string()), IrType::String),
+                    },
+                    IrCallArg {
+                        name: None,
+                        expr: TypedExpr::new(
+                            IrExprKind::Var {
+                                name: "input_uri".to_string(),
+                                access: VarAccess::Read,
+                                ref_kind: VarRefKind::Value,
+                            },
+                            IrType::String,
+                        ),
+                    },
+                ],
+                arg_policy: MethodCallArgPolicy::Default,
+            },
+            IrType::Unknown,
+        );
+
+        let emitted = emitter
+            .emit_expr(&expr)
+            .map_err(|err| format!("expected successful expression emission, got {err:?}"))?;
+        let rendered = emitted.to_string();
+        assert!(
+            rendered.contains("session . read_csv :: < OrderLine >"),
+            "expected regular method-call emission on internal dependency type, got `{rendered}`"
+        );
+        assert!(
+            !rendered.contains("& input_uri") && !rendered.contains("&input_uri"),
+            "internal dependency method call must not borrow owned string args like an external Rust receiver, got `{rendered}`"
         );
         Ok(())
     }

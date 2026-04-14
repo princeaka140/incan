@@ -35,6 +35,7 @@ pub struct RustMetadataCache {
 struct CacheInner {
     workspaces: HashMap<(PathBuf, bool), RustWorkspace>,
     items: HashMap<(PathBuf, String), Arc<RustItemMetadata>>,
+    failed_items: HashMap<(PathBuf, String), NegativeLookup>,
     disk_cache_state: HashMap<PathBuf, DiskCacheState>,
 }
 
@@ -45,16 +46,44 @@ struct DiskCacheState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+enum NegativeLookup {
+    CrateNotFound(String),
+    PathNotResolved(String),
+    UnsupportedMacro(String),
+}
+
+impl NegativeLookup {
+    fn from_error(err: &RustMetadataError) -> Option<Self> {
+        match err {
+            RustMetadataError::CrateNotFound(path) => Some(Self::CrateNotFound(path.clone())),
+            RustMetadataError::PathNotResolved(path) => Some(Self::PathNotResolved(path.clone())),
+            RustMetadataError::UnsupportedMacro(path) => Some(Self::UnsupportedMacro(path.clone())),
+            RustMetadataError::Io(_) | RustMetadataError::LoadWorkspace { .. } => None,
+        }
+    }
+
+    fn to_error(&self) -> RustMetadataError {
+        match self {
+            Self::CrateNotFound(path) => RustMetadataError::CrateNotFound(path.clone()),
+            Self::PathNotResolved(path) => RustMetadataError::PathNotResolved(path.clone()),
+            Self::UnsupportedMacro(path) => RustMetadataError::UnsupportedMacro(path.clone()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct DiskCacheEnvelope {
     cache_format: u32,
     #[serde(alias = "incan_version")]
     inspector_version: String,
     workspace_fingerprint: String,
     items: HashMap<String, RustItemMetadata>,
+    #[serde(default)]
+    misses: HashMap<String, NegativeLookup>,
 }
 
 // Bump when extracted metadata semantics change in a way that makes previously persisted items unsafe to reuse.
-const DISK_CACHE_FORMAT: u32 = 4;
+const DISK_CACHE_FORMAT: u32 = 5;
 const DISK_CACHE_FILE: &str = ".incan_rust_inspect_cache.json";
 // Backward-compatibility read path for caches written before the crate/module rename.
 const LEGACY_DISK_CACHE_FILE: &str = ".incan_rust_metadata_cache.json";
@@ -155,6 +184,9 @@ fn load_disk_cache_into_memory(inner: &mut CacheInner, root: &Path) -> Result<Op
             .items
             .insert((root.to_path_buf(), canonical_path), Arc::new(metadata));
     }
+    for (canonical_path, miss) in envelope.misses {
+        inner.failed_items.insert((root.to_path_buf(), canonical_path), miss);
+    }
     Ok(Some(fingerprint))
 }
 
@@ -182,9 +214,15 @@ fn persist_item_to_disk_cache(
         .and_then(|state| state.workspace_fingerprint.clone())
         .unwrap_or(workspace_fingerprint(root)?);
     let mut items = HashMap::new();
+    let mut misses = HashMap::new();
     for ((item_root, canonical_path), cached) in &inner.items {
         if item_root == root {
             items.insert(canonical_path.clone(), (*cached.as_ref()).clone());
+        }
+    }
+    for ((item_root, canonical_path), miss) in &inner.failed_items {
+        if item_root == root {
+            misses.insert(canonical_path.clone(), miss.clone());
         }
     }
     items.insert(metadata.canonical_path.clone(), metadata.clone());
@@ -193,6 +231,42 @@ fn persist_item_to_disk_cache(
         inspector_version: INSPECTOR_VERSION.to_string(),
         workspace_fingerprint: fingerprint,
         items,
+        misses,
+    };
+    write_disk_cache(root, &envelope)
+}
+
+/// Persist one stable miss into workspace-local disk cache.
+fn persist_negative_to_disk_cache(
+    inner: &CacheInner,
+    root: &Path,
+    canonical_path: &str,
+    negative: &NegativeLookup,
+) -> Result<(), RustMetadataError> {
+    let fingerprint = inner
+        .disk_cache_state
+        .get(root)
+        .and_then(|state| state.workspace_fingerprint.clone())
+        .unwrap_or(workspace_fingerprint(root)?);
+    let mut items = HashMap::new();
+    let mut misses = HashMap::new();
+    for ((item_root, path), cached) in &inner.items {
+        if item_root == root {
+            items.insert(path.clone(), (*cached.as_ref()).clone());
+        }
+    }
+    for ((item_root, path), miss) in &inner.failed_items {
+        if item_root == root {
+            misses.insert(path.clone(), miss.clone());
+        }
+    }
+    misses.insert(canonical_path.to_owned(), negative.clone());
+    let envelope = DiskCacheEnvelope {
+        cache_format: DISK_CACHE_FORMAT,
+        inspector_version: INSPECTOR_VERSION.to_string(),
+        workspace_fingerprint: fingerprint,
+        items,
+        misses,
     };
     write_disk_cache(root, &envelope)
 }
@@ -526,6 +600,10 @@ impl RustMetadataCache {
             trace.set_outcome("hit.memory.exact");
             return Ok(Arc::clone(hit));
         }
+        if let Some(miss) = inner.failed_items.get(&key_item) {
+            trace.set_outcome("hit.memory.negative");
+            return Err(miss.to_error());
+        }
 
         let mut last_err = None;
         let mut meta = None;
@@ -557,6 +635,10 @@ impl RustMetadataCache {
                 trace.set_outcome("hit.memory.alias");
                 return Ok(arc);
             }
+            if let Some(miss) = inner.failed_items.get(&candidate_key) {
+                last_err = Some(miss.to_error());
+                continue;
+            }
             match extract_in_workspace_set(
                 &mut inner,
                 &root,
@@ -569,13 +651,39 @@ impl RustMetadataCache {
                     meta = Some(found);
                     break;
                 }
-                Err(err) => last_err = Some(err),
+                Err(err) => {
+                    if let Some(negative) = NegativeLookup::from_error(&err) {
+                        inner.failed_items.insert(candidate_key, negative);
+                    }
+                    last_err = Some(err);
+                }
             }
         }
-        let mut meta = meta.ok_or_else(|| {
-            last_err
-                .unwrap_or_else(|| RustMetadataError::CrateNotFound(crate_name_for_path(canonical_path).to_string()))
-        })?;
+        let mut meta = match meta {
+            Some(meta) => meta,
+            None => {
+                let err = last_err.unwrap_or_else(|| {
+                    RustMetadataError::CrateNotFound(crate_name_for_path(canonical_path).to_string())
+                });
+                if let Some(negative) = NegativeLookup::from_error(&err) {
+                    inner
+                        .failed_items
+                        .insert((root.clone(), canonical_path.to_owned()), negative.clone());
+                    if let Err(persist_err) = persist_negative_to_disk_cache(&inner, &root, canonical_path, &negative)
+                        && timing_enabled
+                    {
+                        eprintln!(
+                            "[rust-inspect-timing] root={} query={} stage=disk_cache.persist.negative status=error err={persist_err}",
+                            root.display(),
+                            canonical_path
+                        );
+                    }
+                }
+                trace.set_outcome("miss.cached.negative");
+                return Err(err);
+            }
+        };
+        inner.failed_items.remove(&(root.clone(), canonical_path.to_owned()));
         meta.canonical_path = canonical_path.to_owned();
         let arc = Arc::new(meta);
         inner.items.insert(key_item, Arc::clone(&arc));
@@ -674,6 +782,9 @@ impl RustMetadataCache {
             .workspaces
             .retain(|(workspace_root, _), _| workspace_root != &root);
         inner.items.retain(|(workspace_root, _), _| workspace_root != &root);
+        inner
+            .failed_items
+            .retain(|(workspace_root, _), _| workspace_root != &root);
         inner.disk_cache_state.remove(&root);
         Ok(())
     }
@@ -693,11 +804,14 @@ impl RustMetadataCache {
     #[doc(hidden)]
     pub fn insert_test_item(&self, manifest_dir: &Path, metadata: RustItemMetadata) -> Result<(), RustMetadataError> {
         let root = manifest_dir.canonicalize()?;
-        let key_item = (root, metadata.canonical_path.clone());
+        let key_item = (root.clone(), metadata.canonical_path.clone());
         let mut inner = self.inner.lock().map_err(|e| RustMetadataError::LoadWorkspace {
             path: manifest_dir.to_path_buf(),
             message: format!("metadata cache lock poisoned: {e}"),
         })?;
+        inner
+            .failed_items
+            .remove(&(root.clone(), metadata.canonical_path.clone()));
         inner.items.insert(key_item, Arc::new(metadata));
         Ok(())
     }

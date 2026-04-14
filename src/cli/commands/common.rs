@@ -672,10 +672,16 @@ pub fn read_source(file_path: &str) -> CliResult<String> {
 /// Future work: integrate prelude ASTs into typechecking so trait bounds are validated and derives work through actual
 /// trait implementations.
 pub fn collect_modules(entry_path: &str) -> CliResult<Vec<ParsedModule>> {
-    let path = Path::new(entry_path);
+    let path = if Path::new(entry_path).is_absolute() {
+        PathBuf::from(entry_path)
+    } else {
+        std::env::current_dir()
+            .map_err(|e| CliError::failure(format!("failed to determine current directory: {e}")))?
+            .join(entry_path)
+    };
     let base_dir = path.parent().unwrap_or(Path::new("."));
 
-    let inferred_project_root = resolve_project_root(path);
+    let inferred_project_root = resolve_project_root(&path);
     let manifest = ProjectManifest::discover(&inferred_project_root).map_err(|e| CliError::failure(e.to_string()))?;
     let project_root = manifest
         .as_ref()
@@ -695,8 +701,11 @@ pub fn collect_modules(entry_path: &str) -> CliResult<Vec<ParsedModule>> {
     let mut dependency_edges: HashMap<String, HashSet<String>> = HashMap::new();
     let mut incan_source_stdlib_module_paths: HashMap<String, PathBuf> = HashMap::new();
     // (file_path, module_name, path_segments)
-    let mut to_process: Vec<(String, String, Vec<String>)> =
-        vec![(entry_path.to_string(), "main".to_string(), vec!["main".to_string()])];
+    let mut to_process: Vec<(String, String, Vec<String>)> = vec![(
+        path.to_string_lossy().to_string(),
+        "main".to_string(),
+        vec!["main".to_string()],
+    )];
 
     while let Some((file_path, module_name, path_segments)) = to_process.pop() {
         if processed.contains(&file_path) {
@@ -1205,6 +1214,10 @@ pub(crate) fn module_key_index(modules: &[ParsedModule]) -> HashMap<String, usiz
 
 /// Resolve imported source-module dependencies for one collected module using a precomputed module key index.
 ///
+/// Public signatures in a directly imported module may reference types from that module's own imports, so the
+/// typechecker needs the transitive source-module dependency closure rather than just the immediate import list.
+/// This helper preserves stable module ordering by returning dependencies in collected-module index order.
+///
 /// Use this variant inside per-module loops to avoid rebuilding the module key map on every iteration.
 pub(crate) fn imported_module_deps_for_with_index<'m>(
     modules: &'m [ParsedModule],
@@ -1216,46 +1229,64 @@ pub(crate) fn imported_module_deps_for_with_index<'m>(
         return Vec::new();
     }
 
-    // ---- Context: collect dependency module indexes from import declarations ----
-    let mut dep_indexes: BTreeSet<usize> = BTreeSet::new();
-    for decl in &modules[module_index].ast.declarations {
-        let crate::frontend::ast::Declaration::Import(import) = &decl.node else {
-            continue;
-        };
-        match &import.kind {
-            ImportKind::From { module, .. } => {
-                if module.parent_levels > 0 || module.is_absolute || module.segments.is_empty() {
-                    continue;
-                }
-                let key = canonicalize_source_module_segments(&module.segments).join("_");
-                if let Some(dep_idx) = module_idx_by_key.get(&key).copied()
-                    && dep_idx != module_index
-                {
-                    dep_indexes.insert(dep_idx);
-                }
-            }
-            ImportKind::Module(path) => {
-                if path.parent_levels > 0 || path.is_absolute || path.segments.is_empty() {
-                    continue;
-                }
-                let full_key = canonicalize_source_module_segments(&path.segments).join("_");
-                if let Some(dep_idx) = module_idx_by_key.get(&full_key).copied()
-                    && dep_idx != module_index
-                {
-                    dep_indexes.insert(dep_idx);
-                }
-                if path.segments.len() > 1 {
-                    let parent_key =
-                        canonicalize_source_module_segments(&path.segments[..path.segments.len() - 1]).join("_");
-                    if let Some(dep_idx) = module_idx_by_key.get(&parent_key).copied()
+    // ---- Context: walk the transitive local source-module import closure ----
+    fn direct_local_dep_indexes(
+        modules: &[ParsedModule],
+        module_index: usize,
+        module_idx_by_key: &HashMap<String, usize>,
+    ) -> BTreeSet<usize> {
+        let mut dep_indexes: BTreeSet<usize> = BTreeSet::new();
+        for decl in &modules[module_index].ast.declarations {
+            let crate::frontend::ast::Declaration::Import(import) = &decl.node else {
+                continue;
+            };
+            match &import.kind {
+                ImportKind::From { module, .. } => {
+                    if module.parent_levels > 0 || module.is_absolute || module.segments.is_empty() {
+                        continue;
+                    }
+                    let key = canonicalize_source_module_segments(&module.segments).join("_");
+                    if let Some(dep_idx) = module_idx_by_key.get(&key).copied()
                         && dep_idx != module_index
                     {
                         dep_indexes.insert(dep_idx);
                     }
                 }
+                ImportKind::Module(path) => {
+                    if path.parent_levels > 0 || path.is_absolute || path.segments.is_empty() {
+                        continue;
+                    }
+                    let full_key = canonicalize_source_module_segments(&path.segments).join("_");
+                    if let Some(dep_idx) = module_idx_by_key.get(&full_key).copied()
+                        && dep_idx != module_index
+                    {
+                        dep_indexes.insert(dep_idx);
+                    }
+                    if path.segments.len() > 1 {
+                        let parent_key =
+                            canonicalize_source_module_segments(&path.segments[..path.segments.len() - 1]).join("_");
+                        if let Some(dep_idx) = module_idx_by_key.get(&parent_key).copied()
+                            && dep_idx != module_index
+                        {
+                            dep_indexes.insert(dep_idx);
+                        }
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
+        dep_indexes
+    }
+
+    let mut dep_indexes: BTreeSet<usize> = BTreeSet::new();
+    let mut pending: Vec<usize> = direct_local_dep_indexes(modules, module_index, module_idx_by_key)
+        .into_iter()
+        .collect();
+    while let Some(dep_idx) = pending.pop() {
+        if dep_idx == module_index || !dep_indexes.insert(dep_idx) {
+            continue;
+        }
+        pending.extend(direct_local_dep_indexes(modules, dep_idx, module_idx_by_key));
     }
 
     // ---- Context: materialize dependency pairs for typechecker.check_with_imports ----
@@ -1773,6 +1804,264 @@ pub def main() -> int:
             "expected cyclic forward dependency `b -> a` to be resolved, got: {:?}",
             deps.iter().map(|(name, _)| (*name).to_string()).collect::<Vec<_>>()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn imported_module_deps_for_includes_transitive_signature_dependencies() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let project_root = tmp.path();
+        std::fs::write(
+            project_root.join("incan.toml"),
+            r#"[project]
+name = "transitive_signature_dep_demo"
+version = "0.1.0"
+"#,
+        )?;
+        let src_dir = project_root.join("src");
+        std::fs::create_dir_all(&src_dir)?;
+        std::fs::write(
+            src_dir.join("dataset.incn"),
+            r#"pub class LazyFrame[T]:
+    def clone(self) -> Self:
+        return self
+"#,
+        )?;
+        std::fs::write(
+            src_dir.join("session.incn"),
+            r#"from dataset import LazyFrame
+
+pub class Session:
+    def read_csv[T](self) -> Result[LazyFrame[T], str]:
+        return Err(str("not implemented"))
+"#,
+        )?;
+        let entry = src_dir.join("main.incn");
+        std::fs::write(
+            &entry,
+            r#"from session import Session
+
+def main() -> Result[None, str]:
+    session = Session()
+    lines = session.read_csv[int]()?
+    lines.clone()
+    return Ok(None)
+"#,
+        )?;
+
+        let modules = collect_modules(entry.to_string_lossy().as_ref())?;
+        let Some(main_index) = modules
+            .iter()
+            .position(|module| module.file_path.ends_with("src/main.incn"))
+        else {
+            return Err("expected src/main.incn module".into());
+        };
+        let module_idx_by_key = module_key_index(&modules);
+        let deps = imported_module_deps_for_with_index(&modules, main_index, &module_idx_by_key);
+        assert!(
+            deps.iter().any(|(name, _)| *name == "dataset"),
+            "expected transitive dependency `dataset` to be included for imported signature resolution, got: {:?}",
+            deps.iter().map(|(name, _)| (*name).to_string()).collect::<Vec<_>>()
+        );
+
+        let mut checker = typechecker::TypeChecker::new();
+        if let Err(errs) = checker.check_with_imports(&modules[main_index].ast, &deps) {
+            return Err(format!(
+                "typecheck failed: {:?}",
+                errs.iter().map(|e| e.message.clone()).collect::<Vec<_>>()
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn collect_modules_supports_example_entry_with_cyclic_src_interfaces() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let project_root = tmp.path();
+        std::fs::write(
+            project_root.join("incan.toml"),
+            r#"[project]
+name = "example_cycle_demo"
+version = "0.1.0"
+"#,
+        )?;
+        let src_dir = project_root.join("src");
+        let examples_dir = project_root.join("examples");
+        std::fs::create_dir_all(&src_dir)?;
+        std::fs::create_dir_all(&examples_dir)?;
+        std::fs::write(
+            src_dir.join("functions.incn"),
+            r#"from dataset import DataFrame, DataSet
+
+pub def display[T](data: DataSet[T]) -> None:
+    pass
+
+pub def sink[T](data: DataFrame[T]) -> None:
+    pass
+"#,
+        )?;
+        std::fs::write(
+            src_dir.join("session.incn"),
+            r#"from dataset import DataFrame, LazyFrame
+
+pub model SessionError:
+    pub message: str
+
+pub class Session:
+    @staticmethod
+    def default() -> Session:
+        return Session()
+
+    def read_csv[T](self, _logical_name: str, _uri: str) -> Result[LazyFrame[T], SessionError]:
+        return Err(SessionError(message=str("not implemented")))
+
+    def activate(self) -> None:
+        pass
+
+pub def collect_with_active_session[T](data: LazyFrame[T]) -> Result[DataFrame[T], SessionError]:
+    return Err(SessionError(message=str("not implemented")))
+"#,
+        )?;
+        std::fs::write(
+            src_dir.join("dataset.incn"),
+            r#"from session import SessionError, collect_with_active_session
+
+pub trait DataSet[T]:
+    pass
+
+pub class DataFrame[T] with DataSet:
+    def clone(self) -> Self:
+        return self
+
+pub class LazyFrame[T] with DataSet:
+    def clone(self) -> Self:
+        return self
+
+    def collect(self) -> Result[DataFrame[T], SessionError]:
+        return collect_with_active_session[T](self.clone())
+"#,
+        )?;
+        let entry = examples_dir.join("main.incn");
+        std::fs::write(
+            &entry,
+            r#"from functions import display
+from session import Session, SessionError
+
+def main() -> Result[None, SessionError]:
+    mut session = Session.default()
+    lines = session.read_csv[int](str("orders"), str("input.csv"))?
+    transformed = lines.clone()
+    session.activate()
+    df = transformed.clone().collect()?
+    display(df)
+    return Ok(None)
+"#,
+        )?;
+
+        let modules = collect_modules(entry.to_string_lossy().as_ref())?;
+        let module_idx_by_key = module_key_index(&modules);
+        for (idx, module) in modules.iter().enumerate() {
+            let deps = imported_module_deps_for_with_index(&modules, idx, &module_idx_by_key);
+            let mut checker = typechecker::TypeChecker::new();
+            if let Err(errs) = checker.check_with_imports(&module.ast, &deps) {
+                return Err(format!(
+                    "typecheck failed for module {}: {:?}",
+                    module.file_path.display(),
+                    errs.iter().map(|e| e.message.clone()).collect::<Vec<_>>()
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn collect_modules_supports_directory_module_cycles_from_example_entry() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let project_root = tmp.path();
+        std::fs::write(
+            project_root.join("incan.toml"),
+            r#"[project]
+name = "example_directory_cycle_demo"
+version = "0.1.0"
+"#,
+        )?;
+        let src_dir = project_root.join("src");
+        let dataset_dir = src_dir.join("dataset");
+        let examples_dir = project_root.join("examples");
+        std::fs::create_dir_all(&dataset_dir)?;
+        std::fs::create_dir_all(&examples_dir)?;
+        std::fs::write(
+            src_dir.join("session.incn"),
+            r#"from dataset import DataFrame, LazyFrame
+
+pub model SessionError:
+    pub message: str
+
+pub class Session:
+    @staticmethod
+    def default() -> Session:
+        return Session()
+
+    def read_csv[T with Clone](self, _logical_name: str, _uri: str) -> Result[LazyFrame[T], SessionError]:
+        return Err(SessionError(message=str("not implemented")))
+
+pub def collect_with_active_session[T with Clone](data: LazyFrame[T]) -> Result[DataFrame[T], SessionError]:
+    return Err(SessionError(message=str("not implemented")))
+"#,
+        )?;
+        std::fs::write(
+            dataset_dir.join("mod.incn"),
+            r#"from session import SessionError, collect_with_active_session
+
+pub trait DataSet[T with Clone]:
+    pass
+
+pub class DataFrame[T with Clone] with DataSet:
+    def clone(self) -> Self:
+        return self
+
+pub class LazyFrame[T with Clone] with DataSet:
+    def clone(self) -> Self:
+        return self
+
+    def collect(self) -> Result[DataFrame[T], SessionError]:
+        return collect_with_active_session[T](self.clone())
+"#,
+        )?;
+        let entry = examples_dir.join("main.incn");
+        std::fs::write(
+            &entry,
+            r#"from session import Session, SessionError
+
+@derive(Clone)
+pub model OrderLine:
+    pub sku: str
+
+def main() -> Result[None, SessionError]:
+    session = Session.default()
+    lines = session.read_csv[OrderLine](str("orders"), str("input.csv"))?
+    df = lines.clone().collect()?
+    df.clone()
+    return Ok(None)
+"#,
+        )?;
+
+        let modules = collect_modules(entry.to_string_lossy().as_ref())?;
+        let module_idx_by_key = module_key_index(&modules);
+        for (idx, module) in modules.iter().enumerate() {
+            let deps = imported_module_deps_for_with_index(&modules, idx, &module_idx_by_key);
+            let mut checker = typechecker::TypeChecker::new();
+            if let Err(errs) = checker.check_with_imports(&module.ast, &deps) {
+                return Err(format!(
+                    "typecheck failed for module {}: {:?}",
+                    module.file_path.display(),
+                    errs.iter().map(|e| e.message.clone()).collect::<Vec<_>>()
+                )
+                .into());
+            }
+        }
         Ok(())
     }
 

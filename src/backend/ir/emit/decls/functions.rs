@@ -58,7 +58,7 @@ impl<'a> IrEmitter<'a> {
             .collect();
 
         *self.current_function_return_type.borrow_mut() = Some(func.return_type.clone());
-        let body_stmts: Vec<TokenStream> = func.body.iter().map(|s| self.emit_stmt(s)).collect::<Result<_, _>>()?;
+        let body_stmts = self.emit_stmts(&func.body)?;
         *self.current_function_return_type.borrow_mut() = None;
 
         let async_kw = if func.is_async {
@@ -302,7 +302,7 @@ impl<'a> IrEmitter<'a> {
         let static_init_stmt = self.emit_module_static_init_call();
 
         *self.current_function_return_type.borrow_mut() = Some(func.return_type.clone());
-        let body_stmts: Vec<TokenStream> = func.body.iter().map(|s| self.emit_stmt(s)).collect::<Result<_, _>>()?;
+        let body_stmts = self.emit_stmts(&func.body)?;
         *self.current_function_return_type.borrow_mut() = None;
         let rust_attrs = self.emit_rust_attributes(&func.rust_attributes);
 
@@ -505,7 +505,7 @@ impl<'a> IrEmitter<'a> {
             })
         } else {
             *self.current_function_return_type.borrow_mut() = Some(func.return_type.clone());
-            let body_stmts: Vec<TokenStream> = func.body.iter().map(|s| self.emit_stmt(s)).collect::<Result<_, _>>()?;
+            let body_stmts = self.emit_stmts(&func.body)?;
             *self.current_function_return_type.borrow_mut() = None;
 
             Ok(quote! {

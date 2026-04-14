@@ -392,6 +392,8 @@ impl TypeChecker {
             }
         };
 
+        self.cache_transitive_pub_export_semantics(library, &manifest);
+
         let available_exports = Self::manifest_export_names(&manifest);
         let mut imported_type_aliases: HashMap<String, String> = HashMap::new();
         for item in items {
@@ -426,6 +428,53 @@ impl TypeChecker {
             }
 
             self.define_pub_import_symbol(local_name, export, &imported_type_aliases, span);
+        }
+    }
+
+    /// Seed internal semantic caches for one `pub::` library's exported types and traits.
+    ///
+    /// These caches are used only by the consumer-side typechecker when imported signatures mention provider types
+    /// that the consumer did not explicitly import by name (for example `Session.read_csv(...) -> LazyFrame[T]`).
+    /// They do not change source-visible name resolution.
+    fn cache_transitive_pub_export_semantics(&mut self, library: &str, manifest: &LibraryManifest) {
+        if !self.cached_pub_libraries.insert(library.to_string()) {
+            return;
+        }
+
+        for model in &manifest.exports.models {
+            let model_info = self.model_info_from_manifest(model);
+            self.transitive_pub_types
+                .entry(model.name.clone())
+                .or_default()
+                .push(TypeInfo::Model(model_info));
+        }
+        for class in &manifest.exports.classes {
+            let class_info = self.class_info_from_manifest(class);
+            self.transitive_pub_types
+                .entry(class.name.clone())
+                .or_default()
+                .push(TypeInfo::Class(class_info));
+        }
+        for enum_export in &manifest.exports.enums {
+            let enum_info = self.enum_info_from_manifest(enum_export);
+            self.transitive_pub_types
+                .entry(enum_export.name.clone())
+                .or_default()
+                .push(TypeInfo::Enum(enum_info));
+        }
+        for newtype in &manifest.exports.newtypes {
+            let newtype_info = self.newtype_info_from_manifest(newtype);
+            self.transitive_pub_types
+                .entry(newtype.name.clone())
+                .or_default()
+                .push(TypeInfo::Newtype(newtype_info));
+        }
+        for trait_export in &manifest.exports.traits {
+            let trait_info = self.trait_info_from_manifest(trait_export);
+            self.transitive_pub_traits
+                .entry(trait_export.name.clone())
+                .or_default()
+                .push(trait_info);
         }
     }
 
@@ -769,7 +818,7 @@ impl TypeChecker {
         ModelInfo {
             type_params: export.type_params.iter().map(|param| param.name.clone()).collect(),
             traits: export.traits.clone(),
-            derives: Vec::new(),
+            derives: export.derives.clone(),
             fields: self.fields_from_manifest(&export.fields),
             methods: self.methods_from_manifest(&export.methods),
         }
@@ -780,7 +829,7 @@ impl TypeChecker {
             type_params: export.type_params.iter().map(|param| param.name.clone()).collect(),
             extends: export.extends.clone(),
             traits: export.traits.clone(),
-            derives: Vec::new(),
+            derives: export.derives.clone(),
             fields: self.fields_from_manifest(&export.fields),
             methods: self.methods_from_manifest(&export.methods),
         }

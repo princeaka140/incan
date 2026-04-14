@@ -7,7 +7,8 @@ use crate::cli::{CliError, CliResult, ExitCode};
 use crate::frontend::library_manifest_index::LibraryManifestIndex;
 use crate::frontend::{diagnostics, lexer, parser, typechecker};
 use crate::manifest::ProjectManifest;
-use std::path::Path;
+use std::env;
+use std::path::{Path, PathBuf};
 
 use super::common::{
     collect_modules, imported_module_deps_for_with_index, module_key_index, read_source, resolve_project_root,
@@ -66,7 +67,14 @@ pub fn parse_file(file_path: &str) -> CliResult<ExitCode> {
 pub fn check_file(file_path: &str) -> CliResult<ExitCode> {
     let modules = collect_modules(file_path)?;
 
-    let project_root = resolve_project_root(Path::new(file_path));
+    let normalized_file_path = if Path::new(file_path).is_absolute() {
+        PathBuf::from(file_path)
+    } else {
+        env::current_dir()
+            .map_err(|e| CliError::failure(format!("failed to determine current directory: {e}")))?
+            .join(file_path)
+    };
+    let project_root = resolve_project_root(&normalized_file_path);
     let manifest = ProjectManifest::discover(&project_root).map_err(|e| CliError::failure(e.to_string()))?;
     let declared = manifest.as_ref().map(|m| m.declared_rust_crate_names());
     let library_manifest_index = manifest
@@ -125,7 +133,14 @@ pub fn emit_rust(file_path: &str, strict: bool) -> CliResult<ExitCode> {
     };
 
     let mut codegen = IrCodegen::new();
-    let project_root = resolve_project_root(Path::new(file_path));
+    let normalized_file_path = if Path::new(file_path).is_absolute() {
+        PathBuf::from(file_path)
+    } else {
+        env::current_dir()
+            .map_err(|e| CliError::failure(format!("failed to determine current directory: {e}")))?
+            .join(file_path)
+    };
+    let project_root = resolve_project_root(&normalized_file_path);
     let manifest = ProjectManifest::discover(&project_root).map_err(|e| CliError::failure(e.to_string()))?;
     if let Some(m) = manifest.as_ref() {
         codegen.set_declared_crate_names(m.declared_rust_crate_names());

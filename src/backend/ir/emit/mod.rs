@@ -108,6 +108,12 @@ pub struct IrEmitter<'a> {
     ///
     /// Used to avoid recursively forcing the module-wide static init helper while generating static initializer code.
     in_static_initializer: RefCell<bool>,
+    /// Stack of statement-slice analyses describing which local `StaticBinding` names need mutable Rust bindings.
+    ///
+    /// An Incan alias like `let live = ITEMS` is not source-level `mut`, but if later emitted Rust uses
+    /// `live.with_mut(...)` the local wrapper still must be declared `mut`. This stack is pushed per emitted
+    /// statement slice so `emit_stmt` can make that decision without reintroducing blanket `mut` noise.
+    storage_binding_mut_names: RefCell<Vec<HashSet<String>>>,
 }
 
 impl<'a> IrEmitter<'a> {
@@ -140,6 +146,7 @@ impl<'a> IrEmitter<'a> {
             rust_import_paths: RefCell::new(std::collections::HashMap::new()),
             module_has_local_statics: RefCell::new(false),
             in_static_initializer: RefCell::new(false),
+            storage_binding_mut_names: RefCell::new(Vec::new()),
         }
     }
 
@@ -203,6 +210,25 @@ impl<'a> IrEmitter<'a> {
         proc_macro2::Ident::new(name, span)
     }
 
+    /// Create a Rust identifier for compiler-emitted `static` items.
+    ///
+    /// Incan static names follow source-language naming, but generated Rust `static` items should use
+    /// `SCREAMING_SNAKE_CASE` to avoid `non_upper_case_globals` warnings.
+    fn rust_static_ident(name: &str) -> proc_macro2::Ident {
+        let mut rendered = String::with_capacity(name.len().max(1));
+        for ch in name.chars() {
+            if ch.is_ascii_alphanumeric() {
+                rendered.push(ch.to_ascii_uppercase());
+            } else {
+                rendered.push('_');
+            }
+        }
+        if rendered.is_empty() {
+            rendered.push('_');
+        }
+        proc_macro2::Ident::new(&rendered, proc_macro2::Span::call_site())
+    }
+
     /// RFC 023: Set the `rust.module()` Rust backing path for this program.
     ///
     /// When set, `@rust.extern` functions delegate to `<path>::<fn_name>()`.
@@ -259,5 +285,12 @@ mod tests {
         let ident = IrEmitter::rust_ident("async");
         let rendered = quote::quote! { #ident }.to_string();
         assert_eq!(rendered, "r#async");
+    }
+
+    #[test]
+    fn rust_static_ident_uses_uppercase_global_style() {
+        let ident = IrEmitter::rust_static_ident("_active_sessions");
+        let rendered = quote::quote! { #ident }.to_string();
+        assert_eq!(rendered, "_ACTIVE_SESSIONS");
     }
 }
