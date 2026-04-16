@@ -2716,6 +2716,37 @@ mod rfc031_pub_import_integration_tests {
             .output()?)
     }
 
+    #[test]
+    fn explicit_serialize_trait_adoption_runs_with_default_to_json() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let main_path = write_project_files(
+            tmp.path(),
+            "[project]\nname = \"serialize_trait_default\"\n",
+            "from std.serde.json import Serialize\n\nmodel Payload with Serialize:\n  value: int\n\ndef main() -> None:\n  println(Payload(value=1).to_json())\n",
+        )?;
+
+        let output = Command::new(incan_bin_path())
+            .arg("run")
+            .arg(&main_path)
+            .env("CARGO_NET_OFFLINE", "true")
+            .output()?;
+
+        assert!(
+            output.status.success(),
+            "expected explicit Serialize adoption to run successfully.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("{\"value\":1}"),
+            "expected JSON output from default Serialize trait implementation, got:\n{}",
+            stdout
+        );
+        Ok(())
+    }
+
     fn write_pub_boundary_type_fidelity_library(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let producer_root = root.join("pub_boundary_library");
         std::fs::create_dir_all(producer_root.join("src"))?;

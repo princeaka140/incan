@@ -5576,6 +5576,20 @@ def main() -> None:
 }
 
 #[test]
+fn test_explicit_serialize_trait_adoption_allows_default_to_json() {
+    let source = r#"
+from std.serde.json import Serialize
+
+model Payload with Serialize:
+  value: int
+
+def encode(payload: Payload) -> str:
+  return payload.to_json()
+"#;
+    assert_check_ok(source);
+}
+
+#[test]
 fn test_explicit_eq_bound_rejects_float_arguments() {
     let source = r#"
 def show_eq[T with Eq](value: T) -> T:

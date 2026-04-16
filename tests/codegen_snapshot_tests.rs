@@ -1297,6 +1297,15 @@ fn test_std_serde_json_import_codegen() {
     insta::assert_snapshot!("std_serde_json_import", rust_code);
 }
 
+/// RFC 023 (#303): explicit `with Serialize` adoption should expand the stdlib default `to_json` body into the
+/// generated impl while also forwarding the Rust serde derive.
+#[test]
+fn test_std_serde_with_serialize_trait_codegen() {
+    let source = load_test_file("std_serde_with_serialize_trait");
+    let rust_code = generate_rust(&source);
+    insta::assert_snapshot!("std_serde_with_serialize_trait", rust_code);
+}
+
 // ============================================================================
 /// Issue #145: Full surface-semantics path for `assert` statements.
 // ============================================================================

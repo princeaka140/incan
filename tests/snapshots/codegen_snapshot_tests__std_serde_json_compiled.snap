@@ -15,5 +15,7 @@ pub trait Serialize {
     fn to_json(&self) -> String;
 }
 pub trait Deserialize {
-    fn from_json(json_str: String) -> Result<Self, String>;
+    fn from_json(json_str: String) -> Result<Self, String>
+    where
+        Self: Sized;
 }

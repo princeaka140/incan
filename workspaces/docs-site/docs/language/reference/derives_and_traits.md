@@ -515,6 +515,7 @@ def main() -> None:
 **API**:
 
 - `json_stringify(value)` → `str`
+- `value.to_json()` → `str` when the type imports and adopts `std.serde.json.Serialize`
 
 ```incan
 @derive(Serialize)
@@ -527,6 +528,17 @@ def main() -> None:
     println(json_stringify(u))
 ```
 
+```incan
+from std.serde.json import Serialize
+
+model User with Serialize:
+    name: str
+    age: int
+
+def main() -> None:
+    println(User(name="Alice", age=30).to_json())
+```
+
 ---
 
 ## Deserialize
@@ -536,6 +548,8 @@ def main() -> None:
 **API**:
 
 - `T.from_json(input: str)` → `Result[T, str]`
+
+Note: explicit `with Deserialize` adoption still needs either `@derive(Deserialize)` or a user-defined `from_json(input)` implementation.
 
 ```incan
 @derive(Deserialize)
