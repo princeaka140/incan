@@ -1332,6 +1332,57 @@ async def main() -> None:
         );
     }
 
+    /// RFC 023: Runtime parity check for source-defined stdlib surfaces migrated off helper stubs.
+    #[test]
+    fn test_run_rfc023_stdlib_behavior_parity() {
+        let Ok(output) = Command::new(incan_debug_binary())
+            .args(["run", "tests/fixtures/rfc023_stdlib_behavior_parity.incn"])
+            .env("CARGO_NET_OFFLINE", "true")
+            .output()
+        else {
+            panic!("failed to run incan");
+        };
+
+        assert!(
+            output.status.success(),
+            "incan run rfc023_stdlib_behavior_parity failed: status={:?} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("{\"value\":1,\"player\":\"Ada\"}"),
+            "expected explicit Serialize adoption to preserve JSON output; got:\n{}",
+            stdout
+        );
+        assert!(
+            stdout.contains("Score"),
+            "expected reflection class name output; got:\n{}",
+            stdout
+        );
+        assert!(
+            stdout.contains("true\ntrue"),
+            "expected clone/equality and ordering behavior from derive-backed traits; got:\n{}",
+            stdout
+        );
+        assert!(
+            stdout.contains("{\"value\":0,\"player\":\"\"}"),
+            "expected Default derive to preserve zero-value JSON output; got:\n{}",
+            stdout
+        );
+        assert!(
+            stdout.contains("field:value|wire:value|type:int|default:true"),
+            "expected reflection metadata for value field; got:\n{}",
+            stdout
+        );
+        assert!(
+            stdout.contains("field:player|wire:player|type:str|default:true"),
+            "expected reflection metadata for player field; got:\n{}",
+            stdout
+        );
+    }
+
     #[test]
     fn test_check_cyclic_explicit_call_site_generics_cross_module_succeeds() -> Result<(), Box<dyn std::error::Error>> {
         let project_dir = make_temp_dir("incan_cycle_explicit_call_site_check");

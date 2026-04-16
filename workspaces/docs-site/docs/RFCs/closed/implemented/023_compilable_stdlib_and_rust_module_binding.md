@@ -841,7 +841,7 @@ Re-baselining note: this closure definition intentionally avoids smuggling unrel
 - [x] Typechecker tests: stdlib signatures resolved from `.incn` source.
 - [x] Codegen snapshot tests: compiled Incan stdlib functions in generated output.
 - [x] Codegen snapshot tests: generic functions emit correct Rust trait bounds (inferred and explicit).
-- [ ] Integration tests: behavioral equivalence with pre-migration stdlib.
+- [x] Integration tests: behavioral equivalence with pre-migration stdlib.
 - [x] Negative tests: calling a bounded generic function with a non-conforming type → Incan-level error.
 - [x] Negative tests: `@rust.extern` with non-trivial body, invalid `rust.module()` path, unused `rust.module()` warning.
 - [x] Transitive inference test: `foo[T]` calling `assert_eq[T]` acquires `PartialEq + Display` bounds from callee.
