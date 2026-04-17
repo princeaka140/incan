@@ -23,8 +23,11 @@ Produce a **single markdown plan** (paste into Plan mode or a `.plan.md` file):
 - **Gate** subsection with **exact commands** from this skill’s [Verification](#verification) section, adapted to the repo.
 - **Success criteria** checklist.
 - Optional **mermaid** only when a small diagram clarifies a pipeline or data flow.
+- Optional **Parallelization opportunities** subsection only when the user explicitly wants delegation and the work splits into clean, non-overlapping ownership slices. Keep it short: slice, owned scope, verification, blocker.
 
 Do **not** edit the plan file after the user asks to **execute** the plan unless they explicitly request plan updates.
+
+If the task is clearly parallelizable after planning, hand off execution to `orchestrate-parallel-work` rather than embedding full worker-orchestration rules in the plan itself.
 
 ## TDD (default when tests exist)
 

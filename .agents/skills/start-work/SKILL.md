@@ -111,7 +111,13 @@ Read `.agents/learnings.md` and check whether any section is relevant to the tas
 
 If a relevant section exists, summarize the key takeaways for the user.
 
-### Step 5: Check for related RFCs
+### Step 5: Check for parallel work opportunities
+
+If the task clearly decomposes into independent slices and the user explicitly wants delegation or parallel work, stop after gathering context and hand off to `orchestrate-parallel-work`.
+
+Do not improvise ad hoc multi-agent coordination inside this skill. This skill is for task setup, not swarm orchestration.
+
+### Step 6: Check for related RFCs
 
 If the task references an RFC:
 
@@ -119,7 +125,7 @@ If the task references an RFC:
 - Check its status (Draft / Planned / In Progress / Done)
 - If the RFC has a Progress Checklist, summarize what's done and what remains
 
-### Step 6: Report to the user
+### Step 7: Report to the user
 
 Provide a concise summary:
 
