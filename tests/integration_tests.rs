@@ -4410,6 +4410,34 @@ def main() -> None:\n  bind([\"a\", \"bb\"])\n",
     }
 
     #[test]
+    fn build_succeeds_for_list_str_append_literal() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let project_root = tmp.path().join("list_str_append_literal_project");
+        std::fs::create_dir_all(project_root.join("src"))?;
+        std::fs::write(
+            project_root.join("incan.toml"),
+            "[project]\nname = \"list_str_append_literal\"\nversion = \"0.1.0\"\n",
+        )?;
+        let main_path = project_root.join("src/main.incn");
+        std::fs::write(
+            &main_path,
+            "pub def columns(input_columns: list[str]) -> list[str]:\n  mut columns: list[str] = []\n  columns.append(input_columns[0])\n  columns.append(\"count\")\n  return columns\n\n\
+def main() -> None:\n  columns([\"orders_total\"])\n",
+        )?;
+
+        let out_dir = project_root.join("out");
+        let project_build = run_build(&main_path, &out_dir)?;
+        assert!(
+            project_build.status.success(),
+            "expected list[str] literal append to build successfully.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&project_build.stdout),
+            String::from_utf8_lossy(&project_build.stderr)
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn build_succeeds_for_imported_sum_helper_shadowing() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let project_root = tmp.path().join("imported_sum_shadow_project");

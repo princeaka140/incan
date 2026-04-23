@@ -100,7 +100,7 @@ impl<'a> IrEmitter<'a> {
         item_target_ty: Option<&IrType>,
     ) -> Result<TokenStream, EmitError> {
         let emitted = self.emit_expr(item)?;
-        let conversion = determine_conversion(item, item_target_ty, ConversionContext::StructField);
+        let conversion = determine_conversion(item, item_target_ty, ConversionContext::CollectionElement);
         Ok(conversion.apply(emitted))
     }
 

@@ -61,9 +61,9 @@
 //! - String literals → `.to_string()` (for enum variants like `Some("x")`)
 //! - String variables → `&` (borrow for &str parameters)
 //!
-//! ### StructField
+//! ### Owned storage sinks
 //!
-//! Struct fields are always **owned**:
+//! Struct fields and collection elements are always **owned**:
 //!
 //! ```text
 //! Incan:  user = User(name="Alice", age=30)
@@ -183,6 +183,8 @@ pub enum ConversionContext {
     ExternalFunctionArg,
     /// Field in struct construction (always owned)
     StructField,
+    /// Element being stored into an owned collection.
+    CollectionElement,
     /// Argument to a method call (context-dependent)
     MethodArg,
     /// Assignment or let binding
@@ -456,6 +458,39 @@ pub fn determine_binop_plan(op: &BinOp, left: &TypedExpr, right: &TypedExpr) -> 
     }
 }
 
+/// Determine conversion for destinations that store an owned value.
+///
+/// Struct fields and collection elements share this policy: literals and static `str` reads must become owned
+/// `String`s when the destination type is Incan `str`, while non-Copy field reads and repeated local reads preserve
+/// source-level value semantics by cloning.
+fn determine_owned_storage_conversion(expr: &IrExpr, target_ty: Option<&IrType>) -> Conversion {
+    match (&expr.kind, target_ty) {
+        (IrExprKind::String(_), Some(IrType::String)) => Conversion::ToString,
+        (IrExprKind::StaticRead { .. }, Some(IrType::String | IrType::Generic(_)))
+            if matches!(expr.ty, IrType::StaticStr) =>
+        {
+            Conversion::ToString
+        }
+        (IrExprKind::StaticRead { .. }, None) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
+        (_, Some(IrType::String)) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
+        (IrExprKind::String(_), Some(IrType::Generic(_))) => Conversion::ToString,
+        (_, Some(IrType::Generic(_))) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
+        (IrExprKind::String(_), None) => Conversion::ToString,
+        (_, None) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
+        (IrExprKind::Var { access, .. }, Some(IrType::String)) if matches!(expr.ty, IrType::String) => match access {
+            VarAccess::Move => Conversion::None,
+            _ => Conversion::ToString,
+        },
+        (IrExprKind::Var { access, .. }, _) if !expr.ty.is_copy() => match access {
+            VarAccess::Move => Conversion::None,
+            _ => Conversion::Clone,
+        },
+        (IrExprKind::Field { .. }, _) if matches!(expr.ty, IrType::String) => Conversion::Clone,
+        (IrExprKind::Field { .. }, _) if !expr.ty.is_copy() => Conversion::Clone,
+        _ => Conversion::None,
+    }
+}
+
 /// Determines what conversion (if any) is needed for a value
 ///
 /// ## Type-Specific Behavior
@@ -590,36 +625,8 @@ pub fn determine_conversion(expr: &IrExpr, target_ty: Option<&IrType>, context: 
             }
         }
 
-        ConversionContext::StructField => {
-            // Struct fields are owned sinks, so field reads and non-final local reads need the same materialization
-            // rules as ordinary Incan-owned call arguments.
-            match (&expr.kind, target_ty) {
-                (IrExprKind::String(_), Some(IrType::String)) => Conversion::ToString,
-                (IrExprKind::StaticRead { .. }, Some(IrType::String | IrType::Generic(_)))
-                    if matches!(expr.ty, IrType::StaticStr) =>
-                {
-                    Conversion::ToString
-                }
-                (IrExprKind::StaticRead { .. }, None) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
-                (_, Some(IrType::String)) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
-                (IrExprKind::String(_), Some(IrType::Generic(_))) => Conversion::ToString,
-                (_, Some(IrType::Generic(_))) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
-                (IrExprKind::String(_), None) => Conversion::ToString,
-                (_, None) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
-                (IrExprKind::Var { access, .. }, Some(IrType::String)) if matches!(expr.ty, IrType::String) => {
-                    match access {
-                        VarAccess::Move => Conversion::None,
-                        _ => Conversion::ToString,
-                    }
-                }
-                (IrExprKind::Var { access, .. }, _) if !expr.ty.is_copy() => match access {
-                    VarAccess::Move => Conversion::None,
-                    _ => Conversion::Clone,
-                },
-                (IrExprKind::Field { .. }, _) if matches!(expr.ty, IrType::String) => Conversion::Clone,
-                (IrExprKind::Field { .. }, _) if !expr.ty.is_copy() => Conversion::Clone,
-                _ => Conversion::None,
-            }
+        ConversionContext::StructField | ConversionContext::CollectionElement => {
+            determine_owned_storage_conversion(expr, target_ty)
         }
 
         ConversionContext::MethodArg => {

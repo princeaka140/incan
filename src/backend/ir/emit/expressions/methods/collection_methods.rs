@@ -1,6 +1,7 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
+use crate::backend::ir::conversions::{ConversionContext, determine_conversion};
 use crate::backend::ir::emit::expressions::methods::ReceiverInfo;
 use crate::backend::ir::emit::{EmitError, IrEmitter};
 use crate::backend::ir::expr::{CollectionMethodKind, TypedExpr};
@@ -104,12 +105,17 @@ pub(super) fn emit_collection_method(
         CollectionMethodKind::Append => {
             if let Some(arg) = args.first() {
                 let a = emitter.emit_expr(arg)?;
-                // Incan has value-like semantics: appending an item should not necessarily invalidate the local
-                // variable binding. In Rust, `Vec::push` moves non-Copy values, so we conservatively clone here.
-                if arg.ty.is_copy() {
-                    return Ok(quote! { #r.push(#a) });
-                }
-                return Ok(quote! { #r.push(#a.clone()) });
+                let elem_ty = match &receiver.ty {
+                    IrType::List(elem) => Some(elem.as_ref()),
+                    IrType::Ref(inner) | IrType::RefMut(inner) => match inner.as_ref() {
+                        IrType::List(elem) => Some(elem.as_ref()),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let conversion = determine_conversion(arg, elem_ty, ConversionContext::CollectionElement);
+                let converted = conversion.apply(a);
+                return Ok(quote! { #r.push(#converted) });
             }
             Ok(quote! { () })
         }

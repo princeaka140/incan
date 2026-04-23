@@ -1302,6 +1302,21 @@ fn test_issue389_for_tuple_unpack_enumerate_codegen() {
 }
 
 #[test]
+fn test_issue391_list_str_append_literal_codegen() {
+    let source = load_test_file("issue391_list_str_append_literal");
+    let rust_code = generate_rust(&source);
+    insta::assert_snapshot!("issue391_list_str_append_literal", rust_code);
+    assert!(
+        rust_code.contains("columns.push(\"count\".to_string())"),
+        "expected list[str].append(\"...\") to materialize an owned String element"
+    );
+    assert!(
+        !rust_code.contains("columns.push(\"count\".clone())"),
+        "string literal append must not clone a borrowed &str"
+    );
+}
+
+#[test]
 fn test_rust_interop_field_access_codegen() {
     let source = load_test_file("rust_interop_field_access");
     let rust_code = generate_rust(&source);
