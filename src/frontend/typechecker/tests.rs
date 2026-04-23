@@ -39,6 +39,11 @@ fn check_str_err(source: &str, context: &str) -> Vec<CompileError> {
     }
 }
 
+fn has_unknown_symbol_error(errors: &[CompileError], symbol: &str) -> bool {
+    let needle = format!("Unknown symbol '{symbol}'");
+    errors.iter().any(|err| err.message.contains(&needle))
+}
+
 fn check_str_with_library_index(source: &str, library_index: LibraryManifestIndex) -> Result<(), Vec<CompileError>> {
     let tokens = lexer::lex(source)?;
     let ast = parser::parse(&tokens)?;
@@ -508,6 +513,24 @@ def foo() -> int:
 "#;
     let result = check_str(source);
     assert!(result.is_err());
+}
+
+#[test]
+fn test_unknown_symbol_in_elif_branch_is_reported() {
+    let source = r#"
+def foo(flag: bool) -> int:
+  if flag:
+    return 1
+  elif true:
+    return unknown_var
+  else:
+    return 0
+"#;
+    let errors = check_str_err(source, "Expected typechecker error for unknown symbol in elif branch");
+    assert!(
+        has_unknown_symbol_error(&errors, "unknown_var"),
+        "Expected unknown symbol error for elif branch; got: {errors:?}"
+    );
 }
 
 #[test]
@@ -1964,6 +1987,20 @@ async def foo():
 fn test_std_async_function_import_ok() {
     let source = r#"
 from std.async.time import sleep
+
+async def foo() -> None:
+  await sleep(1.0)
+"#;
+    assert_check_ok(source);
+}
+
+#[test]
+fn test_local_async_function_named_sleep_shadows_no_builtin() {
+    let source = r#"
+import std.async
+
+async def sleep(seconds: float) -> None:
+  pass
 
 async def foo() -> None:
   await sleep(1.0)
@@ -4452,6 +4489,18 @@ def foo() -> int:
     assert!(check_str(source).is_ok());
 }
 
+#[test]
+fn test_local_function_named_sum_shadows_builtin_sum() {
+    let source = r#"
+def sum(value: str) -> str:
+  return value
+
+def foo() -> str:
+  return sum("ok")
+"#;
+    assert!(check_str(source).is_ok());
+}
+
 // ========================================
 // Tuple tests
 // ========================================
@@ -4578,6 +4627,77 @@ def f(x: Traffic) -> None:
             .any(|e| e.message.contains("does not resolve for this match")),
         "expected unknown_match_constructor_pattern, got {errs:?}"
     );
+}
+
+#[test]
+fn test_match_qualified_incan_enum_variant_resolves_against_scrutinee() {
+    let source = r#"
+pub enum ConformanceRel:
+  Read
+  Filter
+  Project
+
+pub def relation_kind_name_from_conformance(rel: ConformanceRel) -> str:
+  match rel:
+    ConformanceRel.Read =>
+      return "ReadRel"
+    ConformanceRel.Filter =>
+      return "FilterRel"
+    ConformanceRel.Project =>
+      return "ProjectRel"
+    _ =>
+      return "UnknownRel"
+"#;
+    assert!(check_str(source).is_ok());
+}
+
+#[test]
+fn test_match_qualified_incan_enum_variant_with_wrong_qualifier_reports_resolution_error() {
+    let source = r#"
+enum ConformanceRel:
+  Read
+  Filter
+
+enum OtherRel:
+  Read
+
+def relation_kind_name_from_conformance(rel: ConformanceRel) -> str:
+  match rel:
+    OtherRel.Read =>
+      return "ReadRel"
+    _ =>
+      return "UnknownRel"
+"#;
+    let Err(errs) = check_str(source) else {
+        panic!("expected type errors for mismatched enum constructor qualifier");
+    };
+    assert!(
+        errs.iter()
+            .any(|e| e.message.contains("does not resolve for this match")),
+        "expected unknown_match_constructor_pattern, got {errs:?}"
+    );
+}
+
+#[test]
+fn test_match_qualified_incan_enum_variant_stays_resolvable_with_duplicate_variant_names() {
+    let source = r#"
+enum ConformanceRel:
+  Read
+  Filter
+
+enum OtherRel:
+  Read
+
+def relation_kind_name_from_conformance(rel: ConformanceRel) -> str:
+  match rel:
+    ConformanceRel.Read =>
+      return "ReadRel"
+    ConformanceRel.Filter =>
+      return "FilterRel"
+    _ =>
+      return "UnknownRel"
+"#;
+    assert!(check_str(source).is_ok());
 }
 
 // ========================================
@@ -5249,8 +5369,9 @@ fn test_std_math_module_extended_functions_ok() {
     let source = r#"
 import std.math
 
-def value(x: float, y: float) -> float:
-  return math.round(x) + math.log2(x) + math.atan2(y, x) + math.hypot(x, y)
+def value(x: float, y: float, a: int, b: int) -> float:
+  ints = math.gcd(a, b) + math.lcm(a, b)
+  return math.round(x) + math.log2(x) + math.atan2(y, x) + math.hypot(x, y) + float(ints)
 "#;
     assert_check_ok(source);
 }

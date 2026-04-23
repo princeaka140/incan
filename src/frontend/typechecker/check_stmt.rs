@@ -547,6 +547,18 @@ impl TypeChecker {
         }
         self.symbols.exit_scope();
 
+        for (elif_cond, elif_body) in &if_stmt.elif_branches {
+            let elif_cond_ty = self.check_expr(elif_cond);
+            let elif_is_compatible = self.types_compatible(&elif_cond_ty, &ResolvedType::Bool);
+            ensure_bool_condition(&elif_cond_ty, elif_cond.span, elif_is_compatible, &mut self.errors);
+
+            self.symbols.enter_scope(ScopeKind::Block);
+            for stmt in elif_body {
+                self.check_statement(stmt);
+            }
+            self.symbols.exit_scope();
+        }
+
         if let Some(else_body) = &if_stmt.else_body {
             self.symbols.enter_scope(ScopeKind::Block);
             for stmt in else_body {
@@ -575,21 +587,61 @@ impl TypeChecker {
         let elem_ty = self.infer_iterator_element_type(&iter_ty);
 
         self.symbols.enter_scope(ScopeKind::Block);
-        self.symbols.define(Symbol {
-            name: for_stmt.var.clone(),
-            kind: SymbolKind::Variable(VariableInfo {
-                ty: elem_ty,
-                is_mutable: false,
-                is_used: false,
-            }),
-            span: for_stmt.iter.span,
-            scope: 0,
-        });
+        self.define_for_pattern_bindings(&for_stmt.pattern, &elem_ty);
 
         for stmt in &for_stmt.body {
             self.check_statement(stmt);
         }
         self.symbols.exit_scope();
+    }
+
+    /// Define loop-scope bindings introduced by a `for` header pattern.
+    ///
+    /// The parser currently admits only bindings, `_`, and tuple bindings, but the exhaustive match keeps hand-built
+    /// ASTs from silently reaching lowering with unsupported pattern forms.
+    fn define_for_pattern_bindings(&mut self, pattern: &Spanned<Pattern>, ty: &ResolvedType) {
+        match &pattern.node {
+            Pattern::Binding(name) => {
+                self.symbols.define(Symbol {
+                    name: name.clone(),
+                    kind: SymbolKind::Variable(VariableInfo {
+                        ty: ty.clone(),
+                        is_mutable: false,
+                        is_used: false,
+                    }),
+                    span: pattern.span,
+                    scope: 0,
+                });
+            }
+            Pattern::Wildcard => {}
+            Pattern::Tuple(items) => {
+                let element_types = match ty {
+                    ResolvedType::Tuple(types) => {
+                        if types.len() != items.len() {
+                            self.errors.push(errors::tuple_unpack_count_mismatch(
+                                items.len(),
+                                types.len(),
+                                pattern.span,
+                            ));
+                        }
+                        types.clone()
+                    }
+                    _ => vec![ResolvedType::Unknown; items.len()],
+                };
+
+                for (i, item) in items.iter().enumerate() {
+                    let item_ty = element_types.get(i).cloned().unwrap_or(ResolvedType::Unknown);
+                    self.define_for_pattern_bindings(item, &item_ty);
+                }
+            }
+            Pattern::Constructor(_, _) | Pattern::Literal(_) => {
+                self.errors.push(errors::expected_token_message(
+                    "Expected identifier, wildcard, or tuple binding in for-loop pattern",
+                    &format!("{:?}", pattern.node),
+                    pattern.span,
+                ));
+            }
+        }
     }
 
     fn check_assert_stmt(&mut self, assert_stmt: &AssertStmt) {

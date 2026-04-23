@@ -18,7 +18,6 @@
 //! - String literals like `"hello"` are `&'static str` in Rust, requiring `.to_string()` for owned contexts
 //!
 //! **Other types currently supported:**
-//! - `Vec<&str>` → `Vec<String>` conversion for collections
 //! - `List[T] + List[T]` concatenation via `incan_stdlib::collections::list_concat`
 //!
 //! **Future extensions may include:**
@@ -49,7 +48,6 @@
 //! ```
 //! - String literals → `.to_string()` (e.g., `greet("Alice")` → `greet("Alice".to_string())`)
 //! - String variables → `.to_string()` (may be &str at runtime)
-//! - Vec<&str> → `.into_iter().map(|s| s.to_string()).collect()`
 //!
 //! ### ExternalFunctionArg
 //!
@@ -63,9 +61,9 @@
 //! - String literals → `.to_string()` (for enum variants like `Some("x")`)
 //! - String variables → `&` (borrow for &str parameters)
 //!
-//! ### StructField
+//! ### Owned storage sinks
 //!
-//! Struct fields are always **owned**:
+//! Struct fields and collection elements are always **owned**:
 //!
 //! ```text
 //! Incan:  user = User(name="Alice", age=30)
@@ -185,6 +183,8 @@ pub enum ConversionContext {
     ExternalFunctionArg,
     /// Field in struct construction (always owned)
     StructField,
+    /// Element being stored into an owned collection.
+    CollectionElement,
     /// Argument to a method call (context-dependent)
     MethodArg,
     /// Assignment or let binding
@@ -210,8 +210,6 @@ pub enum Conversion {
     MutBorrow,
     /// Clone with .clone()
     Clone,
-    /// Convert `Vec<&str>` to `Vec<String>`.
-    VecStringConversion,
 }
 
 impl Conversion {
@@ -224,9 +222,6 @@ impl Conversion {
             Conversion::Borrow => quote! { &#tokens },
             Conversion::MutBorrow => quote! { &mut #tokens },
             Conversion::Clone => quote! { #tokens.clone() },
-            Conversion::VecStringConversion => {
-                quote! { #tokens.into_iter().map(|s| s.to_string()).collect() }
-            }
         }
     }
 }
@@ -309,7 +304,7 @@ fn emit_binop_token(op: &BinOp) -> TokenStream {
 /// Determine a BinOpPlan: conversions + emit strategy in one place.
 pub fn determine_binop_plan(op: &BinOp, left: &TypedExpr, right: &TypedExpr) -> BinOpPlan {
     let is_stringish = |ty: &IrType| match ty {
-        IrType::String => true,
+        IrType::String | IrType::StaticStr | IrType::StrRef | IrType::FrozenStr => true,
         IrType::Ref(inner) | IrType::RefMut(inner) => matches!(inner.as_ref(), IrType::String),
         _ => false,
     };
@@ -463,6 +458,39 @@ pub fn determine_binop_plan(op: &BinOp, left: &TypedExpr, right: &TypedExpr) -> 
     }
 }
 
+/// Determine conversion for destinations that store an owned value.
+///
+/// Struct fields and collection elements share this policy: literals and static `str` reads must become owned
+/// `String`s when the destination type is Incan `str`, while non-Copy field reads and repeated local reads preserve
+/// source-level value semantics by cloning.
+fn determine_owned_storage_conversion(expr: &IrExpr, target_ty: Option<&IrType>) -> Conversion {
+    match (&expr.kind, target_ty) {
+        (IrExprKind::String(_), Some(IrType::String)) => Conversion::ToString,
+        (IrExprKind::StaticRead { .. }, Some(IrType::String | IrType::Generic(_)))
+            if matches!(expr.ty, IrType::StaticStr) =>
+        {
+            Conversion::ToString
+        }
+        (IrExprKind::StaticRead { .. }, None) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
+        (_, Some(IrType::String)) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
+        (IrExprKind::String(_), Some(IrType::Generic(_))) => Conversion::ToString,
+        (_, Some(IrType::Generic(_))) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
+        (IrExprKind::String(_), None) => Conversion::ToString,
+        (_, None) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
+        (IrExprKind::Var { access, .. }, Some(IrType::String)) if matches!(expr.ty, IrType::String) => match access {
+            VarAccess::Move => Conversion::None,
+            _ => Conversion::ToString,
+        },
+        (IrExprKind::Var { access, .. }, _) if !expr.ty.is_copy() => match access {
+            VarAccess::Move => Conversion::None,
+            _ => Conversion::Clone,
+        },
+        (IrExprKind::Field { .. }, _) if matches!(expr.ty, IrType::String) => Conversion::Clone,
+        (IrExprKind::Field { .. }, _) if !expr.ty.is_copy() => Conversion::Clone,
+        _ => Conversion::None,
+    }
+}
+
 /// Determines what conversion (if any) is needed for a value
 ///
 /// ## Type-Specific Behavior
@@ -492,23 +520,25 @@ pub fn determine_conversion(expr: &IrExpr, target_ty: Option<&IrType>, context: 
             match (&expr.kind, target_ty) {
                 // String literal to String param → .to_string()
                 (IrExprKind::String(_), Some(IrType::String)) => Conversion::ToString,
+                // Static const reads still represent Incan `str` at ordinary call sites.
+                (IrExprKind::StaticRead { .. }, Some(IrType::String | IrType::Generic(_)))
+                    if matches!(expr.ty, IrType::StaticStr) =>
+                {
+                    Conversion::ToString
+                }
+                (IrExprKind::StaticRead { .. }, None) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
+                // Const `str` values lower as `&'static str` but still follow Incan owned-string semantics at call
+                // sites.
+                (_, Some(IrType::String)) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
                 // String literal to generic type param (e.g. assert_eq[T]) → owned String.
                 // Typechecker constrains `T`; this keeps Incan `str` semantics in generic calls.
                 (IrExprKind::String(_), Some(IrType::Generic(_))) => Conversion::ToString,
+                // Generic `T` instantiated with Incan `str` must still materialize to owned `String`.
+                (_, Some(IrType::Generic(_))) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
                 // String literal with unknown target (enum variants, etc.) → .to_string()
                 (IrExprKind::String(_), None) => Conversion::ToString,
-
-                // Vec<&str> to Vec<String> - check before generic variable handling
-                (_, Some(IrType::List(elem))) if matches!(elem.as_ref(), IrType::String) => {
-                    if matches!(expr.ty, IrType::List(_)) {
-                        match &expr.kind {
-                            IrExprKind::List(items) if items.is_empty() => Conversion::None,
-                            _ => Conversion::VecStringConversion,
-                        }
-                    } else {
-                        Conversion::None
-                    }
-                }
+                // Const `str` values need the same owned-string materialization when the target is inferred.
+                (_, None) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
 
                 // String variable to String param:
                 // - last-use read can move ownership directly
@@ -541,6 +571,9 @@ pub fn determine_conversion(expr: &IrExpr, target_ty: Option<&IrType>, context: 
             match (&expr.kind, target_ty) {
                 // String literal → .to_string()
                 (IrExprKind::String(_), _) => Conversion::ToString,
+                (IrExprKind::StaticRead { .. }, _) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
+                // Const `str` values remain owned `str` at the Incan surface even inside return-context calls.
+                (_, _) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
 
                 // String variable to String param:
                 // - last-use read can move ownership directly
@@ -578,6 +611,8 @@ pub fn determine_conversion(expr: &IrExpr, target_ty: Option<&IrType>, context: 
             match &expr.kind {
                 // String literals → .into() (works for String, &str, PlSmallStr, and any From<&str>)
                 IrExprKind::String(_) => Conversion::Into, // String variables → borrow for external calls (&str param)
+                IrExprKind::StaticRead { .. } if matches!(expr.ty, IrType::StaticStr) => Conversion::Into,
+                IrExprKind::Var { .. } if matches!(expr.ty, IrType::StaticStr) => Conversion::Into,
                 IrExprKind::Var { .. } if matches!(expr.ty, IrType::String) => Conversion::Borrow,
                 // Rust adapter leaves commonly accept borrowed handles (`&Sender<T>`, `&Mutex<T>`, ...).
                 // When the frontend cannot surface an explicit `&T` parameter type for inline Rust imports,
@@ -590,12 +625,8 @@ pub fn determine_conversion(expr: &IrExpr, target_ty: Option<&IrType>, context: 
             }
         }
 
-        ConversionContext::StructField => {
-            // Struct fields are always owned
-            match &expr.kind {
-                IrExprKind::String(_) => Conversion::ToString,
-                _ => Conversion::None,
-            }
+        ConversionContext::StructField | ConversionContext::CollectionElement => {
+            determine_owned_storage_conversion(expr, target_ty)
         }
 
         ConversionContext::MethodArg => {
@@ -608,6 +639,12 @@ pub fn determine_conversion(expr: &IrExpr, target_ty: Option<&IrType>, context: 
             match (&expr.kind, target_ty) {
                 // String literal assigned to String variable → .to_string()
                 (IrExprKind::String(_), Some(IrType::String)) => Conversion::ToString,
+                (IrExprKind::StaticRead { .. }, Some(IrType::String | IrType::Generic(_)))
+                    if matches!(expr.ty, IrType::StaticStr) =>
+                {
+                    Conversion::ToString
+                }
+                (_, Some(IrType::String)) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
                 _ => Conversion::None,
             }
         }
@@ -617,6 +654,10 @@ pub fn determine_conversion(expr: &IrExpr, target_ty: Option<&IrType>, context: 
             match (&expr.kind, target_ty) {
                 // String literal returned when function returns String → .to_string()
                 (IrExprKind::String(_), Some(IrType::String)) => Conversion::ToString,
+                (IrExprKind::StaticRead { .. }, Some(IrType::String)) if matches!(expr.ty, IrType::StaticStr) => {
+                    Conversion::ToString
+                }
+                (_, Some(IrType::String)) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
                 // Other cases: as-is
                 _ => Conversion::None,
             }
@@ -771,7 +812,67 @@ mod tests {
     }
 
     #[test]
-    fn test_incan_function_vec_string_conversion() {
+    fn test_incan_function_static_str_var_to_string() {
+        let expr = IrExpr::new(
+            IrExprKind::Var {
+                name: "s".to_string(),
+                access: VarAccess::Read,
+                ref_kind: VarRefKind::StaticBinding,
+            },
+            IrType::StaticStr,
+        );
+        let target = IrType::String;
+
+        let conv = determine_conversion(&expr, Some(&target), ConversionContext::IncanFunctionArg);
+        assert_eq!(conv, Conversion::ToString);
+    }
+
+    #[test]
+    fn test_incan_function_static_str_var_to_generic() {
+        let expr = IrExpr::new(
+            IrExprKind::Var {
+                name: "s".to_string(),
+                access: VarAccess::Read,
+                ref_kind: VarRefKind::StaticBinding,
+            },
+            IrType::StaticStr,
+        );
+        let target = IrType::Generic("T".to_string());
+
+        let conv = determine_conversion(&expr, Some(&target), ConversionContext::IncanFunctionArg);
+        assert_eq!(conv, Conversion::ToString);
+    }
+
+    #[test]
+    fn test_incan_function_static_read_to_string() {
+        let expr = IrExpr::new(
+            IrExprKind::StaticRead {
+                name: "PREFIX".to_string(),
+            },
+            IrType::StaticStr,
+        );
+        let target = IrType::String;
+
+        let conv = determine_conversion(&expr, Some(&target), ConversionContext::IncanFunctionArg);
+        assert_eq!(conv, Conversion::ToString);
+    }
+
+    #[test]
+    fn test_incan_function_static_read_int_to_generic_stays_as_is() {
+        let expr = IrExpr::new(
+            IrExprKind::StaticRead {
+                name: "MARKER".to_string(),
+            },
+            IrType::Int,
+        );
+        let target = IrType::Generic("T".to_string());
+
+        let conv = determine_conversion(&expr, Some(&target), ConversionContext::IncanFunctionArg);
+        assert_eq!(conv, Conversion::None);
+    }
+
+    #[test]
+    fn test_incan_function_string_list_var_uses_owned_incan_semantics() {
         let expr = IrExpr::new(
             IrExprKind::Var {
                 name: "items".to_string(),
@@ -783,7 +884,7 @@ mod tests {
         let target = IrType::List(Box::new(IrType::String));
 
         let conv = determine_conversion(&expr, Some(&target), ConversionContext::IncanFunctionArg);
-        assert_eq!(conv, Conversion::VecStringConversion);
+        assert_eq!(conv, Conversion::None);
     }
 
     #[test]
@@ -855,6 +956,66 @@ mod tests {
 
         let conv = determine_conversion(&expr, Some(&target), ConversionContext::IncanFunctionArg);
         assert_eq!(conv, Conversion::Clone);
+    }
+
+    #[test]
+    fn test_assignment_static_str_to_string() {
+        let expr = IrExpr::new(
+            IrExprKind::Var {
+                name: "prefix".to_string(),
+                access: VarAccess::Read,
+                ref_kind: VarRefKind::StaticBinding,
+            },
+            IrType::StaticStr,
+        );
+        let target = IrType::String;
+
+        let conv = determine_conversion(&expr, Some(&target), ConversionContext::Assignment);
+        assert_eq!(conv, Conversion::ToString);
+    }
+
+    #[test]
+    fn test_assignment_static_read_int_stays_as_is() {
+        let expr = IrExpr::new(
+            IrExprKind::StaticRead {
+                name: "MARKER".to_string(),
+            },
+            IrType::Int,
+        );
+        let target = IrType::Int;
+
+        let conv = determine_conversion(&expr, Some(&target), ConversionContext::Assignment);
+        assert_eq!(conv, Conversion::None);
+    }
+
+    #[test]
+    fn test_return_static_str_to_string() {
+        let expr = IrExpr::new(
+            IrExprKind::Var {
+                name: "prefix".to_string(),
+                access: VarAccess::Read,
+                ref_kind: VarRefKind::StaticBinding,
+            },
+            IrType::StaticStr,
+        );
+        let target = IrType::String;
+
+        let conv = determine_conversion(&expr, Some(&target), ConversionContext::ReturnValue);
+        assert_eq!(conv, Conversion::ToString);
+    }
+
+    #[test]
+    fn test_return_static_read_to_string() {
+        let expr = IrExpr::new(
+            IrExprKind::StaticRead {
+                name: "PREFIX".to_string(),
+            },
+            IrType::StaticStr,
+        );
+        let target = IrType::String;
+
+        let conv = determine_conversion(&expr, Some(&target), ConversionContext::ReturnValue);
+        assert_eq!(conv, Conversion::ToString);
     }
 
     // === ExternalFunctionArg Tests ===
@@ -1045,15 +1206,5 @@ mod tests {
         let tokens = quote::quote! { value };
         let result = Conversion::Clone.apply(tokens);
         assert_eq!(result.to_string(), "value . clone ()");
-    }
-
-    #[test]
-    fn test_apply_vec_string_conversion() {
-        let tokens = quote::quote! { items };
-        let result = Conversion::VecStringConversion.apply(tokens);
-        assert_eq!(
-            result.to_string(),
-            "items . into_iter () . map (| s | s . to_string ()) . collect ()"
-        );
     }
 }

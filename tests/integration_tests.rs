@@ -973,7 +973,7 @@ def main() -> None:
 
 /// End-to-end codegen tests
 mod codegen_tests {
-    use super::incan_debug_binary;
+    use super::{incan_debug_binary, strip_ansi_escapes};
     use incan::backend::IrCodegen;
     use incan::frontend::{lexer, parser, typechecker};
     use std::fs;
@@ -1093,6 +1093,128 @@ mod codegen_tests {
             stdout.contains("The Zen of Incan") && stdout.contains("Readability counts"),
             "stdout missing zen line; got:\n{}",
             stdout
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_filtered_comprehensions_run_with_borrowed_iterables() -> Result<(), Box<dyn std::error::Error>> {
+        let output = Command::new(incan_debug_binary())
+            .args([
+                "run",
+                "-c",
+                r#"
+@derive(Clone)
+model StoredNode:
+    store_id_raw: int
+    node: str
+
+def main() -> None:
+    nodes: list[StoredNode] = [
+        StoredNode(store_id_raw=1, node="a"),
+        StoredNode(store_id_raw=2, node="b"),
+    ]
+    filtered = [stored.node for stored in nodes if stored.store_id_raw == 1]
+    scores = [1, 2, 3, 4]
+    squared_evens = {x: x * x for x in scores if x % 2 == 0}
+    println(filtered[0])
+    println(squared_evens[2])
+"#,
+            ])
+            .env("CARGO_NET_OFFLINE", "true")
+            .output()?;
+        assert!(
+            output.status.success(),
+            "incan run -c filtered comprehension regression failed: status={:?} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = strip_ansi_escapes(&String::from_utf8_lossy(&output.stdout));
+        let lines: Vec<&str> = stdout.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+        assert_eq!(
+            lines,
+            vec!["a", "4"],
+            "unexpected filtered comprehension output:\n{stdout}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_clone_self_struct_field_reads_do_not_move_out_of_borrowed_self() -> Result<(), Box<dyn std::error::Error>> {
+        let output = Command::new(incan_debug_binary())
+            .args([
+                "run",
+                "-c",
+                r#"
+pub class ActiveRegistration:
+    pub logical_name: str
+    pub rank: int
+
+    def clone(self) -> Self:
+        return ActiveRegistration(logical_name=self.logical_name, rank=self.rank)
+
+def main() -> None:
+    reg = ActiveRegistration(logical_name="orders", rank=1)
+    copied = reg.clone()
+    println(copied.logical_name)
+"#,
+            ])
+            .env("CARGO_NET_OFFLINE", "true")
+            .output()?;
+        assert!(
+            output.status.success(),
+            "incan run -c clone(self)->Self field regression failed: status={:?} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = strip_ansi_escapes(&String::from_utf8_lossy(&output.stdout));
+        let lines: Vec<&str> = stdout.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+        assert_eq!(lines, vec!["orders"], "unexpected clone(self)->Self output:\n{stdout}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_result_ok_string_literals_run_without_manual_str_wrapping() -> Result<(), Box<dyn std::error::Error>> {
+        let output = Command::new(incan_debug_binary())
+            .args([
+                "run",
+                "-c",
+                r#"
+def returns_result() -> Result[str, str]:
+    return Ok("from_return")
+
+def main() -> None:
+    direct: Result[str, str] = Ok("from_call")
+    match direct:
+        case Ok(msg):
+            println(msg)
+        case Err(err):
+            println(err)
+
+    match returns_result():
+        case Ok(msg):
+            println(msg)
+        case Err(err):
+            println(err)
+"#,
+            ])
+            .env("CARGO_NET_OFFLINE", "true")
+            .output()?;
+        assert!(
+            output.status.success(),
+            "incan run -c Result[str, E] string regression failed: status={:?} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = strip_ansi_escapes(&String::from_utf8_lossy(&output.stdout));
+        let lines: Vec<&str> = stdout.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+        assert_eq!(
+            lines,
+            vec!["from_call", "from_return"],
+            "unexpected Result[str, E] output:\n{stdout}"
         );
         Ok(())
     }
@@ -1850,6 +1972,50 @@ def main() -> None:
     }
 
     #[test]
+    fn test_const_str_materializes_to_owned_str_at_runtime_sites() {
+        let Ok(output) = Command::new(incan_debug_binary())
+            .args([
+                "run",
+                "-c",
+                r#"
+const PREFIX: str = "target/"
+
+def echo(value: str) -> str:
+    return value
+
+def direct() -> str:
+    return PREFIX
+
+def join(name: str) -> str:
+    return PREFIX + name
+
+def main() -> None:
+    local = PREFIX
+    println(direct())
+    println(echo(PREFIX))
+    println(echo(local))
+    println(join("orders.csv"))
+"#,
+            ])
+            .env("CARGO_NET_OFFLINE", "true")
+            .output()
+        else {
+            panic!("failed to run incan");
+        };
+
+        assert!(
+            output.status.success(),
+            "const str materialization test failed: status={:?} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let lines: Vec<&str> = stdout.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+        assert_eq!(lines, vec!["target/", "target/", "target/", "target/orders.csv"]);
+    }
+
+    #[test]
     fn test_rfc041_rusttype_interop_typechecks_end_to_end() {
         let source = r#"
 from rust::std::string import String as RustString
@@ -1946,8 +2112,8 @@ def main() -> None:
             "expected Option[int] smoke value to lower to a Rust Option expression; got:\n{rust_code}"
         );
         assert!(
-            rust_code.contains("let names = vec![\"a\", \"b\"];"),
-            "expected List[str] smoke value to lower to a Rust vec expression; got:\n{rust_code}"
+            rust_code.contains("let names = vec![\"a\".to_string(), \"b\".to_string()];"),
+            "expected List[str] smoke value to lower to an owned Rust string vec; got:\n{rust_code}"
         );
         assert!(
             rust_code.contains("collect::<HashMap<_, _>>()"),
@@ -2005,6 +2171,8 @@ def main() -> None:
     println(math.log2(8.0))
     println(math.atan2(1.0, 1.0))
     println(math.hypot(3.0, 4.0))
+    println(math.gcd(54, 24))
+    println(math.lcm(6, 8))
 "#,
             ])
             .env("CARGO_NET_OFFLINE", "true")
@@ -2024,8 +2192,8 @@ def main() -> None:
         let lines: Vec<&str> = stdout.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
         assert_eq!(
             lines.len(),
-            5,
-            "expected 5 output lines (PI/round/log2/atan2/hypot); got: {stdout}"
+            7,
+            "expected 7 output lines (PI/round/log2/atan2/hypot/gcd/lcm); got: {stdout}"
         );
 
         let Ok(pi) = lines[0].parse::<f64>() else {
@@ -2043,6 +2211,12 @@ def main() -> None:
         let Ok(hypot) = lines[4].parse::<f64>() else {
             panic!("hypot output was not a float: `{}`", lines[4]);
         };
+        let Ok(gcd) = lines[5].parse::<i64>() else {
+            panic!("gcd output was not an int: `{}`", lines[5]);
+        };
+        let Ok(lcm) = lines[6].parse::<i64>() else {
+            panic!("lcm output was not an int: `{}`", lines[6]);
+        };
 
         assert!((pi - std::f64::consts::PI).abs() < 1e-12, "unexpected PI value: {pi}");
         assert!((round - 2.0).abs() < 1e-12, "unexpected round value: {round}");
@@ -2052,6 +2226,44 @@ def main() -> None:
             "unexpected atan2 value: {atan2}"
         );
         assert!((hypot - 5.0).abs() < 1e-12, "unexpected hypot value: {hypot}");
+        assert_eq!(gcd, 6, "unexpected gcd value: {gcd}");
+        assert_eq!(lcm, 24, "unexpected lcm value: {lcm}");
+    }
+
+    #[test]
+    fn test_rust_associated_call_in_elif_branch_uses_path_syntax() {
+        let Ok(output) = Command::new(incan_debug_binary())
+            .args([
+                "run",
+                "-c",
+                r#"
+from rust::std::path import Path
+
+def f(kind: str, output_uri: str) -> bool:
+    if kind == "a":
+        return Path.new(output_uri).exists()
+    elif kind == "b":
+        return Path.new(output_uri).exists()
+    else:
+        return false
+
+def main() -> None:
+    println(f("a", "missing-a"))
+    println(f("b", "missing-b"))
+"#,
+            ])
+            .env("CARGO_NET_OFFLINE", "true")
+            .output()
+        else {
+            panic!("failed to run incan");
+        };
+
+        assert!(
+            output.status.success(),
+            "rust associated call in elif branch failed: status={:?} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
 
@@ -2401,6 +2613,119 @@ def test_nested_dataset_modules() -> None:
             !stderr.contains("file for module `dataset` found at both"),
             "expected no stale flat-vs-nested module collision.\nstderr:\n{}",
             stderr,
+        );
+    }
+
+    #[test]
+    fn e2e_test_runner_preserves_project_fixture_cwd_for_file_and_batch_runs() {
+        let dir = write_test_project(
+            "incan.toml",
+            r#"[project]
+name = "fixture_cwd_parity"
+version = "0.1.0"
+"#,
+        );
+        let tests_dir = dir.join("tests");
+        let fixtures_dir = tests_dir.join("fixtures");
+
+        if let Err(err) = std::fs::create_dir_all(&fixtures_dir) {
+            panic!("failed to create fixture dir: {}", err);
+        }
+        if let Err(err) = std::fs::write(fixtures_dir.join("orders.csv"), "id\n1\n") {
+            panic!("failed to write fixture file: {}", err);
+        }
+        if let Err(err) = std::fs::write(
+            tests_dir.join("test_fixture_path.incn"),
+            r#"
+from std.testing import assert_eq
+from rust::std::path import Path
+
+const FIXTURE: str = "tests/fixtures/orders.csv"
+
+def test_fixture_path_exists() -> None:
+    assert_eq(Path.new(FIXTURE).exists(), true)
+"#,
+        ) {
+            panic!("failed to write fixture path test: {}", err);
+        }
+
+        let single = run_incan_test_relative(&dir, "tests/test_fixture_path.incn");
+        let single_stdout = String::from_utf8_lossy(&single.stdout);
+        let single_stderr = String::from_utf8_lossy(&single.stderr);
+        assert!(
+            single.status.success(),
+            "expected single-file fixture-path run to succeed.\nstdout:\n{}\nstderr:\n{}",
+            single_stdout,
+            single_stderr,
+        );
+
+        let batch = run_incan_test_relative(&dir, "tests");
+        let batch_stdout = String::from_utf8_lossy(&batch.stdout);
+        let batch_stderr = String::from_utf8_lossy(&batch.stderr);
+        assert!(
+            batch.status.success(),
+            "expected batched fixture-path run to succeed.\nstdout:\n{}\nstderr:\n{}",
+            batch_stdout,
+            batch_stderr,
+        );
+    }
+
+    #[test]
+    fn e2e_test_runner_preserves_fixture_cwd_without_manifest_for_file_and_batch_runs() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let mut dir = std::env::temp_dir();
+        let Ok(duration) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+            panic!("system time before UNIX epoch");
+        };
+        dir.push(format!("incan_e2e_test_nomani_{}", duration.as_nanos()));
+        if let Err(err) = std::fs::create_dir_all(&dir) {
+            panic!("failed to create temp dir: {}", err);
+        }
+        let tests_dir = dir.join("tests");
+        let fixtures_dir = tests_dir.join("fixtures");
+
+        if let Err(err) = std::fs::create_dir_all(&fixtures_dir) {
+            panic!("failed to create fixture dir: {}", err);
+        }
+        if let Err(err) = std::fs::write(fixtures_dir.join("ok.txt"), "ok\n") {
+            panic!("failed to write fixture file: {}", err);
+        }
+        if let Err(err) = std::fs::write(
+            tests_dir.join("test_cwd.incn"),
+            r#"
+from std.testing import assert_eq
+from rust::std::path import Path
+
+def test_cwd__fixture_path_is_repo_relative() -> None:
+    assert_eq(
+        Path.new("tests/fixtures/ok.txt").exists(),
+        true,
+        "fixture path should resolve from the project root in both per-file and batched test runs",
+    )
+"#,
+        ) {
+            panic!("failed to write fixture path test: {}", err);
+        }
+
+        let single = run_incan_test_relative(&dir, "tests/test_cwd.incn");
+        let single_stdout = String::from_utf8_lossy(&single.stdout);
+        let single_stderr = String::from_utf8_lossy(&single.stderr);
+        assert!(
+            single.status.success(),
+            "expected manifest-less single-file fixture-path run to succeed.\nstdout:\n{}\nstderr:\n{}",
+            single_stdout,
+            single_stderr,
+        );
+
+        let batch = run_incan_test_relative(&dir, "tests");
+        let batch_stdout = String::from_utf8_lossy(&batch.stdout);
+        let batch_stderr = String::from_utf8_lossy(&batch.stderr);
+        assert!(
+            batch.status.success(),
+            "expected manifest-less batched fixture-path run to succeed.\nstdout:\n{}\nstderr:\n{}",
+            batch_stdout,
+            batch_stderr,
         );
     }
 
@@ -3932,6 +4257,237 @@ pub def display[T](data: DataSet[T]) -> None:
         assert!(
             project_build.status.success(),
             "expected `build` to accept src submodule facade re-export.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&project_build.stdout),
+            String::from_utf8_lossy(&project_build.stderr)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn build_succeeds_for_imported_enum_loop_ownership() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let project_root = tmp.path().join("imported_enum_loop_project");
+        std::fs::create_dir_all(project_root.join("src"))?;
+        std::fs::write(
+            project_root.join("incan.toml"),
+            "[project]\nname = \"imported_enum_loop\"\nversion = \"0.1.0\"\n",
+        )?;
+        std::fs::write(
+            project_root.join("src/rels.incn"),
+            "@derive(Clone)\npub enum ConformanceRel:\n  Read\n  Filter\n",
+        )?;
+        let main_path = project_root.join("src/main.incn");
+        std::fs::write(
+            &main_path,
+            "from rels import ConformanceRel\n\ndef relation_kind_name_from_conformance(rel: ConformanceRel) -> str:\n  match rel:\n    ConformanceRel.Read =>\n      return \"ReadRel\"\n    _ =>\n      return \"Other\"\n\ndef scenario_matches(required: list[ConformanceRel]) -> bool:\n  for expected in required:\n    if expected == ConformanceRel.Read:\n      if relation_kind_name_from_conformance(expected) == \"ReadRel\":\n        return true\n  return false\n\ndef main() -> None:\n  println(scenario_matches([ConformanceRel.Read]))\n",
+        )?;
+
+        let out_dir = project_root.join("out");
+        let project_build = run_build(&main_path, &out_dir)?;
+        assert!(
+            project_build.status.success(),
+            "expected imported enum loop project to build successfully.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&project_build.stdout),
+            String::from_utf8_lossy(&project_build.stderr)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn build_succeeds_for_len_comparison_on_recursive_list_field() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let project_root = tmp.path().join("len_comparison_recursive_project");
+        std::fs::create_dir_all(project_root.join("src"))?;
+        std::fs::write(
+            project_root.join("incan.toml"),
+            "[project]\nname = \"len_comparison_recursive\"\nversion = \"0.1.0\"\n",
+        )?;
+        let main_path = project_root.join("src/main.incn");
+        std::fs::write(
+            &main_path,
+            "@derive(Clone)\npub enum ExprKind:\n  Column\n  Add\n\n@derive(Clone)\npub model Expr:\n  pub kind: ExprKind\n  pub column_name: str\n  pub arguments: list[Expr]\n\npub def lower(expr: Expr) -> int:\n  if expr.kind == ExprKind.Column:\n    return 0\n  if len(expr.arguments) < 2:\n    return -1\n  return 1\n\ndef main() -> None:\n  println(lower(Expr(kind=ExprKind.Add, column_name=\"root\", arguments=[])))\n",
+        )?;
+
+        let out_dir = project_root.join("out");
+        let project_build = run_build(&main_path, &out_dir)?;
+        assert!(
+            project_build.status.success(),
+            "expected recursive list-field len comparison project to build successfully.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&project_build.stdout),
+            String::from_utf8_lossy(&project_build.stderr)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn build_succeeds_for_loop_helper_shared_string_list() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let project_root = tmp.path().join("loop_helper_shared_string_list_project");
+        std::fs::create_dir_all(project_root.join("src"))?;
+        std::fs::write(
+            project_root.join("incan.toml"),
+            "[project]\nname = \"loop_helper_shared_string_list\"\nversion = \"0.1.0\"\n",
+        )?;
+        let main_path = project_root.join("src/main.incn");
+        std::fs::write(
+            &main_path,
+            "def match_index(xs: list[str], y: int) -> int:\n  mut idx = 0\n  while idx < len(xs):\n    if len(xs[idx]) == y:\n      return idx\n    idx = idx + 1\n  return -1\n\n\
+def helper_loop(xs: list[str], ys: list[int]) -> list[int]:\n  mut out: list[int] = []\n  for y in ys:\n    out.append(match_index(xs, y))\n  return out\n\n\
+def main() -> None:\n  helper_loop([\"a\", \"bb\", \"ccc\"], [1, 2])\n",
+        )?;
+
+        let out_dir = project_root.join("out");
+        let project_build = run_build(&main_path, &out_dir)?;
+        assert!(
+            project_build.status.success(),
+            "expected loop helper shared string-list project to build successfully.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&project_build.stdout),
+            String::from_utf8_lossy(&project_build.stderr)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn build_succeeds_for_dict_comp_reusing_noncopy_key() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let project_root = tmp.path().join("dict_comp_reuses_noncopy_key_project");
+        std::fs::create_dir_all(project_root.join("src"))?;
+        std::fs::write(
+            project_root.join("incan.toml"),
+            "[project]\nname = \"dict_comp_reuses_noncopy_key\"\nversion = \"0.1.0\"\n",
+        )?;
+        let main_path = project_root.join("src/main.incn");
+        std::fs::write(
+            &main_path,
+            "def lengths(names: list[str]) -> dict[str, int]:\n  return {name: len(name) for name in names}\n\n\
+def main() -> None:\n  values = lengths([\"alice\", \"bob\"])\n  println(values[\"alice\"])\n",
+        )?;
+
+        let out_dir = project_root.join("out");
+        let project_build = run_build(&main_path, &out_dir)?;
+        assert!(
+            project_build.status.success(),
+            "expected dict comprehension with reused non-Copy key to build successfully.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&project_build.stdout),
+            String::from_utf8_lossy(&project_build.stderr)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn build_succeeds_for_for_tuple_unpack_enumerate() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let project_root = tmp.path().join("for_tuple_unpack_enumerate_project");
+        std::fs::create_dir_all(project_root.join("src"))?;
+        std::fs::write(
+            project_root.join("incan.toml"),
+            "[project]\nname = \"for_tuple_unpack_enumerate\"\nversion = \"0.1.0\"\n",
+        )?;
+        let main_path = project_root.join("src/main.incn");
+        std::fs::write(
+            &main_path,
+            "model Binding:\n  name: str\n  output_index: int\n  expr_index: int\n\n\
+def field_ref(index: int) -> int:\n  return index\n\n\
+pub def bind(xs: list[str]) -> list[Binding]:\n  mut out: list[Binding] = []\n  for idx, name in enumerate(xs):\n    out.append(Binding(name=name, output_index=idx, expr_index=field_ref(idx)))\n  return out\n\n\
+def main() -> None:\n  bind([\"a\", \"bb\"])\n",
+        )?;
+
+        let out_dir = project_root.join("out");
+        let project_build = run_build(&main_path, &out_dir)?;
+        assert!(
+            project_build.status.success(),
+            "expected for-loop tuple unpacking with enumerate to build successfully.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&project_build.stdout),
+            String::from_utf8_lossy(&project_build.stderr)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn build_succeeds_for_list_str_append_literal() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let project_root = tmp.path().join("list_str_append_literal_project");
+        std::fs::create_dir_all(project_root.join("src"))?;
+        std::fs::write(
+            project_root.join("incan.toml"),
+            "[project]\nname = \"list_str_append_literal\"\nversion = \"0.1.0\"\n",
+        )?;
+        let main_path = project_root.join("src/main.incn");
+        std::fs::write(
+            &main_path,
+            "pub def columns(input_columns: list[str]) -> list[str]:\n  mut columns: list[str] = []\n  columns.append(input_columns[0])\n  columns.append(\"count\")\n  return columns\n\n\
+def main() -> None:\n  columns([\"orders_total\"])\n",
+        )?;
+
+        let out_dir = project_root.join("out");
+        let project_build = run_build(&main_path, &out_dir)?;
+        assert!(
+            project_build.status.success(),
+            "expected list[str] literal append to build successfully.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&project_build.stdout),
+            String::from_utf8_lossy(&project_build.stderr)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn build_succeeds_for_imported_sum_helper_shadowing() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let project_root = tmp.path().join("imported_sum_shadow_project");
+        std::fs::create_dir_all(project_root.join("src"))?;
+        std::fs::write(
+            project_root.join("incan.toml"),
+            "[project]\nname = \"imported_sum_shadow\"\nversion = \"0.1.0\"\n",
+        )?;
+        std::fs::write(
+            project_root.join("src/functions.incn"),
+            "pub model ColumnRef:\n  pub name: str\n\npub model AggregateMeasure:\n  pub column_name: str\n\npub def col(name: str) -> ColumnRef:\n  return ColumnRef(name=name)\n\npub def sum(expr: ColumnRef) -> AggregateMeasure:\n  return AggregateMeasure(column_name=expr.name)\n",
+        )?;
+        let main_path = project_root.join("src/main.incn");
+        std::fs::write(
+            &main_path,
+            "from functions import col, sum\n\ndef selected_column_name() -> str:\n  amount = col(\"amount\")\n  result = sum(amount)\n  return result.column_name\n\ndef main() -> None:\n  println(selected_column_name())\n",
+        )?;
+
+        let out_dir = project_root.join("out");
+        let project_build = run_build(&main_path, &out_dir)?;
+        assert!(
+            project_build.status.success(),
+            "expected imported sum helper to shadow builtin sum and build successfully.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&project_build.stdout),
+            String::from_utf8_lossy(&project_build.stderr)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn build_succeeds_for_qualified_enum_constructor_match() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let project_root = tmp.path().join("enum_constructor_match_project");
+        std::fs::create_dir_all(project_root.join("src"))?;
+        std::fs::write(
+            project_root.join("incan.toml"),
+            "[project]\nname = \"enum_constructor_match\"\nversion = \"0.1.0\"\n",
+        )?;
+        let main_path = project_root.join("src/main.incn");
+        std::fs::write(
+            &main_path,
+            "pub enum ConformanceRel:\n  Read\n  Filter\n  Project\n\npub def relation_kind_name_from_conformance(rel: ConformanceRel) -> str:\n  match rel:\n    ConformanceRel.Read =>\n      return \"ReadRel\"\n    ConformanceRel.Filter =>\n      return \"FilterRel\"\n    ConformanceRel.Project =>\n      return \"ProjectRel\"\n    _ =>\n      return \"UnknownRel\"\n\ndef main() -> None:\n  println(relation_kind_name_from_conformance(ConformanceRel.Filter))\n",
+        )?;
+
+        let out_dir = project_root.join("out");
+        let project_build = run_build(&main_path, &out_dir)?;
+        assert!(
+            project_build.status.success(),
+            "expected qualified enum constructor match project to build successfully.\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&project_build.stdout),
             String::from_utf8_lossy(&project_build.stderr)
         );

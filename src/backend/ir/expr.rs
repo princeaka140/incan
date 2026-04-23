@@ -446,7 +446,7 @@ pub enum Pattern {
 pub enum BuiltinFn {
     /// `print(x)` / `println(x)` → `println!("{}", x)`
     Print,
-    /// `len(x)` → `x.len() as i64`
+    /// `len(x)` → `::std::convert::identity(x.len() as i64)`
     Len,
     /// `sum(x)` → `x.iter().sum::<i64>()`
     Sum,
@@ -466,7 +466,7 @@ pub enum BuiltinFn {
     Abs,
     /// `range(...)` → Rust range expressions
     Range,
-    /// `enumerate(x)` → `x.iter().enumerate()`
+    /// `enumerate(x)` → `x.iter().enumerate()` with the index cast to Incan `int`.
     Enumerate,
     /// `zip(a, b)` → `a.iter().zip(b.iter())`
     Zip,
@@ -478,8 +478,6 @@ pub enum BuiltinFn {
     WriteFile,
     /// `json_stringify(x)` → `serde_json::to_string(&x).unwrap()`
     JsonStringify,
-    /// `sleep(secs)` → `incan_stdlib::__private::tokio::time::sleep(...)`
-    Sleep,
 }
 
 impl BuiltinFn {
@@ -506,7 +504,6 @@ impl BuiltinFn {
             BuiltinFnId::ReadFile => Self::ReadFile,
             BuiltinFnId::WriteFile => Self::WriteFile,
             BuiltinFnId::JsonStringify => Self::JsonStringify,
-            BuiltinFnId::Sleep => Self::Sleep,
         })
     }
 }

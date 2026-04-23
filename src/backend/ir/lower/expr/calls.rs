@@ -191,22 +191,29 @@ impl AstLowering {
             if is_known_struct || is_uppercase {
                 return self.lower_constructor_call(name, args);
             }
+        }
 
-            // Check for known builtins (enum-based dispatch)
-            if let Some(builtin) = BuiltinFn::from_name(name) {
-                let args_ir = self.lower_call_args(args)?.into_iter().map(|a| a.expr).collect();
-                return Ok((
-                    IrExprKind::BuiltinCall {
-                        func: builtin,
-                        args: args_ir,
-                    },
-                    IrType::Unknown, // Return type depends on the builtin
-                ));
-            }
+        let imported_callee_path = match &f.node {
+            ast::Expr::Ident(name) => self.import_aliases.get(name).cloned(),
+            _ => None,
+        };
+        let func = self.lower_expr_spanned(f)?;
+        if let ast::Expr::Ident(name) = &f.node
+            && let Some(builtin) = BuiltinFn::from_name(name)
+            && imported_callee_path.is_none()
+            && !matches!(func.ty, IrType::Function { .. })
+        {
+            let args_ir = self.lower_call_args(args)?.into_iter().map(|a| a.expr).collect();
+            return Ok((
+                IrExprKind::BuiltinCall {
+                    func: builtin,
+                    args: args_ir,
+                },
+                IrType::Unknown, // Return type depends on the builtin
+            ));
         }
 
         // Regular function call (user-defined or unknown)
-        let func = self.lower_expr_spanned(f)?;
         let mut args_ir = self.lower_call_args(args)?;
         let lowered_type_args = self.lower_call_site_type_args(call_span, type_args);
         for (arg_ir, arg_ast) in args_ir.iter_mut().zip(args.iter()) {
@@ -223,7 +230,7 @@ impl AstLowering {
                 func: Box::new(func),
                 type_args: lowered_type_args,
                 args: args_ir,
-                canonical_path: None,
+                canonical_path: imported_callee_path,
             },
             ret_ty,
         ))
@@ -393,7 +400,9 @@ impl AstLowering {
 #[cfg(test)]
 mod tests {
     use super::AstLowering;
-    use crate::backend::ir::expr::{IrExprKind, MethodCallArgPolicy};
+    use crate::backend::ir::decl::IrDeclKind;
+    use crate::backend::ir::expr::{IrExprKind, MethodCallArgPolicy, VarRefKind};
+    use crate::backend::ir::stmt::IrStmtKind;
     use crate::backend::ir::types::IrType;
     use crate::frontend::ast::{
         CallArg, Expr, InteropAdapterKind, InteropDirection, InteropEdgeDecl, Literal, Span, Spanned, Type,
@@ -528,6 +537,138 @@ mod tests {
             }
             other => return Err(format!("expected MethodCall lowering, got {other:?}")),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn lower_rust_import_associated_method_keeps_type_like_receiver() -> Result<(), String> {
+        use crate::frontend::{lexer, parser, typechecker::TypeChecker};
+
+        let source = r#"
+from rust::datafusion::dataframe import DataFrameWriteOptions
+
+def f() -> None:
+  _ = DataFrameWriteOptions.new()
+"#;
+        let tokens = lexer::lex(source).map_err(|errs| format!("lex failed: {errs:?}"))?;
+        let ast = parser::parse(&tokens).map_err(|errs| format!("parse failed: {errs:?}"))?;
+
+        let mut checker = TypeChecker::new();
+        checker
+            .check_program(&ast)
+            .map_err(|errs| format!("typecheck failed: {errs:?}"))?;
+
+        let mut lowering = AstLowering::new_with_type_info(checker.type_info().clone());
+        let program = lowering
+            .lower_program(&ast)
+            .map_err(|err| format!("lowering failed: {err:?}"))?;
+
+        let function = program
+            .declarations
+            .iter()
+            .find_map(|decl| match &decl.kind {
+                IrDeclKind::Function(function) if function.name == "f" => Some(function),
+                _ => None,
+            })
+            .ok_or_else(|| "expected lowered function `f`".to_string())?;
+        let Some(stmt) = function.body.first() else {
+            return Err("expected expression statement body".to_string());
+        };
+        let IrStmtKind::Let { value: expr, .. } = &stmt.kind else {
+            return Err(format!("expected expression statement body, got {:?}", function.body));
+        };
+
+        match &expr.kind {
+            IrExprKind::MethodCall { receiver, method, .. } => {
+                assert_eq!(method, "new");
+                match &receiver.kind {
+                    IrExprKind::Var { name, ref_kind, .. } => {
+                        assert_eq!(name, "DataFrameWriteOptions");
+                        assert_eq!(*ref_kind, VarRefKind::ExternalRustName);
+                    }
+                    other => return Err(format!("expected variable receiver, got {other:?}")),
+                }
+            }
+            other => return Err(format!("expected MethodCall lowering, got {other:?}")),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn lower_nested_rust_associated_method_arg_keeps_type_like_receiver() -> Result<(), String> {
+        use crate::frontend::{lexer, parser, typechecker::TypeChecker};
+
+        let source = r#"
+from rust::datafusion::execution::context import SessionContext
+from rust::datafusion::dataframe import DataFrameWriteOptions
+
+def f(uri: str) -> None:
+  ctx = SessionContext.new()
+  _ = ctx.write_csv(uri, DataFrameWriteOptions.new(), None)
+"#;
+        let tokens = lexer::lex(source).map_err(|errs| format!("lex failed: {errs:?}"))?;
+        let ast = parser::parse(&tokens).map_err(|errs| format!("parse failed: {errs:?}"))?;
+
+        let mut checker = TypeChecker::new();
+        checker
+            .check_program(&ast)
+            .map_err(|errs| format!("typecheck failed: {errs:?}"))?;
+
+        let mut lowering = AstLowering::new_with_type_info(checker.type_info().clone());
+        let program = lowering
+            .lower_program(&ast)
+            .map_err(|err| format!("lowering failed: {err:?}"))?;
+
+        let function = program
+            .declarations
+            .iter()
+            .find_map(|decl| match &decl.kind {
+                IrDeclKind::Function(function) if function.name == "f" => Some(function),
+                _ => None,
+            })
+            .ok_or_else(|| "expected lowered function `f`".to_string())?;
+        let Some(stmt) = function.body.get(1) else {
+            return Err(format!("expected nested write_csv statement, got {:?}", function.body));
+        };
+        let IrStmtKind::Let { value: expr, .. } = &stmt.kind else {
+            return Err(format!("expected let statement, got {:?}", function.body));
+        };
+
+        let IrExprKind::MethodCall { args, .. } = &expr.kind else {
+            return Err(format!("expected outer MethodCall, got {:?}", expr.kind));
+        };
+        let nested = args
+            .get(1)
+            .ok_or_else(|| format!("expected second method arg, got {:?}", args))?;
+
+        match &nested.expr.kind {
+            IrExprKind::MethodCall { receiver, method, .. } => {
+                assert_eq!(method, "new");
+                match &receiver.kind {
+                    IrExprKind::Var { name, ref_kind, .. } => {
+                        assert_eq!(name, "DataFrameWriteOptions");
+                        assert_eq!(*ref_kind, VarRefKind::ExternalRustName);
+                    }
+                    other => return Err(format!("expected variable receiver, got {other:?}")),
+                }
+            }
+            IrExprKind::InteropCoerce { expr, .. } => match &expr.kind {
+                IrExprKind::MethodCall { receiver, method, .. } => {
+                    assert_eq!(method, "new");
+                    match &receiver.kind {
+                        IrExprKind::Var { name, ref_kind, .. } => {
+                            assert_eq!(name, "DataFrameWriteOptions");
+                            assert_eq!(*ref_kind, VarRefKind::ExternalRustName);
+                        }
+                        other => return Err(format!("expected variable receiver, got {other:?}")),
+                    }
+                }
+                other => return Err(format!("expected nested MethodCall in InteropCoerce, got {other:?}")),
+            },
+            other => return Err(format!("expected nested MethodCall arg, got {other:?}")),
+        }
+
         Ok(())
     }
 }

@@ -72,7 +72,7 @@ impl<'a> IrEmitter<'a> {
             BuiltinFn::Len => {
                 if let Some(arg) = args.first() {
                     let a = self.emit_expr(arg)?;
-                    Ok(quote! { #a.len() as i64 })
+                    Ok(quote! { ::std::convert::identity(#a.len() as i64) })
                 } else {
                     Ok(quote! { 0i64 })
                 }
@@ -208,9 +208,9 @@ impl<'a> IrEmitter<'a> {
             BuiltinFn::Enumerate => {
                 if let Some(arg) = args.first() {
                     let a = self.emit_expr(arg)?;
-                    Ok(quote! { #a.iter().enumerate() })
+                    Ok(quote! { #a.iter().enumerate().map(|(idx, value)| (idx as i64, value)) })
                 } else {
-                    Ok(quote! { std::iter::empty::<(usize, ())>() })
+                    Ok(quote! { std::iter::empty::<(i64, ())>() })
                 }
             }
             BuiltinFn::Zip => {
@@ -288,22 +288,6 @@ impl<'a> IrEmitter<'a> {
                     Ok(quote! { String::from("null") })
                 }
             }
-            BuiltinFn::Sleep => {
-                if let Some(arg) = args.first() {
-                    let duration_arg = self.emit_expr(arg)?;
-                    Ok(quote! {
-                        incan_stdlib::__private::tokio::time::sleep(
-                            incan_stdlib::__private::tokio::time::Duration::from_secs_f64(#duration_arg)
-                        )
-                    })
-                } else {
-                    Ok(quote! {
-                        incan_stdlib::__private::tokio::time::sleep(
-                            incan_stdlib::__private::tokio::time::Duration::from_secs(0)
-                        )
-                    })
-                }
-            }
         }
     }
 
@@ -332,7 +316,7 @@ impl<'a> IrEmitter<'a> {
             BuiltinFnId::Len => {
                 if let Some(arg) = args.first() {
                     let a = self.emit_expr(arg)?;
-                    Ok(Some(quote! { #a.len() as i64 }))
+                    Ok(Some(quote! { ::std::convert::identity(#a.len() as i64) }))
                 } else {
                     Ok(None)
                 }
@@ -465,7 +449,9 @@ impl<'a> IrEmitter<'a> {
             BuiltinFnId::Enumerate => {
                 if let Some(arg) = args.first() {
                     let a = self.emit_expr(arg)?;
-                    Ok(Some(quote! { #a.iter().enumerate() }))
+                    Ok(Some(
+                        quote! { #a.iter().enumerate().map(|(idx, value)| (idx as i64, value)) },
+                    ))
                 } else {
                     Ok(None)
                 }
@@ -540,18 +526,6 @@ impl<'a> IrEmitter<'a> {
                         serde_json::to_string(&#value).unwrap_or_else(|_| {
                             incan_stdlib::errors::raise_json_serialization_error(std::any::type_name_of_val(&#value))
                         })
-                    }))
-                } else {
-                    Ok(None)
-                }
-            }
-            BuiltinFnId::Sleep => {
-                if let Some(arg) = args.first() {
-                    let duration_arg = self.emit_expr(arg)?;
-                    Ok(Some(quote! {
-                        incan_stdlib::__private::tokio::time::sleep(
-                            incan_stdlib::__private::tokio::time::Duration::from_secs_f64(#duration_arg)
-                        )
                     }))
                 } else {
                     Ok(None)

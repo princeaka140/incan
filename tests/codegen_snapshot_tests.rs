@@ -850,6 +850,57 @@ fn test_issue244_mut_str_param_codegen() {
     insta::assert_snapshot!("issue244_mut_str_param", rust_code);
 }
 
+/// Issue #364: filtered list comprehensions over non-Copy values must not destructure `&item` in `filter(...)`.
+#[test]
+fn test_issue364_filtered_list_comp_borrow_codegen() {
+    let source = load_test_file("issue364_filtered_list_comp_borrow");
+    let rust_code = generate_rust(&source);
+    let compact = rust_code.chars().filter(|ch| !ch.is_whitespace()).collect::<String>();
+    assert!(
+        compact.contains(".iter().filter_map(|stored|{letstored=(*stored).clone();ifstored.store_id_raw==store_id{Some(stored.node)}else{None}})"),
+        "expected filtered list comprehension to clone inside filter_map for non-Copy items; generated:\n{rust_code}"
+    );
+    assert!(
+        !compact.contains(".filter(|&stored|"),
+        "filtered list comprehension must not destructure `&stored`; generated:\n{rust_code}"
+    );
+    insta::assert_snapshot!("issue364_filtered_list_comp_borrow", rust_code);
+}
+
+/// Issue #366: struct fields initialized from `self.<owned_field>` inside `clone(self) -> Self` must clone the field.
+#[test]
+fn test_issue366_clone_self_string_field_codegen() {
+    let source = load_test_file("issue366_clone_self_string_field");
+    let rust_code = generate_rust(&source);
+    let compact = rust_code.chars().filter(|ch| !ch.is_whitespace()).collect::<String>();
+    assert!(
+        compact.contains("logical_name:self.logical_name.clone()"),
+        "expected clone(self)->Self struct field emission to clone borrowed string fields; generated:\n{rust_code}"
+    );
+    assert!(
+        !compact.contains("logical_name:self.logical_name,"),
+        "unexpected raw move from borrowed self field in clone(self)->Self emission; generated:\n{rust_code}"
+    );
+    insta::assert_snapshot!("issue366_clone_self_string_field", rust_code);
+}
+
+/// Filtered dict comprehensions over borrowed iterables must own the item before evaluating the predicate.
+#[test]
+fn test_filtered_dict_comp_predicate_codegen() {
+    let source = load_test_file("filtered_dict_comp_predicate");
+    let rust_code = generate_rust(&source);
+    let compact = rust_code.chars().filter(|ch| !ch.is_whitespace()).collect::<String>();
+    assert!(
+        compact.contains(".iter().filter_map(|x|{letx=(*x).clone();ifincan_stdlib::num::py_mod_i64(x,2)==0{Some((x,x*x))}else{None}})"),
+        "expected filtered dict comprehension to clone inside filter_map before evaluating the predicate; generated:\n{rust_code}"
+    );
+    assert!(
+        !compact.contains(".filter(|x|incan_stdlib::num::py_mod_i64(x,2)==0)"),
+        "filtered dict comprehension must not leave the predicate closure borrowing `x`; generated:\n{rust_code}"
+    );
+    insta::assert_snapshot!("filtered_dict_comp_predicate", rust_code);
+}
+
 // ============================================================================
 // Tests for declarations (functions, classes, models, traits, enums)
 // ============================================================================
@@ -896,6 +947,51 @@ fn test_list_pop_clone_only_model_codegen() {
     insta::assert_snapshot!("list_pop_clone_only_model", rust_code);
 }
 
+/// Issue #380: `len(...)` must lower to a parse-safe expression so comparisons compile as Rust.
+#[test]
+fn test_issue380_len_comparison_codegen() {
+    let source = load_test_file("issue380_len_comparison");
+    let rust_code = generate_rust(&source);
+    assert!(
+        rust_code.contains("return ::std::convert::identity(xs.len() as i64) < 2;"),
+        "expected len(list) comparison to isolate the cast in a parse-safe expression; generated:\n{rust_code}"
+    );
+    assert!(
+        rust_code.contains("if ::std::convert::identity(expr.arguments.len() as i64) < 2 {"),
+        "expected recursive field len comparison to isolate the cast in a parse-safe expression; generated:\n{rust_code}"
+    );
+    insta::assert_snapshot!("issue380_len_comparison", rust_code);
+}
+
+/// Issue #383: shared `list[str]` loop args must not lower through consuming `into_iter()` inside repeated helper
+/// calls.
+#[test]
+fn test_issue383_loop_helper_shared_string_list_codegen() {
+    let source = load_test_file("issue383_loop_helper_shared_string_list");
+    let rust_code = generate_rust(&source);
+    assert!(
+        rust_code.contains("out.push(match_index(xs.clone(), y));"),
+        "expected loop helper call to preserve the shared string list via clone, not move it; generated:\n{rust_code}"
+    );
+    assert!(
+        !rust_code.contains("xs.into_iter().map(|s| s.to_string()).collect()"),
+        "expected shared string-list helper calls to avoid consuming into_iter lowering; generated:\n{rust_code}"
+    );
+    insta::assert_snapshot!("issue383_loop_helper_shared_string_list", rust_code);
+}
+
+/// Issue #383 follow-on: dict comprehensions must clone non-Copy keys before reading them in the value expression.
+#[test]
+fn test_issue383_dict_comp_reuses_noncopy_key_codegen() {
+    let source = load_test_file("issue383_dict_comp_reuses_noncopy_key");
+    let rust_code = generate_rust(&source);
+    assert!(
+        rust_code.contains(".map(|name| (name.clone(), ::std::convert::identity(name.len() as i64)))"),
+        "expected dict comprehension to clone the non-Copy key before reading it again in the value expression; generated:\n{rust_code}"
+    );
+    insta::assert_snapshot!("issue383_dict_comp_reuses_noncopy_key", rust_code);
+}
+
 /// Issue #195: `for x in list[E]` must iterate owned `E` (via `.iter().cloned()`) so `==` against `E` compiles.
 #[test]
 fn test_for_in_list_enum_equality_codegen() {
@@ -906,6 +1002,129 @@ fn test_for_in_list_enum_equality_codegen() {
         "expected enum list for-loop to use .iter().cloned(); generated:\n{rust_code}"
     );
     insta::assert_snapshot!("for_in_list_enum_equality", rust_code);
+}
+
+/// Issue #372: imported enums must still iterate as owned values in borrowed list loops.
+#[test]
+fn test_issue372_imported_enum_loop_ownership_codegen() {
+    let main_source = r#"
+from rels import ConformanceRel
+
+def relation_kind_name_from_conformance(rel: ConformanceRel) -> str:
+  match rel:
+    ConformanceRel.Read =>
+      return "ReadRel"
+    _ =>
+      return "Other"
+
+def scenario_matches(required: list[ConformanceRel]) -> bool:
+  for expected in required:
+    if expected == ConformanceRel.Read:
+      if relation_kind_name_from_conformance(expected) == "ReadRel":
+        return true
+  return false
+
+def main() -> None:
+  pass
+"#;
+    let rels_source = r#"
+@derive(Clone)
+pub enum ConformanceRel:
+  Read
+  Filter
+"#;
+
+    let Ok(main_tokens) = lexer::lex(main_source) else {
+        panic!("lexer failed")
+    };
+    let Ok(main_ast) = parser::parse(&main_tokens) else {
+        panic!("parser failed")
+    };
+    let Ok(rels_tokens) = lexer::lex(rels_source) else {
+        panic!("lexer failed")
+    };
+    let Ok(rels_ast) = parser::parse(&rels_tokens) else {
+        panic!("parser failed")
+    };
+
+    let mut codegen = IrCodegen::new();
+    codegen.add_module_with_path_segments("rels", &rels_ast, vec!["rels".to_string()]);
+    let Ok((main_code, _modules)) = codegen.try_generate_multi_file_nested(&main_ast, &[vec!["rels".to_string()]])
+    else {
+        panic!("codegen must succeed");
+    };
+    let rust_code = normalize_codegen_output(&main_code);
+
+    assert!(
+        rust_code.contains("for expected in required.iter().cloned()"),
+        "expected imported enum loop to use .iter().cloned(); generated:\n{rust_code}"
+    );
+    assert!(
+        !rust_code.contains("for expected in required.iter() {"),
+        "imported enum loop must not iterate borrowed enum refs; generated:\n{rust_code}"
+    );
+
+    insta::assert_snapshot!("issue372_imported_enum_loop_ownership", rust_code);
+}
+
+#[test]
+fn test_issue377_imported_sum_shadows_builtin_codegen() {
+    let main_source = r#"
+from functions import col, sum
+
+def selected_column_name() -> str:
+  amount = col("amount")
+  result = sum(amount)
+  return result.column_name
+
+def main() -> None:
+  pass
+"#;
+    let functions_source = r#"
+pub model ColumnRef:
+  pub name: str
+
+pub model AggregateMeasure:
+  pub column_name: str
+
+pub def col(name: str) -> ColumnRef:
+  return ColumnRef(name=name)
+
+pub def sum(expr: ColumnRef) -> AggregateMeasure:
+  return AggregateMeasure(column_name=expr.name)
+"#;
+
+    let Ok(main_tokens) = lexer::lex(main_source) else {
+        panic!("lexer failed")
+    };
+    let Ok(main_ast) = parser::parse(&main_tokens) else {
+        panic!("parser failed")
+    };
+    let Ok(function_tokens) = lexer::lex(functions_source) else {
+        panic!("lexer failed")
+    };
+    let Ok(functions_ast) = parser::parse(&function_tokens) else {
+        panic!("parser failed")
+    };
+
+    let mut codegen = IrCodegen::new();
+    codegen.add_module_with_path_segments("functions", &functions_ast, vec!["functions".to_string()]);
+    let Ok((main_code, _modules)) = codegen.try_generate_multi_file_nested(&main_ast, &[vec!["functions".to_string()]])
+    else {
+        panic!("codegen must succeed");
+    };
+    let rust_code = normalize_codegen_output(&main_code);
+
+    assert!(
+        rust_code.contains("let result = sum(amount);"),
+        "expected imported helper call to remain a normal function call; generated:\n{rust_code}"
+    );
+    assert!(
+        !rust_code.contains(".iter().sum::<i64>()"),
+        "expected imported helper call to avoid builtin sum lowering; generated:\n{rust_code}"
+    );
+
+    insta::assert_snapshot!("issue377_imported_sum_shadows_builtin", rust_code);
 }
 
 #[test]
@@ -1016,6 +1235,85 @@ fn test_rust_interop_associated_functions_codegen() {
     let source = load_test_file("rust_interop_associated_functions");
     let rust_code = generate_rust(&source);
     insta::assert_snapshot!("rust_interop_associated_functions", rust_code);
+}
+
+#[test]
+fn test_rust_associated_call_in_elif_codegen() {
+    let source = load_test_file("rust_associated_call_in_elif");
+    let rust_code = generate_rust(&source);
+    insta::assert_snapshot!("rust_associated_call_in_elif", rust_code);
+}
+
+#[test]
+fn test_issue367_result_ok_string_literal_codegen() {
+    let source = load_test_file("issue367_result_ok_string_literal");
+    let rust_code = generate_rust(&source);
+    insta::assert_snapshot!("issue367_result_ok_string_literal", rust_code);
+}
+
+#[test]
+fn test_issue367_result_ok_string_literal_emits_owned_strings() {
+    let source = load_test_file("issue367_result_ok_string_literal");
+    let rust_code = generate_rust(&source);
+
+    assert!(
+        rust_code.contains("(\"from_call\").to_string()"),
+        "expected call-argument seeding path to coerce Ok string literals to owned String"
+    );
+    assert!(
+        rust_code.contains("(\"from_local\").to_string()"),
+        "expected assignment seeding path to coerce Ok string literals to owned String"
+    );
+    assert!(
+        rust_code.contains("(\"from_return\").to_string()"),
+        "expected return-context seeding path to coerce Ok string literals to owned String"
+    );
+    assert!(
+        !rust_code.contains("Ok::<std::string::String, std::string::String>(\"from_call\")"),
+        "unexpected raw &str Ok payload in call-argument seeding path"
+    );
+    assert!(
+        !rust_code.contains("Ok::<std::string::String, std::string::String>(\"from_local\")"),
+        "unexpected raw &str Ok payload in assignment seeding path"
+    );
+    assert!(
+        !rust_code.contains("Ok::<std::string::String, std::string::String>(\"from_return\")"),
+        "unexpected raw &str Ok payload in return-context seeding path"
+    );
+}
+
+/// Issue #374: qualified enum constructor patterns in `Pattern =>` arms must resolve for same-enum scrutinees.
+#[test]
+fn test_issue374_enum_constructor_match_codegen() {
+    let source = load_test_file("issue374_enum_constructor_match");
+    let rust_code = generate_rust(&source);
+    insta::assert_snapshot!("issue374_enum_constructor_match", rust_code);
+}
+
+#[test]
+fn test_issue389_for_tuple_unpack_enumerate_codegen() {
+    let source = load_test_file("issue389_for_tuple_unpack_enumerate");
+    let rust_code = generate_rust(&source);
+    insta::assert_snapshot!("issue389_for_tuple_unpack_enumerate", rust_code);
+    assert!(
+        rust_code.contains("for (idx, name) in xs.iter().enumerate().map(|(idx, value)| (idx as i64, value))"),
+        "expected enumerate loop to emit Incan int indices for tuple binding"
+    );
+}
+
+#[test]
+fn test_issue391_list_str_append_literal_codegen() {
+    let source = load_test_file("issue391_list_str_append_literal");
+    let rust_code = generate_rust(&source);
+    insta::assert_snapshot!("issue391_list_str_append_literal", rust_code);
+    assert!(
+        rust_code.contains("columns.push(\"count\".to_string())"),
+        "expected list[str].append(\"...\") to materialize an owned String element"
+    );
+    assert!(
+        !rust_code.contains("columns.push(\"count\".clone())"),
+        "string literal append must not clone a borrowed &str"
+    );
 }
 
 #[test]

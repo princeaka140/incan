@@ -73,6 +73,57 @@ fn canonical_path_for_cache_key(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+fn absolute_project_root(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else if let Ok(cwd) = std::env::current_dir() {
+        cwd.join(path)
+    } else {
+        path.to_path_buf()
+    };
+    fs::canonicalize(&absolute).unwrap_or(absolute)
+}
+
+/// Infer a package root for manifest-less test runs.
+///
+/// Prefer conventional package anchors like `tests/` or `src/` so a file such as
+/// `/repo/tests/test_cwd.incn` resolves its runtime cwd to `/repo`, not `/repo/tests`.
+/// If no conventional anchor is present, fall back to the caller cwd when the test
+/// file lives underneath it; otherwise use the test file's parent directory.
+fn infer_project_root_without_manifest(test_path: &Path) -> PathBuf {
+    let absolute_test_path = if test_path.is_absolute() {
+        test_path.to_path_buf()
+    } else if let Ok(cwd) = std::env::current_dir() {
+        cwd.join(test_path)
+    } else {
+        test_path.to_path_buf()
+    };
+    let absolute_test_path = fs::canonicalize(&absolute_test_path).unwrap_or(absolute_test_path);
+
+    for ancestor in absolute_test_path.ancestors().skip(1) {
+        if ancestor
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| matches!(name, "tests" | "src"))
+            && let Some(parent) = ancestor.parent()
+        {
+            return parent.to_path_buf();
+        }
+    }
+
+    if let Ok(cwd) = std::env::current_dir() {
+        let cwd = fs::canonicalize(&cwd).unwrap_or(cwd);
+        if absolute_test_path.starts_with(&cwd) {
+            return cwd;
+        }
+    }
+
+    absolute_test_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf()
+}
+
 fn compute_test_prep_cache_key(
     test_path: &Path,
     source: &str,
@@ -144,6 +195,32 @@ fn merge_rust_inspect_stdlib_features<'a>(
     merged.into_iter().collect()
 }
 
+/// Promote project dev dependencies into ordinary dependencies for generated test-runner crates.
+///
+/// `incan test` generates a library crate and runs `cargo test` against that crate. Because the generated user/test
+/// code lives under `src/`, anything it imports must be available as a normal dependency, not only under
+/// `[dev-dependencies]`.
+fn merge_test_runner_dependencies(
+    dependencies: &[crate::manifest::DependencySpec],
+    dev_dependencies: &[crate::manifest::DependencySpec],
+) -> Result<Vec<crate::manifest::DependencySpec>, String> {
+    let mut merged = dependencies.to_vec();
+    for candidate in dev_dependencies {
+        if let Some(existing) = merged.iter().find(|dep| dep.crate_name == candidate.crate_name) {
+            if existing != candidate {
+                return Err(format!(
+                    "test runner dependency `{}` conflicts between dependencies and dev-dependencies",
+                    candidate.crate_name
+                ));
+            }
+            continue;
+        }
+        merged.push(candidate.clone());
+    }
+    merged.sort_by(|left, right| left.crate_name.cmp(&right.crate_name));
+    Ok(merged)
+}
+
 fn file_batch_dir_suffix(file_path: &Path) -> String {
     let p = fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
     let mut hasher = Sha256::new();
@@ -207,8 +284,12 @@ fn harness_fn_name(test: &TestInfo, index: usize) -> String {
 
 /// Append a `#[cfg(test)]` module with one `#[test]` per collected case so `cargo test` runs an entire file in one
 /// shot.
-fn inject_file_test_harness(rust_code: &str, tests: &[TestInfo]) -> String {
+///
+/// The generated harness resets the process cwd to the source project root before each test so fixture paths behave
+/// the same way as ordinary `incan run/build/test` entrypoints rather than inheriting the generated temp crate path.
+fn inject_file_test_harness(rust_code: &str, tests: &[TestInfo], project_root: &Path) -> String {
     let mut out = rust_code.to_string();
+    let project_root_literal = format!("{:?}", project_root.to_string_lossy());
     out.push_str("\n\n#[cfg(test)]\nmod ");
     out.push_str(INCAN_FILE_TEST_MOD);
     out.push_str(" {\nuse super::*;\n");
@@ -221,6 +302,11 @@ fn inject_file_test_harness(rust_code: &str, tests: &[TestInfo]) -> String {
         out.push_str("    #[test]\n    fn ");
         out.push_str(&fname);
         out.push_str("() {\n");
+        out.push_str("        if let Err(err) = std::env::set_current_dir(");
+        out.push_str(&project_root_literal);
+        out.push_str(") {\n");
+        out.push_str("            panic!(\"failed to set generated test cwd: {}\", err);\n");
+        out.push_str("        }\n");
         out.push_str(&call);
         out.push_str("    }\n");
     }
@@ -463,7 +549,8 @@ pub(super) fn run_file_tests_batch(
     let project_root = manifest
         .as_ref()
         .map(|m| m.project_root().to_path_buf())
-        .unwrap_or_else(|| first.file_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf());
+        .unwrap_or_else(|| infer_project_root_without_manifest(&first.file_path));
+    let project_root = absolute_project_root(&project_root);
     let source_root = common::resolve_source_root(&project_root, manifest.as_ref());
     let source_modules = match collect_source_modules_for_test(
         &ast,
@@ -666,9 +753,6 @@ pub(super) fn run_file_tests_batch(
 
     let mut generator = ProjectGenerator::new(&temp_dir, &runner_crate_name, false);
     generator.set_stdlib_features(prepared.project_requirements.stdlib_features.clone());
-    generator.set_include_dev_dependencies(true);
-    generator.set_dependencies(prepared.resolved.dependencies.clone());
-    generator.set_dev_dependencies(prepared.resolved.dev_dependencies.clone());
     generator.set_cargo_lock_payload(prepared.lock_payload.clone());
     generator.set_cargo_policy_flags(common::cargo_command_flags(locked, frozen, &cargo_feature_selection));
 
@@ -679,12 +763,21 @@ pub(super) fn run_file_tests_batch(
             .collect::<Vec<_>>()
     };
 
+    let runner_dependencies =
+        match merge_test_runner_dependencies(&prepared.resolved.dependencies, &prepared.resolved.dev_dependencies) {
+            Ok(deps) => deps,
+            Err(message) => return gen_err(message),
+        };
+    generator.set_include_dev_dependencies(false);
+    generator.set_dependencies(runner_dependencies);
+    generator.set_dev_dependencies(Vec::new());
+
     if prepared.source_modules.is_empty() {
         let rust_code = match codegen.try_generate(&prepared.ast) {
             Ok(code) => code,
             Err(e) => return gen_err(format!("Code generation error: {}", e)),
         };
-        let rust_code = inject_file_test_harness(&rust_code, tests);
+        let rust_code = inject_file_test_harness(&rust_code, tests, &prepared.project_root);
         if let Err(e) = generator.generate(&rust_code) {
             return gen_err(format!("Failed to generate project: {}", e));
         }
@@ -698,7 +791,7 @@ pub(super) fn run_file_tests_batch(
             Ok(result) => result,
             Err(e) => return gen_err(format!("Code generation error: {}", e)),
         };
-        let main_code = inject_file_test_harness(&main_code, tests);
+        let main_code = inject_file_test_harness(&main_code, tests, &prepared.project_root);
         if let Err(e) = generator.generate_nested(&main_code, &rust_modules) {
             return gen_err(format!("Failed to generate project: {}", e));
         }
@@ -723,7 +816,8 @@ pub(super) fn run_file_tests_batch(
 
     let output = match command
         .env("CARGO_TARGET_DIR", &shared_target_dir)
-        .current_dir(&temp_dir)
+        // Keep runtime-relative fixture paths anchored to the caller's project, not the generated test crate.
+        .current_dir(&prepared.project_root)
         .output()
     {
         Ok(o) => o,
@@ -959,6 +1053,69 @@ mod tests {
     }
 
     #[test]
+    fn merge_test_runner_dependencies_promotes_dev_deps_into_dependencies() {
+        use crate::manifest::{DependencySource, DependencySpec};
+
+        let deps = vec![DependencySpec {
+            crate_name: "serde".to_string(),
+            version: Some("1.0".to_string()),
+            features: vec![],
+            default_features: true,
+            source: DependencySource::Registry,
+            optional: false,
+            package: None,
+        }];
+        let dev_deps = vec![DependencySpec {
+            crate_name: "tokio".to_string(),
+            version: Some("1".to_string()),
+            features: vec!["macros".to_string(), "rt-multi-thread".to_string()],
+            default_features: true,
+            source: DependencySource::Registry,
+            optional: false,
+            package: None,
+        }];
+
+        let merged = match merge_test_runner_dependencies(&deps, &dev_deps) {
+            Ok(merged) => merged,
+            Err(err) => panic!("expected merge to succeed: {err}"),
+        };
+        assert_eq!(merged.len(), 2);
+        assert!(merged.iter().any(|dep| dep.crate_name == "serde"));
+        assert!(merged.iter().any(|dep| dep.crate_name == "tokio"));
+    }
+
+    #[test]
+    fn merge_test_runner_dependencies_rejects_conflicting_duplicates() {
+        use crate::manifest::{DependencySource, DependencySpec};
+
+        let deps = vec![DependencySpec {
+            crate_name: "tokio".to_string(),
+            version: Some("1".to_string()),
+            features: vec!["time".to_string()],
+            default_features: true,
+            source: DependencySource::Registry,
+            optional: false,
+            package: None,
+        }];
+        let dev_deps = vec![DependencySpec {
+            crate_name: "tokio".to_string(),
+            version: Some("1".to_string()),
+            features: vec!["macros".to_string()],
+            default_features: true,
+            source: DependencySource::Registry,
+            optional: false,
+            package: None,
+        }];
+
+        let error = match merge_test_runner_dependencies(&deps, &dev_deps) {
+            Ok(merged) => panic!("expected conflict, got merged dependencies: {merged:?}"),
+            Err(err) => err,
+        };
+        assert!(error.contains("tokio"));
+        assert!(error.contains("conflicts"));
+    }
+
+    #[test]
     fn parse_libtest_outcomes_detects_ok_and_failed() {
         let out = r#"
 test __incan_file_tests::incan_harness_0_a ... ok
@@ -1006,10 +1163,11 @@ test test_runner_76001490ba86f677::__incan_file_tests::incan_harness_1_b ... FAI
                 parametrize_call: None,
             },
         ];
-        let g = inject_file_test_harness(rust, &tests);
+        let g = inject_file_test_harness(rust, &tests, Path::new("."));
         assert!(g.contains("mod __incan_file_tests"));
         assert!(g.contains("fn incan_harness_0_test_a"));
         assert!(g.contains("fn incan_harness_1_test_b"));
+        assert!(g.contains("set_current_dir"));
         assert!(g.contains("super::test_a();"));
         assert!(g.contains("super::test_b();"));
     }
