@@ -208,9 +208,9 @@ impl<'a> IrEmitter<'a> {
             BuiltinFn::Enumerate => {
                 if let Some(arg) = args.first() {
                     let a = self.emit_expr(arg)?;
-                    Ok(quote! { #a.iter().enumerate() })
+                    Ok(quote! { #a.iter().enumerate().map(|(idx, value)| (idx as i64, value)) })
                 } else {
-                    Ok(quote! { std::iter::empty::<(usize, ())>() })
+                    Ok(quote! { std::iter::empty::<(i64, ())>() })
                 }
             }
             BuiltinFn::Zip => {
@@ -449,7 +449,9 @@ impl<'a> IrEmitter<'a> {
             BuiltinFnId::Enumerate => {
                 if let Some(arg) = args.first() {
                     let a = self.emit_expr(arg)?;
-                    Ok(Some(quote! { #a.iter().enumerate() }))
+                    Ok(Some(
+                        quote! { #a.iter().enumerate().map(|(idx, value)| (idx as i64, value)) },
+                    ))
                 } else {
                     Ok(None)
                 }

@@ -466,7 +466,7 @@ pub enum BuiltinFn {
     Abs,
     /// `range(...)` → Rust range expressions
     Range,
-    /// `enumerate(x)` → `x.iter().enumerate()`
+    /// `enumerate(x)` → `x.iter().enumerate()` with the index cast to Incan `int`.
     Enumerate,
     /// `zip(a, b)` → `a.iter().zip(b.iter())`
     Zip,

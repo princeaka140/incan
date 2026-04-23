@@ -1296,8 +1296,8 @@ fn test_issue389_for_tuple_unpack_enumerate_codegen() {
     let rust_code = generate_rust(&source);
     insta::assert_snapshot!("issue389_for_tuple_unpack_enumerate", rust_code);
     assert!(
-        rust_code.contains("for (idx, name) in"),
-        "expected enumerate loop to emit a tuple-binding for pattern"
+        rust_code.contains("for (idx, name) in xs.iter().enumerate().map(|(idx, value)| (idx as i64, value))"),
+        "expected enumerate loop to emit Incan int indices for tuple binding"
     );
 }
 

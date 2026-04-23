@@ -11,10 +11,71 @@ expression: rust_code
 incan_stdlib::__incan_stdlib_version_check!("<INCAN_STDLIB_VERSION>");
 use incan_stdlib::prelude::*;
 use incan_derive::{FieldInfo, IncanClass};
-pub fn bind(xs: Vec<String>) -> Vec<String> {
+#[derive(Debug, Clone, FieldInfo, IncanClass)]
+struct Binding {
+    name: String,
+    output_index: i64,
+    expr_index: i64,
+}
+#[allow(non_snake_case, clippy::too_many_arguments)]
+fn Binding(name: String, output_index: i64, expr_index: i64) -> Binding {
+    Binding {
+        name,
+        output_index,
+        expr_index,
+    }
+}
+impl Binding {
+    /// Returns field metadata for this type.
+    pub fn __fields__(
+        &self,
+    ) -> incan_stdlib::frozen::FrozenList<incan_stdlib::reflection::FieldInfo> {
+        static __INCAN_FIELDS: [incan_stdlib::reflection::FieldInfo; 3] = [
+            incan_stdlib::reflection::FieldInfo {
+                name: incan_stdlib::frozen::FrozenStr::new("name"),
+                alias: None,
+                description: None,
+                wire_name: incan_stdlib::frozen::FrozenStr::new("name"),
+                type_name: incan_stdlib::frozen::FrozenStr::new("str"),
+                has_default: false,
+                extra: incan_stdlib::frozen::FrozenDict::new(&[]),
+            },
+            incan_stdlib::reflection::FieldInfo {
+                name: incan_stdlib::frozen::FrozenStr::new("output_index"),
+                alias: None,
+                description: None,
+                wire_name: incan_stdlib::frozen::FrozenStr::new("output_index"),
+                type_name: incan_stdlib::frozen::FrozenStr::new("int"),
+                has_default: false,
+                extra: incan_stdlib::frozen::FrozenDict::new(&[]),
+            },
+            incan_stdlib::reflection::FieldInfo {
+                name: incan_stdlib::frozen::FrozenStr::new("expr_index"),
+                alias: None,
+                description: None,
+                wire_name: incan_stdlib::frozen::FrozenStr::new("expr_index"),
+                type_name: incan_stdlib::frozen::FrozenStr::new("int"),
+                has_default: false,
+                extra: incan_stdlib::frozen::FrozenDict::new(&[]),
+            },
+        ];
+        incan_stdlib::frozen::FrozenList::new(&__INCAN_FIELDS)
+    }
+}
+fn field_ref(index: i64) -> i64 {
+    return index;
+}
+pub fn bind(xs: Vec<String>) -> Vec<Binding> {
     let mut out = vec![];
-    for (idx, name) in xs.iter().enumerate() {
-        out.push(name.clone());
+    for (idx, name) in xs.iter().enumerate().map(|(idx, value)| (idx as i64, value)) {
+        out.push(
+            Binding {
+                name: name.to_string(),
+                output_index: idx,
+                expr_index: field_ref(idx),
+            }
+                .clone(),
+        );
     }
     return out;
 }

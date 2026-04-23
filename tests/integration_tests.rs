@@ -4391,7 +4391,9 @@ def main() -> None:\n  values = lengths([\"alice\", \"bob\"])\n  println(values[
         let main_path = project_root.join("src/main.incn");
         std::fs::write(
             &main_path,
-            "pub def bind(xs: list[str]) -> list[str]:\n  mut out: list[str] = []\n  for idx, name in enumerate(xs):\n    out.append(name)\n  return out\n\n\
+            "model Binding:\n  name: str\n  output_index: int\n  expr_index: int\n\n\
+def field_ref(index: int) -> int:\n  return index\n\n\
+pub def bind(xs: list[str]) -> list[Binding]:\n  mut out: list[Binding] = []\n  for idx, name in enumerate(xs):\n    out.append(Binding(name=name, output_index=idx, expr_index=field_ref(idx)))\n  return out\n\n\
 def main() -> None:\n  bind([\"a\", \"bb\"])\n",
         )?;
 
