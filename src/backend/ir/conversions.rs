@@ -477,6 +477,7 @@ fn determine_owned_storage_conversion(expr: &IrExpr, target_ty: Option<&IrType>)
         (_, Some(IrType::Generic(_))) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
         (IrExprKind::String(_), None) => Conversion::ToString,
         (_, None) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
+        _ if borrowed_expr_needs_owned_materialization(expr, target_ty) => Conversion::Clone,
         (IrExprKind::Var { access, .. }, Some(IrType::String)) if matches!(expr.ty, IrType::String) => match access {
             VarAccess::Move => Conversion::None,
             _ => Conversion::ToString,
@@ -488,6 +489,51 @@ fn determine_owned_storage_conversion(expr: &IrExpr, target_ty: Option<&IrType>)
         (IrExprKind::Field { .. }, _) if matches!(expr.ty, IrType::String) => Conversion::Clone,
         (IrExprKind::Field { .. }, _) if !expr.ty.is_copy() => Conversion::Clone,
         _ => Conversion::None,
+    }
+}
+
+fn borrowed_expr_needs_owned_materialization(expr: &IrExpr, target_ty: Option<&IrType>) -> bool {
+    if let IrExprKind::InteropCoerce { expr, kind, .. } = &expr.kind {
+        if matches!(kind, super::expr::IrInteropCoercionKind::RustTypeUnwrap) {
+            return borrowed_expr_needs_owned_materialization(expr, target_ty);
+        }
+        return false;
+    }
+
+    let borrowed_inner = match &expr.ty {
+        IrType::Ref(inner) | IrType::RefMut(inner) => inner.as_ref(),
+        _ => match &expr.kind {
+            IrExprKind::MethodCall { receiver, method, .. } if method == "as_ref" => match &receiver.ty {
+                IrType::NamedGeneric(_, args) if args.len() == 1 => &args[0],
+                _ if !matches!(target_ty, Some(IrType::Ref(_) | IrType::RefMut(_) | IrType::String)) => {
+                    return true;
+                }
+                _ => return false,
+            },
+            _ => return false,
+        },
+    };
+    if borrowed_inner.is_copy() {
+        return false;
+    }
+    match target_ty {
+        Some(IrType::Ref(_) | IrType::RefMut(_)) => false,
+        Some(target_ty) => borrowed_inner == target_ty || matches!(target_ty, IrType::Generic(_)),
+        // Missing target metadata happens in multi-file/library emission when a local helper's exact signature is not
+        // available at the call site. Incan owned sinks still need an owned value; emitting the raw borrow leaks Rust's
+        // `&T` into generated code and makes users write `.clone()` manually.
+        None => true,
+    }
+}
+
+fn field_read_needs_owned_materialization(expr: &IrExpr) -> bool {
+    match &expr.kind {
+        IrExprKind::Field { object, .. } => !matches!(
+            &object.kind,
+            IrExprKind::Var { access, .. }
+                if matches!(access, VarAccess::Move) && !matches!(object.ty, IrType::Ref(_) | IrType::RefMut(_))
+        ),
+        _ => false,
     }
 }
 
@@ -510,7 +556,15 @@ fn determine_owned_storage_conversion(expr: &IrExpr, target_ty: Option<&IrType>)
 ///
 /// A [`Conversion`] strategy indicating what transformation (if any) to apply
 pub fn determine_conversion(expr: &IrExpr, target_ty: Option<&IrType>, context: ConversionContext) -> Conversion {
+    if let IrExprKind::InteropCoerce { expr, kind, .. } = &expr.kind
+        && matches!(kind, super::expr::IrInteropCoercionKind::RustTypeUnwrap)
+    {
+        return determine_conversion(expr, target_ty, context);
+    }
     if matches!(expr.kind, IrExprKind::InteropCoerce { .. }) {
+        if borrowed_expr_needs_owned_materialization(expr, target_ty) {
+            return Conversion::Clone;
+        }
         return Conversion::None;
     }
     match context {
@@ -539,6 +593,9 @@ pub fn determine_conversion(expr: &IrExpr, target_ty: Option<&IrType>, context: 
                 (IrExprKind::String(_), None) => Conversion::ToString,
                 // Const `str` values need the same owned-string materialization when the target is inferred.
                 (_, None) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
+                // Borrowed method-chain results such as `box.as_ref()` must materialize owned values at Incan call
+                // boundaries.
+                _ if borrowed_expr_needs_owned_materialization(expr, target_ty) => Conversion::Clone,
 
                 // String variable to String param:
                 // - last-use read can move ownership directly
@@ -574,6 +631,7 @@ pub fn determine_conversion(expr: &IrExpr, target_ty: Option<&IrType>, context: 
                 (IrExprKind::StaticRead { .. }, _) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
                 // Const `str` values remain owned `str` at the Incan surface even inside return-context calls.
                 (_, _) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
+                _ if borrowed_expr_needs_owned_materialization(expr, target_ty) => Conversion::Clone,
 
                 // String variable to String param:
                 // - last-use read can move ownership directly
@@ -645,6 +703,15 @@ pub fn determine_conversion(expr: &IrExpr, target_ty: Option<&IrType>, context: 
                     Conversion::ToString
                 }
                 (_, Some(IrType::String)) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
+                _ if borrowed_expr_needs_owned_materialization(expr, target_ty) => Conversion::Clone,
+                (IrExprKind::Field { .. }, _)
+                    if matches!(expr.ty, IrType::String) && field_read_needs_owned_materialization(expr) =>
+                {
+                    Conversion::Clone
+                }
+                (IrExprKind::Field { .. }, _) if !expr.ty.is_copy() && field_read_needs_owned_materialization(expr) => {
+                    Conversion::Clone
+                }
                 _ => Conversion::None,
             }
         }
@@ -658,6 +725,14 @@ pub fn determine_conversion(expr: &IrExpr, target_ty: Option<&IrType>, context: 
                     Conversion::ToString
                 }
                 (_, Some(IrType::String)) if matches!(expr.ty, IrType::StaticStr) => Conversion::ToString,
+                _ if borrowed_expr_needs_owned_materialization(expr, target_ty) => Conversion::Clone,
+                // Non-Copy vars can move on last use; otherwise materialize an owned return value.
+                (IrExprKind::Var { access, .. }, _) if !expr.ty.is_copy() => match access {
+                    VarAccess::Move => Conversion::None,
+                    _ => Conversion::Clone,
+                },
+                // Field access returns borrowed data from the parent object; clone to satisfy owned return semantics.
+                (IrExprKind::Field { .. }, _) if !expr.ty.is_copy() => Conversion::Clone,
                 // Other cases: as-is
                 _ => Conversion::None,
             }
@@ -1157,6 +1232,195 @@ mod tests {
         let target = IrType::Struct("User".to_string());
 
         let conv = determine_conversion(&expr, Some(&target), ConversionContext::IncanFunctionArgInReturn);
+        assert_eq!(conv, Conversion::None);
+    }
+
+    #[test]
+    fn test_incan_call_clones_borrowed_as_ref_result_for_owned_nominal_target() {
+        let expr = IrExpr::new(
+            IrExprKind::MethodCall {
+                receiver: Box::new(IrExpr::new(
+                    IrExprKind::Var {
+                        name: "child".to_string(),
+                        access: VarAccess::Read,
+                        ref_kind: VarRefKind::Value,
+                    },
+                    IrType::NamedGeneric("Box".to_string(), vec![IrType::Struct("Node".to_string())]),
+                )),
+                method: "as_ref".to_string(),
+                type_args: Vec::new(),
+                args: Vec::new(),
+                arg_policy: crate::backend::ir::expr::MethodCallArgPolicy::Default,
+            },
+            IrType::Unknown,
+        );
+        let target = IrType::Struct("Node".to_string());
+
+        let conv = determine_conversion(&expr, Some(&target), ConversionContext::IncanFunctionArg);
+        assert_eq!(conv, Conversion::Clone);
+    }
+
+    #[test]
+    fn test_incan_call_clones_borrowed_as_ref_result_when_target_is_unknown() {
+        let expr = IrExpr::new(
+            IrExprKind::MethodCall {
+                receiver: Box::new(IrExpr::new(
+                    IrExprKind::Var {
+                        name: "child".to_string(),
+                        access: VarAccess::Read,
+                        ref_kind: VarRefKind::Value,
+                    },
+                    IrType::NamedGeneric("Box".to_string(), vec![IrType::Struct("Node".to_string())]),
+                )),
+                method: "as_ref".to_string(),
+                type_args: Vec::new(),
+                args: Vec::new(),
+                arg_policy: crate::backend::ir::expr::MethodCallArgPolicy::Default,
+            },
+            IrType::Unknown,
+        );
+
+        let conv = determine_conversion(&expr, None, ConversionContext::IncanFunctionArg);
+        assert_eq!(conv, Conversion::Clone);
+    }
+
+    #[test]
+    fn test_incan_call_clones_interop_unwrapped_as_ref_result_when_target_is_unknown() {
+        let inner = IrExpr::new(
+            IrExprKind::MethodCall {
+                receiver: Box::new(IrExpr::new(
+                    IrExprKind::Var {
+                        name: "child".to_string(),
+                        access: VarAccess::Read,
+                        ref_kind: VarRefKind::Value,
+                    },
+                    IrType::NamedGeneric("Box".to_string(), vec![IrType::Struct("Node".to_string())]),
+                )),
+                method: "as_ref".to_string(),
+                type_args: Vec::new(),
+                args: Vec::new(),
+                arg_policy: crate::backend::ir::expr::MethodCallArgPolicy::Default,
+            },
+            IrType::Ref(Box::new(IrType::Struct("Node".to_string()))),
+        );
+        let expr = IrExpr::new(
+            IrExprKind::InteropCoerce {
+                expr: Box::new(inner),
+                from_ty: IrType::Ref(Box::new(IrType::Struct("Node".to_string()))),
+                to_ty: IrType::Ref(Box::new(IrType::Struct("Node".to_string()))),
+                kind: crate::backend::ir::expr::IrInteropCoercionKind::RustTypeUnwrap,
+            },
+            IrType::Ref(Box::new(IrType::Struct("Node".to_string()))),
+        );
+
+        let conv = determine_conversion(&expr, None, ConversionContext::IncanFunctionArg);
+        assert_eq!(conv, Conversion::Clone);
+    }
+
+    #[test]
+    fn test_incan_call_clones_erased_receiver_as_ref_result_when_target_is_unknown() {
+        let expr = IrExpr::new(
+            IrExprKind::MethodCall {
+                receiver: Box::new(IrExpr::new(
+                    IrExprKind::Var {
+                        name: "child".to_string(),
+                        access: VarAccess::Read,
+                        ref_kind: VarRefKind::Value,
+                    },
+                    IrType::Unknown,
+                )),
+                method: "as_ref".to_string(),
+                type_args: Vec::new(),
+                args: Vec::new(),
+                arg_policy: crate::backend::ir::expr::MethodCallArgPolicy::Default,
+            },
+            IrType::Unknown,
+        );
+
+        let conv = determine_conversion(&expr, None, ConversionContext::IncanFunctionArg);
+        assert_eq!(conv, Conversion::Clone);
+    }
+
+    #[test]
+    fn test_incan_call_clones_erased_receiver_as_ref_result_for_owned_nominal_target() {
+        let expr = IrExpr::new(
+            IrExprKind::MethodCall {
+                receiver: Box::new(IrExpr::new(
+                    IrExprKind::Var {
+                        name: "child".to_string(),
+                        access: VarAccess::Read,
+                        ref_kind: VarRefKind::Value,
+                    },
+                    IrType::Unknown,
+                )),
+                method: "as_ref".to_string(),
+                type_args: Vec::new(),
+                args: Vec::new(),
+                arg_policy: crate::backend::ir::expr::MethodCallArgPolicy::Default,
+            },
+            IrType::Unknown,
+        );
+        let target = IrType::Struct("Node".to_string());
+
+        let conv = determine_conversion(&expr, Some(&target), ConversionContext::IncanFunctionArg);
+        assert_eq!(conv, Conversion::Clone);
+    }
+
+    #[test]
+    fn test_assignment_clones_interop_unwrapped_string_field() {
+        let inner = IrExpr::new(
+            IrExprKind::Field {
+                object: Box::new(IrExpr::new(
+                    IrExprKind::Var {
+                        name: "assignment".to_string(),
+                        access: VarAccess::Read,
+                        ref_kind: VarRefKind::Value,
+                    },
+                    IrType::Struct("ProjectionAssignment".to_string()),
+                )),
+                field: "output_name".to_string(),
+            },
+            IrType::String,
+        );
+        let expr = IrExpr::new(
+            IrExprKind::InteropCoerce {
+                expr: Box::new(inner),
+                from_ty: IrType::String,
+                to_ty: IrType::String,
+                kind: crate::backend::ir::expr::IrInteropCoercionKind::RustTypeUnwrap,
+            },
+            IrType::String,
+        );
+
+        let conv = determine_conversion(&expr, Some(&IrType::String), ConversionContext::Assignment);
+        assert_eq!(conv, Conversion::Clone);
+    }
+
+    #[test]
+    fn test_assignment_moves_owned_tuple_unpack_field_without_clone() {
+        let expr = IrExpr::new(
+            IrExprKind::Field {
+                object: Box::new(IrExpr::new(
+                    IrExprKind::Var {
+                        name: "__incan_tuple_unpack_tx_rx".to_string(),
+                        access: VarAccess::Move,
+                        ref_kind: VarRefKind::Value,
+                    },
+                    IrType::Tuple(vec![
+                        IrType::Struct("Sender".to_string()),
+                        IrType::Struct("Receiver".to_string()),
+                    ]),
+                )),
+                field: "1".to_string(),
+            },
+            IrType::Struct("Receiver".to_string()),
+        );
+
+        let conv = determine_conversion(
+            &expr,
+            Some(&IrType::Struct("Receiver".to_string())),
+            ConversionContext::Assignment,
+        );
         assert_eq!(conv, Conversion::None);
     }
 
