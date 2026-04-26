@@ -14,7 +14,7 @@ RFCs move through four statuses. Each transition requires specific file edits, G
 | `Draft`       | Design and/or review in flight (may have open questions, or none while awaiting review before Planned) |
 | `Planned`     | Design settled; ready for implementation        |
 | `In Progress` | Active implementation underway                  |
-| `Implemented` | Implementation complete and shipped             |
+| `Implemented` | Implementation complete and included in a merge-ready PR, or already shipped |
 
 Read the RFC's current `Status:` field, then follow the matching section below.
 
@@ -169,7 +169,8 @@ gh issue comment <NNN> --repo dannys-code-corner/incan --body \
 ### Prerequisites
 
 - [ ] All `- [ ]` items in the Progress Checklist are `- [x]`.
-- [ ] Feature is merged to `main` and tests pass.
+- [ ] Implementation is complete and covered by a merge-ready PR, or already merged to `main`.
+- [ ] Required local and/or CI verification has passed for the implementation PR.
 - [ ] Release version is known.
 - [ ] User has confirmed the bump.
 
@@ -184,10 +185,13 @@ gh issue comment <NNN> --repo dannys-code-corner/incan --body \
 
 ### GitHub actions
 
+Ensure the implementation PR body includes a closing keyword for the issue, for example `Closes #<NNN>`. Do not manually close the issue as part of the RFC bump; the PR merge should close it.
+
+Optionally post a traceability comment while the PR is still open:
+
 ```bash
-# Close the issue
-gh issue close <NNN> --repo dannys-code-corner/incan \
-  --comment "Implementation complete. Shipped in vX.Y."
+gh issue comment <NNN> --repo dannys-code-corner/incan --body \
+  "RFC has moved to **Implemented** in the implementation PR. Implementation is complete and targeted for vX.Y; the issue will close when the PR merges."
 ```
 
 ### Release notes
@@ -206,4 +210,4 @@ Add an entry to `workspaces/docs-site/docs/release_notes/<vX_Y>.md` following th
 | ------------- | ------------- | ------------------------------------------------- | ------------------------------------------- |
 | `Draft` | `Planned` | **Planned+ rule** (**File changes** above); update Status | Relabel `RFC` → `feature` |
 | `Planned` | `In Progress` | Add Implementation Plan + Progress Checklist; update Status | Post plan as issue comment |
-| `In Progress` | `Implemented` | Update Status; fill release field; move file to `closed/implemented/`; optionally rename checklist to log | Close issue with release version |
+| `In Progress` | `Implemented` | Update Status; fill release field; move file to `closed/implemented/`; optionally rename checklist to log | Ensure PR closes issue; optional traceability comment |
