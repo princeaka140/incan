@@ -17,10 +17,12 @@ use incan_core::lang::types::collections::{self, CollectionTypeId};
 fn list_elem_type(ty: &IrType) -> &IrType {
     match ty {
         IrType::List(elem) => elem.as_ref(),
-        IrType::Ref(inner) | IrType::RefMut(inner) => match inner.as_ref() {
-            IrType::List(elem) => elem.as_ref(),
-            other => other,
-        },
+        IrType::NamedGeneric(name, args)
+            if collections::from_str(name.as_str()) == Some(CollectionTypeId::FrozenList) =>
+        {
+            args.first().unwrap_or(ty)
+        }
+        IrType::Ref(inner) | IrType::RefMut(inner) => list_elem_type(inner),
         other => other,
     }
 }
@@ -95,18 +97,12 @@ impl<'a> IrEmitter<'a> {
                 if let Some(arg) = args.first() {
                     let a = self.emit_expr(arg)?;
                     let elem_type = list_elem_type(&arg.ty);
-                    let empty_err =
-                        quote! { incan_stdlib::errors::raise_value_error("min() arg is an empty sequence") };
                     let tokens = match elem_type {
-                        IrType::Float => quote! {
-                            #a.iter().copied().reduce(f64::min).unwrap_or_else(|| #empty_err)
-                        },
-                        IrType::String | IrType::FrozenStr => quote! {
-                            #a.iter().min().cloned().unwrap_or_else(|| #empty_err)
-                        },
-                        _ => quote! {
-                            #a.iter().min().copied().unwrap_or_else(|| #empty_err)
-                        },
+                        IrType::Float => quote! { incan_stdlib::collections::__private::list_min_f64(&#a) },
+                        IrType::String | IrType::FrozenStr => {
+                            quote! { incan_stdlib::collections::__private::list_min_clone(&#a) }
+                        }
+                        _ => quote! { incan_stdlib::collections::__private::list_min_copy(&#a) },
                     };
                     Ok(tokens)
                 } else {
@@ -117,18 +113,12 @@ impl<'a> IrEmitter<'a> {
                 if let Some(arg) = args.first() {
                     let a = self.emit_expr(arg)?;
                     let elem_type = list_elem_type(&arg.ty);
-                    let empty_err =
-                        quote! { incan_stdlib::errors::raise_value_error("max() arg is an empty sequence") };
                     let tokens = match elem_type {
-                        IrType::Float => quote! {
-                            #a.iter().copied().reduce(f64::max).unwrap_or_else(|| #empty_err)
-                        },
-                        IrType::String | IrType::FrozenStr => quote! {
-                            #a.iter().max().cloned().unwrap_or_else(|| #empty_err)
-                        },
-                        _ => quote! {
-                            #a.iter().max().copied().unwrap_or_else(|| #empty_err)
-                        },
+                        IrType::Float => quote! { incan_stdlib::collections::__private::list_max_f64(&#a) },
+                        IrType::String | IrType::FrozenStr => {
+                            quote! { incan_stdlib::collections::__private::list_max_clone(&#a) }
+                        }
+                        _ => quote! { incan_stdlib::collections::__private::list_max_copy(&#a) },
                     };
                     Ok(tokens)
                 } else {
@@ -280,9 +270,7 @@ impl<'a> IrEmitter<'a> {
                 if let Some(arg) = args.first() {
                     let value = self.emit_expr(arg)?;
                     Ok(quote! {
-                        serde_json::to_string(&#value).unwrap_or_else(|_| {
-                            incan_stdlib::errors::raise_json_serialization_error(std::any::type_name_of_val(&#value))
-                        })
+                        incan_stdlib::json::__private::stringify_or_raise(&#value, std::any::type_name_of_val(&#value))
                     })
                 } else {
                     Ok(quote! { String::from("null") })
@@ -340,18 +328,12 @@ impl<'a> IrEmitter<'a> {
                 if let Some(arg) = args.first() {
                     let a = self.emit_expr(arg)?;
                     let elem_type = list_elem_type(&arg.ty);
-                    let empty_err =
-                        quote! { incan_stdlib::errors::raise_value_error("min() arg is an empty sequence") };
                     let tokens = match elem_type {
-                        IrType::Float => quote! {
-                            #a.iter().copied().reduce(f64::min).unwrap_or_else(|| #empty_err)
-                        },
-                        IrType::String | IrType::FrozenStr => quote! {
-                            #a.iter().min().cloned().unwrap_or_else(|| #empty_err)
-                        },
-                        _ => quote! {
-                            #a.iter().min().copied().unwrap_or_else(|| #empty_err)
-                        },
+                        IrType::Float => quote! { incan_stdlib::collections::__private::list_min_f64(&#a) },
+                        IrType::String | IrType::FrozenStr => {
+                            quote! { incan_stdlib::collections::__private::list_min_clone(&#a) }
+                        }
+                        _ => quote! { incan_stdlib::collections::__private::list_min_copy(&#a) },
                     };
                     Ok(Some(tokens))
                 } else {
@@ -362,18 +344,12 @@ impl<'a> IrEmitter<'a> {
                 if let Some(arg) = args.first() {
                     let a = self.emit_expr(arg)?;
                     let elem_type = list_elem_type(&arg.ty);
-                    let empty_err =
-                        quote! { incan_stdlib::errors::raise_value_error("max() arg is an empty sequence") };
                     let tokens = match elem_type {
-                        IrType::Float => quote! {
-                            #a.iter().copied().reduce(f64::max).unwrap_or_else(|| #empty_err)
-                        },
-                        IrType::String | IrType::FrozenStr => quote! {
-                            #a.iter().max().cloned().unwrap_or_else(|| #empty_err)
-                        },
-                        _ => quote! {
-                            #a.iter().max().copied().unwrap_or_else(|| #empty_err)
-                        },
+                        IrType::Float => quote! { incan_stdlib::collections::__private::list_max_f64(&#a) },
+                        IrType::String | IrType::FrozenStr => {
+                            quote! { incan_stdlib::collections::__private::list_max_clone(&#a) }
+                        }
+                        _ => quote! { incan_stdlib::collections::__private::list_max_copy(&#a) },
                     };
                     Ok(Some(tokens))
                 } else {
@@ -523,9 +499,7 @@ impl<'a> IrEmitter<'a> {
                 if let Some(arg) = args.first() {
                     let value = self.emit_expr(arg)?;
                     Ok(Some(quote! {
-                        serde_json::to_string(&#value).unwrap_or_else(|_| {
-                            incan_stdlib::errors::raise_json_serialization_error(std::any::type_name_of_val(&#value))
-                        })
+                        incan_stdlib::json::__private::stringify_or_raise(&#value, std::any::type_name_of_val(&#value))
                     }))
                 } else {
                     Ok(None)

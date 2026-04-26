@@ -617,6 +617,24 @@ fn test_web_route_extractors_codegen() {
 }
 
 #[test]
+fn test_std_web_routing_compiled_codegen() {
+    let path = "crates/incan_stdlib/stdlib/web/routing.incn";
+    let Ok(source) = fs::read_to_string(path) else {
+        panic!("Failed to read stdlib source file: {}", path);
+    };
+    let rust_code = generate_rust(&source);
+    assert!(
+        rust_code.contains("incan_stdlib::errors::__private::raise_runtime_misuse"),
+        "proc-macro decorator runtime misuse should route through a named helper:\n{rust_code}"
+    );
+    assert!(
+        !rust_code.contains("panic!(\"decorator marker"),
+        "proc-macro decorator runtime misuse must not emit raw panic!:\n{rust_code}"
+    );
+    insta::assert_snapshot!("std_web_routing_compiled", rust_code);
+}
+
+#[test]
 fn test_web_route_extractors_nested_module_codegen() {
     let main_source = r#"
 import std.async
@@ -980,6 +998,15 @@ fn test_models_codegen() {
 fn test_list_pop_clone_only_model_codegen() {
     let source = load_test_file("list_pop_clone_only_model");
     let rust_code = generate_rust(&source);
+    let compact = rust_code.chars().filter(|ch| !ch.is_whitespace()).collect::<String>();
+    assert!(
+        compact.contains("incan_stdlib::collections::__private::list_pop"),
+        "expected list.pop() emission to route through the stdlib helper; generated:\n{rust_code}"
+    );
+    assert!(
+        !compact.contains(".pop().unwrap_or_else"),
+        "list.pop() emission must not inline unwrap_or_else fallback logic; generated:\n{rust_code}"
+    );
     insta::assert_snapshot!("list_pop_clone_only_model", rust_code);
 }
 
@@ -1241,6 +1268,23 @@ fn test_imports_codegen() {
 fn test_builtins_codegen() {
     let source = load_test_file("builtins");
     let rust_code = generate_rust(&source);
+    let compact = rust_code.chars().filter(|ch| !ch.is_whitespace()).collect::<String>();
+    assert!(
+        compact.contains("incan_stdlib::collections::__private::list_min_copy")
+            || compact.contains("incan_stdlib::collections::__private::list_min_clone")
+            || compact.contains("incan_stdlib::collections::__private::list_min_f64"),
+        "expected min() emission to route through stdlib helpers; generated:\n{rust_code}"
+    );
+    assert!(
+        compact.contains("incan_stdlib::collections::__private::list_max_copy")
+            || compact.contains("incan_stdlib::collections::__private::list_max_clone")
+            || compact.contains("incan_stdlib::collections::__private::list_max_f64"),
+        "expected max() emission to route through stdlib helpers; generated:\n{rust_code}"
+    );
+    assert!(
+        !compact.contains(".unwrap_or_else"),
+        "builtins codegen must not inline unwrap_or_else fallback paths for list min/max; generated:\n{rust_code}"
+    );
     insta::assert_snapshot!("builtins", rust_code);
 }
 
@@ -1483,6 +1527,10 @@ fn test_newtype_checked_construction_codegen() {
         !rust_code.contains(".expect(\"validated newtype construction failed"),
         "checked newtype construction should not emit .expect():\n{rust_code}"
     );
+    assert!(
+        rust_code.contains("panic!(\"validated newtype construction failed"),
+        "checked newtype construction panic remains the explicit out-of-scope exemption for #351:\n{rust_code}"
+    );
     insta::assert_snapshot!("newtype_checked_construction", rust_code);
 }
 
@@ -1664,6 +1712,15 @@ fn test_std_serde_json_compiled_codegen() {
 fn test_std_serde_json_import_codegen() {
     let source = load_test_file("std_serde_json_import");
     let rust_code = generate_rust(&source);
+    let compact = rust_code.chars().filter(|ch| !ch.is_whitespace()).collect::<String>();
+    assert!(
+        compact.contains("incan_stdlib::json::__private::stringify_or_raise"),
+        "expected JSON stringify emission to route through stdlib helper; generated:\n{rust_code}"
+    );
+    assert!(
+        !compact.contains("serde_json::to_string"),
+        "generated JSON stringify paths should no longer inline serde_json::to_string fallbacks; generated:\n{rust_code}"
+    );
     insta::assert_snapshot!("std_serde_json_import", rust_code);
 }
 
