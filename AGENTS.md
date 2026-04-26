@@ -102,6 +102,7 @@ Guidelines:
 - **Keep Rust prose comments paragraph-shaped.** Break lines only when structure requires it: bullets, tables, code blocks, deliberate emphasis, or a clean sentence/ clause boundary that genuinely improves readability.
 - **Prefer fewer fuller lines over many short lines** in Rust prose comments. If a rustdoc paragraph reads like a narrow column, it is probably wrong.
 - Use `make fmt` to format the codebase after making changes, and before running tests.
+- If you touch comment prose that is already awkwardly short-wrapped, rewrite it as a natural paragraph before running `make fmt`; do not assume rustfmt will expand it for you.
 
 ### Documentation requirements (mandatory)
 
