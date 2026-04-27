@@ -24,7 +24,31 @@ make build
 
 This runs `cargo build --features lsp` and then links `~/.cargo/bin/incan` → `target/debug/incan` and `~/.cargo/bin/incan-lsp` → `target/debug/incan-lsp` when that binary exists. Set `INCAN_SKIP_CARGO_BIN_LINK=1` to skip linking, or rely on CI defaults (linking is off when `CI` is set).
 
-After upgrading the compiler, **reload the editor window** (or restart the Incan language server) so the IDE spawns a fresh `incan-lsp` process.
+Use this path when you are developing the compiler itself or testing behavior from a checkout. It avoids the common split-brain state where your terminal runs one `incan` binary while VS Code or Cursor keeps launching an older `incan-lsp`.
+
+Verify the shell side first:
+
+```bash
+command -v incan
+command -v incan-lsp
+ls -l ~/.cargo/bin/incan ~/.cargo/bin/incan-lsp
+incan --version
+```
+
+The `command -v` output should resolve to `~/.cargo/bin/incan` and `~/.cargo/bin/incan-lsp` unless you deliberately configured absolute paths. The `ls -l` targets should point into the checkout you just built, usually `target/debug/incan` and `target/debug/incan-lsp`.
+
+Then verify the editor side:
+
+1. Open the Incan checkout or an Incan project in VS Code/Cursor.
+2. Run **Incan: Doctor** from the command palette.
+3. Open **View → Output** and select **Incan**.
+4. Confirm the report shows the intended `incan` and `incan-lsp` paths, plus the source of each path (`setting`, `workspace`, or `path`).
+5. Confirm the language server starts after opening a `.incn` file.
+6. If diagnostics still look stale, run **Developer: Reload Window** from the command palette, or disable and re-enable the Incan extension so the editor starts a fresh `incan-lsp` process.
+
+From a terminal, `incan tools doctor` prints the same local toolchain checks. Use `incan tools doctor --format json` when you need machine-readable output for an issue report or editor integration.
+
+After upgrading the compiler or changing either binary path, reload the editor window or restart the Incan language server. Existing editor processes keep the executable they already launched; rebuilding on disk does not automatically replace a running language server.
 
 ### Alternative: release binary on `PATH`
 
@@ -108,10 +132,30 @@ Suggestions include:
 }
 ```
 
-| Setting             | Default | Description                                   |
-| ------------------- | ------- | --------------------------------------------- |
-| `incan.lsp.enabled` | `true`  | Enable/disable the language server            |
-| `incan.lsp.path`    | `""`    | Custom path to incan-lsp (uses PATH if empty) |
+| Setting             | Default | Description                                                                                      |
+| ------------------- | ------- | ------------------------------------------------------------------------------------------------ |
+| `incan.lsp.enabled` | `true`  | Enable/disable the language server                                                               |
+| `incan.lsp.path`    | `""`    | Literal path to `incan-lsp`; when empty, the extension uses workspace binary discovery or `PATH` |
+
+`incan.lsp.path` is not a shell command. It is passed directly to the editor's language-client process launcher, so it does not expand `$HOME`, `~`, command substitutions, or other shell syntax. Use a concrete executable path:
+
+```json
+{
+  "incan.lsp.path": "/path/to/incan/target/debug/incan-lsp"
+}
+```
+
+Avoid shell-style values:
+
+```json
+{
+  "incan.lsp.path": "$HOME/dev/incan/target/debug/incan-lsp"
+}
+```
+
+For most local development, leave `incan.lsp.path` empty and let `make build` keep `~/.cargo/bin/incan-lsp` pointed at the checkout. Set an explicit absolute path only when you intentionally want that workspace to use a specific binary.
+
+The extension validates configured paths before starting the language server. If `incan.lsp.path` or `incan.compiler.path` contains shell syntax, points at a missing file, or points at a non-executable file, the extension writes the problem to the **Incan** output channel and shows a warning.
 
 ## Troubleshooting
 
@@ -121,14 +165,21 @@ Suggestions include:
 
       ```bash
       which incan-lsp
-      # or
-      incan-lsp --version
+      ls -l "$(which incan-lsp)"
       ```
 
-2. **Check VS Code output:**
-      - View → Output → Select "Incan Language Server"
+2. **Check configured path:**
+      - If `incan.lsp.path` is set, make sure it is a literal executable path, not `$HOME/...`, `~/...`, or another shell expression.
+      - If it is empty, the extension first tries a workspace-built `target/debug/incan-lsp` or `target/release/incan-lsp`, then falls back to `incan-lsp` from `PATH`.
 
-3. **Verify extension is active:**
+3. **Run the doctor command:**
+      - Command palette → "Incan: Doctor"
+      - Or from a terminal: `incan tools doctor`
+
+4. **Check VS Code output:**
+      - View → Output → Select "Incan"
+
+5. **Verify extension is active:**
       - Extensions panel → Search "Incan" → Check it's enabled
 
 ### No Diagnostics
