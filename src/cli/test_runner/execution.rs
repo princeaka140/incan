@@ -17,7 +17,8 @@ use crate::cli::prelude::ParsedModule;
 use crate::dependency_resolver::ResolvedDependencies;
 use crate::dependency_resolver::resolve_dependencies;
 use crate::frontend::ast::{
-    AssertKind, AssertStmt, CallArg, Declaration, Expr, ImportItem, ImportKind, Program, Spanned, Statement, Type,
+    AssertKind, AssertStmt, CallArg, Declaration, DictEntry, Expr, ImportItem, ImportKind, ListEntry, ParamKind,
+    Program, Spanned, Statement, Type,
 };
 use crate::frontend::decorator_resolution;
 use crate::frontend::library_manifest_index::LibraryManifestIndex;
@@ -449,8 +450,10 @@ fn expr_references_name(expr: &Expr, name: &str) -> bool {
         Expr::Call(callee, _, args) => {
             expr_references_name(&callee.node, name)
                 || args.iter().any(|arg| match arg {
-                    CallArg::Positional(expr) => expr_references_name(&expr.node, name),
-                    CallArg::Named(_, expr) => expr_references_name(&expr.node, name),
+                    CallArg::Positional(expr)
+                    | CallArg::Named(_, expr)
+                    | CallArg::PositionalUnpack(expr)
+                    | CallArg::KeywordUnpack(expr) => expr_references_name(&expr.node, name),
                 })
         }
         Expr::Index(base, index) => expr_references_name(&base.node, name) || expr_references_name(&index.node, name),
@@ -473,8 +476,10 @@ fn expr_references_name(expr: &Expr, name: &str) -> bool {
         Expr::MethodCall(base, _, _, args) => {
             expr_references_name(&base.node, name)
                 || args.iter().any(|arg| match arg {
-                    CallArg::Positional(expr) => expr_references_name(&expr.node, name),
-                    CallArg::Named(_, expr) => expr_references_name(&expr.node, name),
+                    CallArg::Positional(expr)
+                    | CallArg::Named(_, expr)
+                    | CallArg::PositionalUnpack(expr)
+                    | CallArg::KeywordUnpack(expr) => expr_references_name(&expr.node, name),
                 })
         }
         Expr::Match(scrutinee, arms) => {
@@ -511,15 +516,21 @@ fn expr_references_name(expr: &Expr, name: &str) -> bool {
                     .is_some_and(|expr| expr_references_name(&expr.node, name))
         }
         Expr::Closure(_, body) => expr_references_name(&body.node, name),
-        Expr::Tuple(items) | Expr::List(items) | Expr::Set(items) => {
-            items.iter().any(|item| expr_references_name(&item.node, name))
-        }
-        Expr::Dict(pairs) => pairs
-            .iter()
-            .any(|(key, value)| expr_references_name(&key.node, name) || expr_references_name(&value.node, name)),
+        Expr::Tuple(items) | Expr::Set(items) => items.iter().any(|item| expr_references_name(&item.node, name)),
+        Expr::List(items) => items.iter().any(|item| match item {
+            ListEntry::Element(value) | ListEntry::Spread(value) => expr_references_name(&value.node, name),
+        }),
+        Expr::Dict(pairs) => pairs.iter().any(|entry| match entry {
+            DictEntry::Pair(key, value) => {
+                expr_references_name(&key.node, name) || expr_references_name(&value.node, name)
+            }
+            DictEntry::Spread(value) => expr_references_name(&value.node, name),
+        }),
         Expr::Constructor(_, args) => args.iter().any(|arg| match arg {
-            CallArg::Positional(expr) => expr_references_name(&expr.node, name),
-            CallArg::Named(_, expr) => expr_references_name(&expr.node, name),
+            CallArg::Positional(expr)
+            | CallArg::Named(_, expr)
+            | CallArg::PositionalUnpack(expr)
+            | CallArg::KeywordUnpack(expr) => expr_references_name(&expr.node, name),
         }),
         Expr::FString(parts) => parts.iter().any(|part| {
             if let crate::frontend::ast::FStringPart::Expr(expr) = part {
@@ -721,6 +732,7 @@ fn split_yield_fixture_declarations(ast: &mut Program) -> Result<HashMap<String,
                         is_mut: false,
                         name: capture.name.clone(),
                         ty: Spanned::new(capture.ty.clone(), func.body[yield_index].span),
+                        kind: ParamKind::Normal,
                         default: None,
                     },
                     func.body[yield_index].span,

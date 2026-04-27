@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::frontend::ast::{
-    BinaryOp, CallArg, Declaration, DecoratorArg, DecoratorArgValue, Expr, Literal, Program, Spanned, Statement,
-    UnaryOp,
+    BinaryOp, CallArg, Declaration, DecoratorArg, DecoratorArgValue, Expr, ListEntry, Literal, Program, Spanned,
+    Statement, UnaryOp,
 };
 use crate::frontend::ast_walk::any_expr_in_body;
 use crate::frontend::library_manifest_index::LibraryManifestIndex;
@@ -705,11 +705,12 @@ fn extract_string_list(expr: &Expr) -> Vec<String> {
     items
         .iter()
         .filter_map(|item| {
-            if let Expr::Literal(Literal::String(value)) = &item.node {
-                Some(value.clone())
-            } else {
-                None
+            if let ListEntry::Element(value) = item
+                && let Expr::Literal(Literal::String(value)) = &value.node
+            {
+                return Some(value.clone());
             }
+            None
         })
         .collect()
 }
@@ -752,10 +753,17 @@ fn extract_parametrize_argvalues(args: &[crate::frontend::ast::DecoratorArg]) ->
     };
 
     let ids = extract_parametrize_ids(args);
+    let mut case_index = 0usize;
     items
         .iter()
-        .enumerate()
-        .map(|(index, item)| build_parametrize_case(item, ids.get(index).cloned()))
+        .filter_map(|item| match item {
+            crate::frontend::ast::ListEntry::Element(value) => {
+                let explicit_id = ids.get(case_index).cloned();
+                case_index += 1;
+                Some(build_parametrize_case(value, explicit_id))
+            }
+            crate::frontend::ast::ListEntry::Spread(_) => None,
+        })
         .collect()
 }
 
@@ -850,7 +858,13 @@ fn extract_case_marks(expr: &Expr) -> Vec<TestMarker> {
     let Expr::List(items) = expr else {
         return Vec::new();
     };
-    items.iter().filter_map(|item| marker_from_expr(&item.node)).collect()
+    items
+        .iter()
+        .filter_map(|item| match item {
+            ListEntry::Element(value) => marker_from_expr(&value.node),
+            ListEntry::Spread(_) => None,
+        })
+        .collect()
 }
 
 /// Convert a per-case marker expression into runner marker metadata.

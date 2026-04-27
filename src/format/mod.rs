@@ -322,6 +322,38 @@ mod tests {
     }
 
     #[test]
+    fn test_format_source_rest_params_and_call_unpacking() -> Result<(), FormatError> {
+        let source = r#"def collect(prefix: str, *items: int, **labels: str) -> int:
+  return collect(prefix,*items,**labels)
+"#;
+        let formatted = format_source(source)?;
+        assert_eq!(
+            formatted,
+            r#"def collect(prefix: str, *items: int, **labels: str) -> int:
+    return collect(prefix, *items, **labels)
+"#
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_format_source_collection_literal_spread_entries() -> Result<(), FormatError> {
+        let source = r#"def f(xs: list[int], headers: dict[str, str]) -> None:
+  values=[1,*xs,4]
+  merged={"accept":"json",**headers}
+"#;
+        let formatted = format_source(source)?;
+        assert_eq!(
+            formatted,
+            r#"def f(xs: list[int], headers: dict[str, str]) -> None:
+    values = [1, *xs, 4]
+    merged = {"accept": "json", **headers}
+"#
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_format_source_model() {
         let source = r#"model User:
   name: str

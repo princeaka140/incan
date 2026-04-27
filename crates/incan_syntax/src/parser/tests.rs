@@ -723,6 +723,97 @@ def f(a: Foo) -> int:
     }
 
     #[test]
+    fn test_parse_rest_params_and_call_unpacking() -> Result<(), Vec<CompileError>> {
+        let source = r#"
+def collect(prefix: str, *items: int, **labels: str) -> int:
+  return 0
+
+def use(xs: list[int], kw: dict[str, str]) -> int:
+  return collect("x", 1, *xs, name="demo", **kw)
+"#;
+        let program = parse_str(source)?;
+        let collect = require_function_decl(&program.declarations[0])?;
+        assert_eq!(collect.params[0].node.kind, ParamKind::Normal);
+        assert_eq!(collect.params[1].node.kind, ParamKind::RestPositional);
+        assert_eq!(collect.params[1].node.name, "items");
+        assert_eq!(collect.params[2].node.kind, ParamKind::RestKeyword);
+        assert_eq!(collect.params[2].node.name, "labels");
+
+        let use_fn = require_function_decl(&program.declarations[1])?;
+        let call_args = match &use_fn.body[0].node {
+            Statement::Return(Some(expr)) => match &expr.node {
+                Expr::Call(_, _, args) => args,
+                _ => panic!("expected call expression"),
+            },
+            _ => panic!("expected return statement"),
+        };
+        assert!(matches!(call_args[0], CallArg::Positional(_)));
+        assert!(matches!(call_args[1], CallArg::Positional(_)));
+        assert!(matches!(call_args[2], CallArg::PositionalUnpack(_)));
+        assert!(matches!(call_args[3], CallArg::Named(ref name, _) if name == "name"));
+        assert!(matches!(call_args[4], CallArg::KeywordUnpack(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_list_and_dict_literal_spread_entries() -> Result<(), Vec<CompileError>> {
+        let source = r#"
+def use(xs: list[int], headers: dict[str, str]) -> None:
+  values = [1, *xs, 4]
+  merged = {"accept": "json", **headers}
+"#;
+        let program = parse_str(source)?;
+        let use_fn = require_function_decl(&program.declarations[0])?;
+
+        let list_entries = match &use_fn.body[0].node {
+            Statement::Assignment(stmt) => match &stmt.value.node {
+                Expr::List(entries) => entries,
+                _ => panic!("expected list literal"),
+            },
+            _ => panic!("expected assignment statement"),
+        };
+        assert!(matches!(list_entries[0], ListEntry::Element(_)));
+        assert!(matches!(list_entries[1], ListEntry::Spread(_)));
+        assert!(matches!(list_entries[2], ListEntry::Element(_)));
+
+        let dict_entries = match &use_fn.body[1].node {
+            Statement::Assignment(stmt) => match &stmt.value.node {
+                Expr::Dict(entries) => entries,
+                _ => panic!("expected dict literal"),
+            },
+            _ => panic!("expected assignment statement"),
+        };
+        assert!(matches!(dict_entries[0], DictEntry::Pair(_, _)));
+        assert!(matches!(dict_entries[1], DictEntry::Spread(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_collection_literal_spread_invalid_markers() {
+        let list_errs = parse_str_err(
+            "def f(xs: list[int]) -> None:\n  values = [**xs]\n",
+            "list literal should reject dictionary spread marker",
+        );
+        assert!(
+            list_errs
+                .iter()
+                .any(|err| err.message.contains("Invalid list spread marker `**`")),
+            "expected invalid list spread marker diagnostic, got: {list_errs:?}"
+        );
+
+        let dict_errs = parse_str_err(
+            "def f(xs: list[int]) -> None:\n  values = {*xs}\n",
+            "dict literal should reject list spread marker",
+        );
+        assert!(
+            dict_errs
+                .iter()
+                .any(|err| err.message.contains("Invalid dictionary spread marker `*`")),
+            "expected invalid dictionary spread marker diagnostic, got: {dict_errs:?}"
+        );
+    }
+
+    #[test]
     fn test_parse_pattern_named_key_keyword() -> Result<(), Vec<CompileError>> {
         let source = r#"
 def f(a: Foo) -> int:
