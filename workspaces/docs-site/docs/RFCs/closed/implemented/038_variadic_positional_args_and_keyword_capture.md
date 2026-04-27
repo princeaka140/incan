@@ -590,7 +590,7 @@ Rejected because it makes the marker carry different meanings in different conte
 - Update user-facing language docs and release notes.
 - Document the rest-directed subset and the full unpacking north star without splitting the design across RFCs.
 
-## Progress Checklist
+## Implementation Log
 
 ### Spec / design
 
