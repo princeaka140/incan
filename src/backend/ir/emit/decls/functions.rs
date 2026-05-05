@@ -919,6 +919,7 @@ impl<'a> IrEmitter<'a> {
             | IrExprKind::Await(operand)
             | IrExprKind::Try(operand)
             | IrExprKind::Cast { expr: operand, .. }
+            | IrExprKind::NumericResize { expr: operand, .. }
             | IrExprKind::InteropCoerce { expr: operand, .. } => {
                 Self::collect_expr_used_names(operand, param_names, shadowed_names, used_names);
             }
@@ -1097,6 +1098,7 @@ impl<'a> IrEmitter<'a> {
             | IrExprKind::Bool(_)
             | IrExprKind::Int(_)
             | IrExprKind::Float(_)
+            | IrExprKind::Decimal(_)
             | IrExprKind::String(_)
             | IrExprKind::Bytes(_)
             | IrExprKind::Literal(_)

@@ -368,8 +368,6 @@ impl Formatter {
         }
     }
 
-    // ---- Literals ----
-
     /// Write comprehension clauses in canonical source order.
     fn format_comprehension_clauses(&mut self, clauses: &[ComprehensionClause]) {
         for clause in clauses {
@@ -388,11 +386,15 @@ impl Formatter {
         }
     }
 
+    // ---- Literals ----
+
+    /// Format a literal while preserving source-sensitive numeric spellings.
     fn format_literal(&mut self, lit: &Literal) {
         match lit {
             Literal::Int(il) => self.writer.write(&il.repr),
             // Emit source `FloatLiteral::repr`, not `f64` `Display` (which drops `.0`, etc.).
             Literal::Float(fl) => self.writer.write(&fl.repr),
+            Literal::Decimal(dl) => self.writer.write(&dl.repr),
             Literal::String(s) => {
                 self.writer.write("\"");
                 self.writer.write(&escape_string(s));
@@ -602,6 +604,7 @@ impl Formatter {
 
     // ---- Types ----
 
+    /// Format a type annotation or type argument.
     pub(super) fn format_type(&mut self, ty: &Type) {
         match ty {
             Type::Simple(name) => self.writer.write(name),
@@ -624,6 +627,7 @@ impl Formatter {
                 }
                 self.writer.write("]");
             }
+            Type::IntLiteral(value) => self.writer.write(&value.repr),
             Type::Tuple(types) => {
                 self.writer.write("Tuple[");
                 for (i, t) in types.iter().enumerate() {
