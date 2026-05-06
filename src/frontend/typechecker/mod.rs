@@ -132,6 +132,8 @@ pub struct TypeChecker {
     pub(crate) warnings: Vec<CompileError>,
     /// Track which bindings are mutable for mutation checks.
     pub(crate) mutable_bindings: HashSet<String>,
+    /// Iterator bindings consumed by terminal RFC 088 methods in the current local checking flow.
+    pub(crate) consumed_iterator_bindings: HashMap<String, Span>,
     /// Current function's error type for `?` operator compatibility.
     pub(crate) current_return_error_type: Option<ResolvedType>,
     /// Active declaration-level interpretation for `yield` expressions.
@@ -238,6 +240,7 @@ impl TypeChecker {
             errors: Vec::new(),
             warnings: Vec::new(),
             mutable_bindings: HashSet::new(),
+            consumed_iterator_bindings: HashMap::new(),
             current_return_error_type: None,
             current_yield_context: YieldContext::Disallowed,
             in_async_body: false,
@@ -949,41 +952,56 @@ impl TypeChecker {
         self.generic_placeholder_name(ty).is_some()
     }
 
+    /// Return declared type parameters and explicit trait adoptions for a semantic type.
+    fn semantic_type_params_and_adoptions(&self, type_name: &str) -> Option<(&[String], &[TypeBoundInfo])> {
+        match self.lookup_semantic_type_info(type_name)? {
+            TypeInfo::Model(model) => Some((&model.type_params, &model.trait_adoptions)),
+            TypeInfo::Class(class) => Some((&class.type_params, &class.trait_adoptions)),
+            TypeInfo::Enum(enum_info) => Some((&enum_info.type_params, &enum_info.trait_adoptions)),
+            _ => None,
+        }
+    }
+
     /// Infer the concrete instantiation of `trait_name` for `type_name`, if the type adopts that trait.
     ///
-    /// RFC 042 currently uses the same implicit positional mapping as trait-annotation compatibility: a concrete
-    /// adopter's leading type arguments instantiate the adopted trait's type parameters, and transitive supertrait
-    /// arguments are substituted through the recorded closure.
+    /// Explicit `with Trait[...]` arguments are authoritative. The older positional mapping remains as a fallback for
+    /// nullary adoption metadata and derives.
     fn instantiated_trait_args_for_type(
         &self,
         type_name: &str,
         concrete_type_args: &[ResolvedType],
         trait_name: &str,
     ) -> Option<Vec<ResolvedType>> {
-        let adopted = match self.lookup_semantic_type_info(type_name) {
-            Some(TypeInfo::Model(model)) => &model.traits,
-            Some(TypeInfo::Class(class)) => &class.traits,
-            _ => return None,
-        };
+        let (type_params, adopted) = self.semantic_type_params_and_adoptions(type_name)?;
+        let concrete_subst =
+            crate::frontend::resolved_type_subst::type_param_subst_map(type_params, concrete_type_args);
 
         for adopted_trait in adopted {
-            let Some(adopted_info) = self.lookup_semantic_trait_info(adopted_trait) else {
+            let Some(adopted_info) = self.lookup_semantic_trait_info(&adopted_trait.name) else {
                 continue;
             };
-            let direct_args: Vec<ResolvedType> = concrete_type_args
-                .iter()
-                .take(adopted_info.type_params.len())
-                .cloned()
-                .collect();
+            let direct_args: Vec<ResolvedType> = if adopted_trait.type_args.is_empty() {
+                concrete_type_args
+                    .iter()
+                    .take(adopted_info.type_params.len())
+                    .cloned()
+                    .collect()
+            } else {
+                adopted_trait
+                    .type_args
+                    .iter()
+                    .map(|arg| crate::frontend::resolved_type_subst::substitute_resolved_type(arg, &concrete_subst))
+                    .collect()
+            };
             if direct_args.len() != adopted_info.type_params.len() {
                 continue;
             }
 
-            if adopted_trait == trait_name {
+            if adopted_trait.name == trait_name {
                 return Some(direct_args);
             }
 
-            let closure = self.semantic_supertrait_closure(adopted_trait);
+            let closure = self.semantic_supertrait_closure(&adopted_trait.name);
             let subst =
                 crate::frontend::resolved_type_subst::type_param_subst_map(&adopted_info.type_params, &direct_args);
             for (supertrait_name, supertrait_args) in closure {
@@ -2773,6 +2791,11 @@ impl TypeChecker {
             (ResolvedType::Unknown, _) | (_, ResolvedType::Unknown) => true,
             (ResolvedType::TypeVar(_), _) | (_, ResolvedType::TypeVar(_)) => true,
             (ResolvedType::CallSiteInfer, _) | (_, ResolvedType::CallSiteInfer) => true,
+            (ResolvedType::SelfType, ResolvedType::Generic(trait_name, _))
+                if self.current_trait_name.as_deref() == Some(trait_name.as_str()) =>
+            {
+                true
+            }
             (actual, expected) if numeric_lossless_compatible(actual, expected) => true,
             (
                 ResolvedType::Generic(actual_name, actual_members),
@@ -2853,6 +2876,35 @@ impl TypeChecker {
                     .iter()
                     .zip(instantiated.iter())
                     .all(|(e, a)| self.types_compatible(a, e))
+            }
+
+            // RFC 088: builtin collection iterables and `Iterator[T]` values satisfy `Iterable[T]`.
+            (ResolvedType::Generic(actual_name, actual_args), ResolvedType::Generic(trait_name, expected_args))
+                if trait_name == builtin_traits::as_str(TraitId::Iterable)
+                    && expected_args.len() == 1
+                    && actual_args.len() == 1 =>
+            {
+                let actual_is_iterable = actual_name == builtin_traits::as_str(TraitId::Iterator)
+                    || matches!(
+                        collection_type_id(actual_name.as_str()),
+                        Some(
+                            CollectionTypeId::List
+                                | CollectionTypeId::Set
+                                | CollectionTypeId::FrozenList
+                                | CollectionTypeId::FrozenSet
+                        )
+                    );
+                actual_is_iterable && self.types_compatible(&actual_args[0], &expected_args[0])
+            }
+            (ResolvedType::FrozenList(actual), ResolvedType::Generic(trait_name, expected_args))
+                if trait_name == builtin_traits::as_str(TraitId::Iterable) && expected_args.len() == 1 =>
+            {
+                self.types_compatible(actual, &expected_args[0])
+            }
+            (ResolvedType::FrozenSet(actual), ResolvedType::Generic(trait_name, expected_args))
+                if trait_name == builtin_traits::as_str(TraitId::Iterable) && expected_args.len() == 1 =>
+            {
+                self.types_compatible(actual, &expected_args[0])
             }
 
             // RFC 042: `Concrete[T]` assignable to generic trait annotation `Trait[T]` (and similar).

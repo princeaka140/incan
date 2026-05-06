@@ -326,6 +326,7 @@ impl AstLowering {
                         method: "__incan_new".to_string(),
                         type_args: Vec::new(),
                         args: Vec::new(),
+                        dispatch: None,
                         callable_signature: None,
                         arg_policy: MethodCallArgPolicy::Default,
                     },
