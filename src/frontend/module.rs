@@ -435,7 +435,7 @@ pub fn exported_symbols(ast: &Program) -> Vec<ExportedSymbol> {
                     }
                 }
             }
-            Declaration::Docstring(_) | Declaration::TestModule(_) => {}
+            Declaration::Partial(_) | Declaration::Docstring(_) | Declaration::TestModule(_) => {}
         }
     }
 
@@ -860,6 +860,7 @@ source-root = "library"
             docstring: None,
             fields: vec![],
             method_aliases: vec![],
+            method_partials: vec![],
             properties: vec![],
             methods: vec![],
         };
@@ -888,6 +889,7 @@ source-root = "library"
             docstring: None,
             fields: vec![],
             method_aliases: vec![],
+            method_partials: vec![],
             properties: vec![],
             methods: vec![],
         };
@@ -973,6 +975,7 @@ source-root = "library"
             docstring: None,
             rebindings: vec![],
             method_aliases: vec![],
+            method_partials: vec![],
             interop_edges: vec![],
             methods: vec![],
         };
@@ -999,6 +1002,7 @@ source-root = "library"
             traits: vec![],
             docstring: None,
             method_aliases: vec![],
+            method_partials: vec![],
             properties: vec![],
             methods: vec![],
         };
@@ -1164,6 +1168,7 @@ source-root = "library"
             docstring: None,
             fields: vec![],
             method_aliases: vec![],
+            method_partials: vec![],
             properties: vec![],
             methods: vec![],
         };
@@ -1185,6 +1190,7 @@ source-root = "library"
             traits: vec![],
             docstring: None,
             method_aliases: vec![],
+            method_partials: vec![],
             properties: vec![],
             methods: vec![],
         };

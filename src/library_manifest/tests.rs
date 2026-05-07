@@ -55,6 +55,102 @@ fn manifest_io_round_trip_preserves_recursive_types_and_bounds() -> Result<(), B
 }
 
 #[test]
+fn manifest_io_round_trip_preserves_partial_exports() -> Result<(), Box<dyn std::error::Error>> {
+    let mut manifest = LibraryManifest::new("mylib", "0.1.0");
+    manifest.exports.partials.push(PartialExport {
+        name: "get".to_string(),
+        target_path: vec!["route".to_string()],
+        target_kind: PartialTargetKindExport::Function,
+        presets: vec![PartialPresetExport {
+            name: "method".to_string(),
+            ty: TypeRef::Named {
+                name: "str".to_string(),
+            },
+            value: PresetValueExport::String("GET".to_string()),
+        }],
+        type_params: Vec::new(),
+        params: vec![
+            ParamExport {
+                name: "method".to_string(),
+                ty: TypeRef::Named {
+                    name: "str".to_string(),
+                },
+                kind: ParamKindExport::Normal,
+                has_default: true,
+            },
+            ParamExport {
+                name: "path".to_string(),
+                ty: TypeRef::Named {
+                    name: "str".to_string(),
+                },
+                kind: ParamKindExport::Normal,
+                has_default: false,
+            },
+        ],
+        return_type: TypeRef::Named {
+            name: "str".to_string(),
+        },
+        is_async: false,
+    });
+
+    let tmp = tempfile::tempdir()?;
+    let path = tmp.path().join("partials.incnlib");
+    manifest.write_to_path(&path)?;
+    let loaded = LibraryManifest::read_from_path(&path)?;
+
+    assert_eq!(loaded, manifest);
+    Ok(())
+}
+
+#[test]
+fn manifest_validation_rejects_invalid_partial_exports() -> Result<(), Box<dyn std::error::Error>> {
+    let mut base = LibraryManifest::new("mylib", "0.1.0");
+    base.exports.partials.push(PartialExport {
+        name: "get".to_string(),
+        target_path: vec!["route".to_string()],
+        target_kind: PartialTargetKindExport::Function,
+        presets: vec![PartialPresetExport {
+            name: "method".to_string(),
+            ty: TypeRef::Named {
+                name: "str".to_string(),
+            },
+            value: PresetValueExport::String("GET".to_string()),
+        }],
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: TypeRef::Named {
+            name: "str".to_string(),
+        },
+        is_async: false,
+    });
+
+    for (manifest, expected) in [
+        {
+            let mut manifest = base.clone();
+            manifest.exports.partials[0].presets.clear();
+            (manifest, "must declare at least one preset")
+        },
+        {
+            let mut manifest = base.clone();
+            let duplicate = manifest.exports.partials[0].presets[0].clone();
+            manifest.exports.partials[0].presets.push(duplicate);
+            (manifest, "repeats preset `method`")
+        },
+    ] {
+        let tmp = tempfile::tempdir()?;
+        let path = tmp.path().join("invalid-partials.incnlib");
+        let err = manifest
+            .write_to_path(&path)
+            .expect_err("invalid partial manifest should fail validation");
+        assert!(
+            err.to_string().contains(expected),
+            "expected validation error containing `{expected}`, got `{err}`"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn manifest_io_round_trip_preserves_rest_parameter_metadata() -> Result<(), Box<dyn std::error::Error>> {
     let mut manifest = LibraryManifest::new("mylib", "0.1.0");
     manifest.exports.functions.push(FunctionExport {
