@@ -13,6 +13,7 @@ Pages in this section are curated and checked into the repository.
 - [`std.io`](io.md) (curated)
 - [`std.tempfile`](tempfile.md) (curated)
 - [`std.reflection`](reflection.md) (curated)
+- [`std.result`](result.md) (curated)
 - [`std.traits.*`](traits.md) (curated)
 - [`std.testing`](testing.md) (curated)
 - [`std.math`](math.md) (curated)

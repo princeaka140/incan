@@ -20,7 +20,7 @@ use incan_core::lang::surface::types as surface_types;
 use incan_core::lang::surface::types::{SEMAPHORE_ACQUIRE_ERROR_TYPE_NAME, SEMAPHORE_PERMIT_TYPE_NAME, SurfaceTypeId};
 use incan_core::lang::surface::{
     dict_methods, float_methods, frozen_bytes_methods, frozen_dict_methods, frozen_list_methods, frozen_set_methods,
-    list_methods, set_methods,
+    list_methods, result_methods, set_methods,
 };
 use incan_core::lang::traits::{self as core_traits, TraitId};
 use incan_core::lang::types::collections::CollectionTypeId;
@@ -60,6 +60,148 @@ fn rust_receiver_display(path: &str) -> String {
 }
 
 impl TypeChecker {
+    /// Return whether `method` names an RFC 070 `Result[T, E]` combinator.
+    fn result_combinator_name(method: &str) -> bool {
+        result_methods::from_str(method).is_some()
+    }
+
+    /// Resolve a callable function or callable object to its parameter and return types.
+    fn callable_signature_for_value_type(
+        &mut self,
+        ty: &ResolvedType,
+        span: Span,
+    ) -> Option<(Vec<CallableParam>, ResolvedType)> {
+        match ty {
+            ResolvedType::Function(params, ret) => Some((params.clone(), ret.as_ref().clone())),
+            ResolvedType::Generic(name, _) | ResolvedType::Named(name) => {
+                let type_info = self.lookup_semantic_type_info(name).cloned()?;
+                let methods = match type_info {
+                    TypeInfo::Model(model) => model.methods,
+                    TypeInfo::Class(class) => class.methods,
+                    TypeInfo::Enum(en) => en.methods,
+                    TypeInfo::Newtype(newtype) => newtype.methods,
+                    _ => return None,
+                };
+                let Some(call) = methods.get("__call__") else {
+                    self.errors
+                        .push(errors::missing_method(&ty.to_string(), "__call__", span));
+                    return None;
+                };
+                Some(self.method_types_substituting_call_site_self(call, ty))
+            }
+            ResolvedType::Unknown => Some((Vec::new(), ResolvedType::Unknown)),
+            _ => {
+                self.errors
+                    .push(errors::missing_method(&ty.to_string(), "__call__", span));
+                None
+            }
+        }
+    }
+
+    /// Validate the callback passed to one `Result[T, E]` combinator and return its output type.
+    fn validate_result_combinator_callback(
+        &mut self,
+        _method: &str,
+        callback_ty: &ResolvedType,
+        input_ty: &ResolvedType,
+        expected_ret: Option<&ResolvedType>,
+        span: Span,
+    ) -> ResolvedType {
+        let Some((params, ret)) = self.callable_signature_for_value_type(callback_ty, span) else {
+            return ResolvedType::Unknown;
+        };
+        if params.len() != 1 {
+            self.errors.push(errors::type_mismatch(
+                "one-parameter callable",
+                &format!("{}-parameter callable", params.len()),
+                span,
+            ));
+            return ResolvedType::Unknown;
+        }
+        if let Some(param) = params.first()
+            && !self.types_compatible(input_ty, &param.ty)
+        {
+            self.errors.push(errors::type_mismatch(
+                &param.ty.to_string(),
+                &input_ty.to_string(),
+                span,
+            ));
+        }
+        if let Some(expected) = expected_ret
+            && !self.types_compatible(&ret, expected)
+        {
+            self.errors
+                .push(errors::type_mismatch(&expected.to_string(), &ret.to_string(), span));
+        }
+        ret
+    }
+
+    /// Typecheck one RFC 070 `Result[T, E]` combinator method call.
+    fn check_result_combinator_method(
+        &mut self,
+        ok_ty: ResolvedType,
+        err_ty: ResolvedType,
+        method: &str,
+        args: &[CallArg],
+        arg_types: &[ResolvedType],
+        span: Span,
+    ) -> ResolvedType {
+        if args.len() != 1 {
+            self.errors.push(errors::type_mismatch(
+                "one callable argument",
+                &format!("{} argument(s)", args.len()),
+                span,
+            ));
+            return ResolvedType::Unknown;
+        }
+        let Some(callback_ty) = arg_types.first() else {
+            return ResolvedType::Unknown;
+        };
+        let Some(method_id) = result_methods::from_str(method) else {
+            return ResolvedType::Unknown;
+        };
+        match method_id {
+            result_methods::ResultMethodId::Map => {
+                let ret = self.validate_result_combinator_callback(method, callback_ty, &ok_ty, None, span);
+                ResolvedType::Generic("Result".to_string(), vec![ret, err_ty])
+            }
+            result_methods::ResultMethodId::MapErr => {
+                let ret = self.validate_result_combinator_callback(method, callback_ty, &err_ty, None, span);
+                ResolvedType::Generic("Result".to_string(), vec![ok_ty, ret])
+            }
+            result_methods::ResultMethodId::AndThen => {
+                let expected = ResolvedType::Generic("Result".to_string(), vec![ResolvedType::Unknown, err_ty.clone()]);
+                let ret = self.validate_result_combinator_callback(method, callback_ty, &ok_ty, Some(&expected), span);
+                let ResolvedType::Generic(name, args) = ret else {
+                    return ResolvedType::Generic("Result".to_string(), vec![ResolvedType::Unknown, err_ty]);
+                };
+                if collection_type_id(name.as_str()) == Some(CollectionTypeId::Result) && args.len() == 2 {
+                    return ResolvedType::Generic(name, args);
+                }
+                ResolvedType::Generic("Result".to_string(), vec![ResolvedType::Unknown, err_ty])
+            }
+            result_methods::ResultMethodId::OrElse => {
+                let expected = ResolvedType::Generic("Result".to_string(), vec![ok_ty.clone(), ResolvedType::Unknown]);
+                let ret = self.validate_result_combinator_callback(method, callback_ty, &err_ty, Some(&expected), span);
+                let ResolvedType::Generic(name, args) = ret else {
+                    return ResolvedType::Generic("Result".to_string(), vec![ok_ty, ResolvedType::Unknown]);
+                };
+                if collection_type_id(name.as_str()) == Some(CollectionTypeId::Result) && args.len() == 2 {
+                    return ResolvedType::Generic(name, args);
+                }
+                ResolvedType::Generic("Result".to_string(), vec![ok_ty, ResolvedType::Unknown])
+            }
+            result_methods::ResultMethodId::Inspect => {
+                self.validate_result_combinator_callback(method, callback_ty, &ok_ty, Some(&ResolvedType::Unit), span);
+                ResolvedType::Generic("Result".to_string(), vec![ok_ty, err_ty])
+            }
+            result_methods::ResultMethodId::InspectErr => {
+                self.validate_result_combinator_callback(method, callback_ty, &err_ty, Some(&ResolvedType::Unit), span);
+                ResolvedType::Generic("Result".to_string(), vec![ok_ty, err_ty])
+            }
+        }
+    }
+
     /// Bind `list.repeat(...)` arguments to the helper's fixed `value` and `count` parameters.
     ///
     /// This mirrors ordinary fixed-parameter call binding closely enough for named arguments while keeping unpacking
@@ -2438,6 +2580,21 @@ impl TypeChecker {
                 }
                 None => {}
             }
+        }
+
+        if let ResolvedType::Generic(name, type_args) = &base_ty
+            && collection_type_id(name.as_str()) == Some(CollectionTypeId::Result)
+            && type_args.len() == 2
+            && Self::result_combinator_name(method)
+        {
+            return self.check_result_combinator_method(
+                type_args[0].clone(),
+                type_args[1].clone(),
+                method,
+                args,
+                &arg_types,
+                span,
+            );
         }
 
         // FIXME: Too many levels of nesting here.
