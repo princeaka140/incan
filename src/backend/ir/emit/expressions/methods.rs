@@ -18,10 +18,12 @@ use incan_core::interop::RustCollectionFamily;
 use incan_core::lang::surface::result_methods::{self, ResultMethodId};
 
 mod collection_methods;
+mod fast_paths;
 mod iterator_methods;
 mod string_methods;
 
 use collection_methods::emit_collection_method;
+use fast_paths::emit_registered_method_fast_path;
 use iterator_methods::emit_iterator_method;
 use string_methods::emit_string_method;
 
@@ -241,12 +243,22 @@ impl<'a> IrEmitter<'a> {
         base_use_site: ValueUseSite<'_>,
         result_target_ty: Option<&IrType>,
     ) -> Result<Vec<TokenStream>, EmitError> {
+        let receiver_target_ty = match result_target_ty {
+            Some(IrType::Result(ok_ty, _)) => Some(ok_ty.as_ref()),
+            other => other,
+        };
         let specialized_signature =
-            result_target_ty.and_then(|ty| self.specialized_method_signature_for_receiver(ty, method));
-        let specialized_call_signature = callable_signature.and_then(|signature| {
-            result_target_ty.and_then(|ty| Self::specialize_signature_by_receiver_args(signature, ty))
+            receiver_target_ty.and_then(|ty| self.specialized_method_signature_for_receiver(ty, method));
+        let result_specialized_call_signature = callable_signature.and_then(|signature| {
+            result_target_ty.and_then(|ty| Self::specialize_signature_by_result_target(signature, ty))
         });
-        let callable_signature = specialized_call_signature.as_ref().or(callable_signature);
+        let receiver_specialized_call_signature = callable_signature.and_then(|signature| {
+            receiver_target_ty.and_then(|ty| Self::specialize_signature_by_receiver_args(signature, ty))
+        });
+        let callable_signature = result_specialized_call_signature
+            .as_ref()
+            .or(receiver_specialized_call_signature.as_ref())
+            .or(callable_signature);
         let receiver_signature = self
             .method_signature_for_receiver(&receiver.ty, method)
             .or(specialized_signature.as_ref());
@@ -749,6 +761,9 @@ impl<'a> IrEmitter<'a> {
         let r0 = self.emit_expr(receiver)?;
         let info = ReceiverInfo::new(&receiver.ty, r0);
         let r = &info.r;
+        if let Some(call) = emit_registered_method_fast_path(self, receiver, method, args, r)? {
+            return Ok(call);
+        }
         if Self::is_generator_receiver(receiver) && method == "filter" && args.len() == 1 {
             let predicate = self.emit_expr(&args[0].expr)?;
             return Ok(quote! {
@@ -885,11 +900,12 @@ impl<'a> IrEmitter<'a> {
             IrExprKind::Var { ref_kind, .. } => Some(*ref_kind),
             _ => None,
         };
+        let has_incan_method_signature = self.method_signature_for_receiver(&receiver.ty, method).is_some();
         let preserve_lookup_arg_shape = matches!(arg_policy, MethodCallArgPolicy::PreserveShape)
             || rust_collection_family_for_ir_type(&receiver.ty)
                 .is_some_and(|family| family.preserves_lookup_arg_shape(method));
         let use_site = if receiver_ref_kind != Some(VarRefKind::ExternalRustName)
-            && self.is_incan_owned_nominal_receiver(&receiver.ty)
+            && (has_incan_method_signature || self.is_incan_owned_nominal_receiver(&receiver.ty))
         {
             ValueUseSite::IncanCallArg {
                 target_ty: None,
