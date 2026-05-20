@@ -1,10 +1,8 @@
 # Models
 
-A `model` is Incan's **data-first** type: you declare typed fields, and you get a predictable data shape that works well
-for configs, DTOs, and serialization.
+A `model` is Incan's **data-first** type: you declare typed fields, and you get a predictable data shape that works well for configs, DTOs, and serialization.
 
-If you're deciding between `model` and `class`, start with the [Models & classes overview](index.md). This page focuses
-on how models behave once you've chosen them.
+If you're deciding between `model` and `class`, start with the [Models & classes overview](index.md). This page focuses on how models behave once you've chosen them.
 
 ## Quick start
 
@@ -44,8 +42,7 @@ def main() -> None:
     - **metadata**: additional information about a field (e.g., a description or an alias)
 
 ??? info "Coming from Rust?"
-    Both `model` and `class` compile to Rust `struct`s + `impl`s. A `model` is semantically "this is data";
-    a `class` is "this is an object with behavior".
+    Both `model` and `class` compile to Rust `struct`s + `impl`s. A `model` is semantically "this is data"; a `class` is "this is an object with behavior".
 
     - `def m(self)` corresponds to an immutable receiver (roughly like `&self`)
     - `def m(mut self)` corresponds to a mutable receiver (roughly like `&mut self`)
@@ -110,13 +107,11 @@ When a field has an alias, you may use that alias in three places:
 - constructor keys: `Account(type="premium")`
 - destructuring patterns: `Account(type="premium") => ...`
 
-This lets you keep a safe canonical identifier (`type_`) while still matching external schemas (`"type"`). Only aliases
-that are identifier/keyword-shaped can be used in code.
+This lets you keep a safe canonical identifier (`type_`) while still matching external schemas (`"type"`). Only aliases that are identifier/keyword-shaped can be used in code.
 
 ### Aliases are strings, not identifiers
 
-Aliases are **wire keys**, so they can be any string (including non-identifier values like `"1"`). Aliases participate in
-wire mapping (e.g. JSON) and reflection.
+Aliases are **wire keys**, so they can be any string (including non-identifier values like `"1"`). Aliases participate in wire mapping (e.g. JSON) and reflection.
 
 In **code**, only identifier/keyword tokens are accepted in these three positions:
 
@@ -124,8 +119,7 @@ In **code**, only identifier/keyword tokens are accepted in these three position
 - constructor named arguments: `Type(<name>=...)`
 - destructuring pattern keys: `Type(<name>=pat)`
 
-So non-identifier aliases can't be written in code. In those cases, use the **canonical field name** in code and keep the
-alias for wire mapping and reflection.
+So non-identifier aliases can't be written in code. In those cases, use the **canonical field name** in code and keep the alias for wire mapping and reflection.
 
 ```incan
 from std.serde import json
@@ -143,11 +137,9 @@ def demo(w: WeirdWireKeys) -> int:
 ```
 
 ??? info "What counts as a code-spellable alias?"
-    A code-spellable alias is one you can write in the three code positions above because it *looks like* an identifier
-    (e.g. `"todays_date"`) or a keyword that Incan allows in those positions (e.g. `"type"`).
+    A code-spellable alias is one you can write in the three code positions above because it *looks like* an identifier (e.g. `"todays_date"`) or a keyword that Incan allows in those positions (e.g. `"type"`).
 
-    Other aliases are valid wire keys but not valid code names (e.g. `"1"`, `"created at"`). Use the canonical field name
-    in code; the alias is used for wire mapping and reflection.
+    Other aliases are valid wire keys but not valid code names (e.g. `"1"`, `"created at"`). Use the canonical field name in code; the alias is used for wire mapping and reflection.
 
 ### Alias constraints (to avoid ambiguity)
 
@@ -156,8 +148,7 @@ Within a model:
 - aliases must be **non-empty** and contain at least one non-whitespace character
 - aliases must be **unique**
 - aliases must not collide with any canonical field name
-- aliases must not collide with any **visible member name** on the model (fields/methods, including built-in helpers and
-  members introduced by derives/traits)
+- aliases must not collide with any **visible member name** on the model (fields/methods, including built-in helpers and members introduced by derives/traits)
 - aliases are matched by **exact string equality** (no Unicode normalization, no case-folding)
 - leading/trailing whitespace is allowed and **significant** (so `"id"` and `" id "` are different wire keys)
 
@@ -190,8 +181,7 @@ def area(p: Point) -> int:
     return p.x * p.y
 ```
 
-If a field has an alias, you may use either the canonical name or the alias for member access (when the alias is
-identifier/keyword-shaped). The canonical name always works.
+If a field has an alias, you may use either the canonical name or the alias for member access (when the alias is identifier/keyword-shaped). The canonical name always works.
 
 If you need behavior, you can still define methods on a model (often pure helpers):
 
@@ -238,8 +228,7 @@ See: [Classes: Static methods](classes.md#static-methods-staticmethod) for full 
 
 With `@derive(json)`, a model serializes/deserializes as a JSON object.
 
-If a field has an alias, that alias is used as the JSON key (wire name). This lets you keep schema-safe canonical field
-names in code while still matching external payloads.
+If a field has an alias, that alias is used as the JSON key (wire name). This lets you keep schema-safe canonical field names in code while still matching external payloads.
 
 See: [Derives: Serialization (Reference)](../../reference/derives/serialization.md).
 
@@ -251,8 +240,7 @@ If you derive `Validate` on a model, you opt into validated construction:
 - you construct via `TypeName.new(...) -> Result[TypeName, E]`
 - raw construction via `TypeName(...)` is a compile-time error
 
-This is the "data shape + invariant" pattern: the type stays easy to pass around, but construction becomes explicit and
-fallible so invariants can't be bypassed by accident.
+This is the "data shape + invariant" pattern: the type stays easy to pass around, but construction becomes explicit and fallible so invariants can't be bypassed by accident.
 
 See: [Derives: Validation (Reference)](../../reference/derives/validation.md).
 
@@ -285,5 +273,4 @@ See: [Reflection (Reference)](../../reference/reflection.md)
 
 - **Expecting positional construction**: model constructors are keyword-only.
 - **Using `class` for schema mapping**: field metadata/aliases are model-only.
-- **Expecting aliases to rename fields everywhere**: aliases are for specific key positions and wire mapping; the
-  canonical name remains the stable identifier in code.
+- **Expecting aliases to rename fields everywhere**: aliases are for specific key positions and wire mapping; the canonical name remains the stable identifier in code.

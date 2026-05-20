@@ -54,8 +54,7 @@ This RFC covers **language-level** testing primitives only:
 - `module tests:` inline test blocks
 - `std.testing`-gated resolution rules for test-only constructs
 
-Runner/CLI behavior (discovery, fixtures, parametrization, markers, parallelism, timeouts, reporting) is defined in
-**RFC 019**.
+Runner/CLI behavior (discovery, fixtures, parametrization, markers, parallelism, timeouts, reporting) is defined in **RFC 019**.
 
 If you are implementing this RFC, start with the conformance checklist near the end and the reference-level rules above, then implement in dependency order.
 
@@ -67,8 +66,7 @@ Testing utilities are normal functions/decorators imported from the `std.testing
 from std.testing import assert_eq, assert_true, assert_false, fail
 ```
 
-This RFC only specifies how these names are *resolved* (gated behind `std.testing`) and how `assert` maps to the `std.testing.assert_*` surface. Execution semantics for fixtures, parametrization, markers, and CLI options are defined in
-RFC 019.
+This RFC only specifies how these names are *resolved* (gated behind `std.testing`) and how `assert` maps to the `std.testing.assert_*` surface. Execution semantics for fixtures, parametrization, markers, and CLI options are defined in RFC 019.
 
 ### Assertions: `assert ...` (keyword)
 
@@ -96,13 +94,11 @@ Rationale (brief):
 
 The `std.testing` module remains available for explicit imports, and richer APIs.
 
-Note: this RFC specifies **assertion messages** (e.g. `assert x > 0, "x must be positive"`) and requires the underlying `std.testing.assert_*` helpers to accept an optional `msg`. This is not fully supported in current Incan; it is a required
-part of implementing this RFC.
+Note: this RFC specifies **assertion messages** (e.g. `assert x > 0, "x must be positive"`) and requires the underlying `std.testing.assert_*` helpers to accept an optional `msg`. This is not fully supported in current Incan; it is a required part of implementing this RFC.
 
 #### Common `assert` patterns (guide-level, Python-inspired)
 
-`assert` accepts any expression that type-checks to `bool`. In practice, users will write assertions across a handful of
-common shapes.
+`assert` accepts any expression that type-checks to `bool`. In practice, users will write assertions across a handful of common shapes.
 
 Equality / inequality (special-cased to `assert_eq` / `assert_ne`):
 
@@ -188,13 +184,11 @@ assert result is Err(_)
 
 Binding notes (important semantic commitment):
 
-- `assert x is Some(v)` may introduce a binding (here: `v`) for the **remainder of the current block scope**, as if the
-compiler had emitted `let v = ...` at that point.
+- `assert x is Some(v)` may introduce a binding (here: `v`) for the **remainder of the current block scope**, as if the compiler had emitted `let v = ...` at that point.
 - In RFC 018, only the following binding patterns are supported in `assert`:
     - `Some(name)` and `Ok(name)` / `Err(name)` where `name` is a single identifier, OR
     - the wildcard `_` (no binding).
-- Nested patterns, multiple bindings, and guards are out of scope for this RFC (they may be added later if/when the
-general pattern-matching system is specified).
+- Nested patterns, multiple bindings, and guards are out of scope for this RFC (they may be added later if/when the general pattern-matching system is specified).
 
 "Contains" / membership style checks:
 
@@ -296,10 +290,8 @@ Message presence:
 
 Minimum diagnostics guarantee:
 
-- On failure, assertion output must include the optional message (if provided) and enough detail to diagnose the failing
-condition.
-- For equality/inequality assertions (`assert a == b` / `assert a != b`), the minimum guarantee is that the output
-identifies the failed comparison kind and includes the optional message when one is provided.
+- On failure, assertion output must include the optional message (if provided) and enough detail to diagnose the failing condition.
+- For equality/inequality assertions (`assert a == b` / `assert a != b`), the minimum guarantee is that the output identifies the failed comparison kind and includes the optional message when one is provided.
 
 Runtime error model:
 
@@ -309,8 +301,7 @@ Runtime error model:
 
 #### Runtime error types (normative; scope for this RFC)
 
-This RFC uses the term **runtime error** to mean a panic-style failure that aborts execution (in contrast to
-`Result`-returning errors that are explicitly handled with `?` and pattern matching).
+This RFC uses the term **runtime error** to mean a panic-style failure that aborts execution (in contrast to `Result`-returning errors that are explicitly handled with `?` and pattern matching).
 
 Rules:
 
@@ -319,8 +310,7 @@ Rules:
     - User-defined errors should use `Result`/`Option` (Incan's primary error-handling model).
 - Subtyping among runtime error types is **optional**:
     - If the implementation supports runtime error subtyping, `assert ... raises BaseType` must match subtypes.
-    - If not, implementations MUST - at minimum - match the exact runtime error type named by `ErrorType` (as already
-      specified in the raises rules below).
+    - If not, implementations MUST - at minimum - match the exact runtime error type named by `ErrorType` (as already specified in the raises rules below).
 
 #### Exhaustive mapping to `std.testing.assert_*` helpers (required behavior)
 
@@ -368,13 +358,10 @@ Let the optional message be `msg` when present (i.e. `assert <expr>, msg`).
 - If the assert statement is of the form `assert opt is None`, lower to `std.testing.assert_is_none(opt, msg?)`
 - If the assert statement is of the form `assert res is Ok(v)`, lower to `let v = std.testing.assert_is_ok(res, msg?)`
 - If the assert statement is of the form `assert res is Err(e)`, lower to `let e = std.testing.assert_is_err(res, msg?)`
-- If the assert statement is of the form `assert call() raises ErrorType`, lower to
-  `std.testing.assert_raises[ErrorType](lambda: call(), msg?)`.
+- If the assert statement is of the form `assert call() raises ErrorType`, lower to `std.testing.assert_raises[ErrorType](lambda: call(), msg?)`.
 - Otherwise, lower to `std.testing.assert(<expr>, msg?)`
 
-Note: the "lowers to" wording describes the required behavior and message propagation. Implementations may choose to lower
-`assert` to a compiler intrinsic and have `std.testing.assert_*` call into that intrinsic, as long as the user-visible
-semantics match this mapping.
+Note: the "lowers to" wording describes the required behavior and message propagation. Implementations may choose to lower `assert` to a compiler intrinsic and have `std.testing.assert_*` call into that intrinsic, as long as the user-visible semantics match this mapping.
 
 The `std.testing` module is **not** required at runtime for `assert`; the mapping is semantic, and `std.testing.assert_*` must mirror the intrinsic behavior.
 
@@ -402,15 +389,11 @@ Allowed `Result` patterns:
 Restrictions:
 
 - No nested patterns (e.g. `Some(Ok(x))`) and no multiple bindings in a single `assert`.
-- The bound name is introduced in the *current* scope exactly as if the compiler had emitted `let <ident> = ...` at the
-assertion site; it is in scope for subsequent statements in the same block.
-- The bound name has the inner type of the matched value (e.g. `T` for `Option[T]`, `T`/`E` for `Result[T, E]`), and the
-assertion does not otherwise narrow the type of the tested expression.
-- Shadowing: if the bound identifier already exists in the current lexical block, the assertion is a compile-time error.
-Users should pick a new name or bind in an inner block to avoid ambiguity.
+- The bound name is introduced in the *current* scope exactly as if the compiler had emitted `let <ident> = ...` at the assertion site; it is in scope for subsequent statements in the same block.
+- The bound name has the inner type of the matched value (e.g. `T` for `Option[T]`, `T`/`E` for `Result[T, E]`), and the assertion does not otherwise narrow the type of the tested expression.
+- Shadowing: if the bound identifier already exists in the current lexical block, the assertion is a compile-time error. Users should pick a new name or bind in an inner block to avoid ambiguity.
 
-Guidance (non-normative): avoid using `assert` as control flow in production code. Prefer explicit pattern matching or
-`assert_is_*` helpers when unwrapping `Option`/`Result` values.
+Guidance (non-normative): avoid using `assert` as control flow in production code. Prefer explicit pattern matching or `assert_is_*` helpers when unwrapping `Option`/`Result` values.
 
 #### Raises semantics (reference rules)
 
@@ -421,14 +404,12 @@ This is a convenience for asserting that a call fails by *raising* a runtime err
 - "Raises" refers to a runtime error/panic-style failure (the same category of failure used for failed assertions).
 - It does **not** refer to `Result`-returning APIs; for results, use `assert res is Err(e)` / `assert_is_err`.
 - Block-style "raises" assertions are out of scope; use `std.testing.assert_raises` for multi-statement checks.
-- Matching: `ErrorType` matches that exact type or any of its subtypes.
-If an implementation lacks subtype information, it MUST at minimum match the exact type.
+- Matching: `ErrorType` matches that exact type or any of its subtypes. If an implementation lacks subtype information, it MUST at minimum match the exact type.
 - Async "raises" is out of scope for this RFC.
 
 ### Inline test module context (reference rules)
 
-`module tests:` introduces a test-only scope inside a production source file. The compiler must treat this block as
-strip-able in non-test compilation modes.
+`module tests:` introduces a test-only scope inside a production source file. The compiler must treat this block as strip-able in non-test compilation modes.
 
 Rules:
 
@@ -463,11 +444,9 @@ The inline test module:
 Visibility rules (normative):
 
 - Names declared in the enclosing module (including private names not marked `pub`) are visible inside `module tests:`.
-- This is **lexical visibility**, not an implicit import: the test block can reference any name that is in scope at
-the file level, as if the test block were nested code in the same file.
+- This is **lexical visibility**, not an implicit import: the test block can reference any name that is in scope at the file level, as if the test block were nested code in the same file.
 - Names declared inside `module tests:` (functions, imports, bindings) are **not** visible outside the test block.
-- The test block does not introduce a separate module namespace for the purpose of `pub` visibility; it is purely a
-scoped block that can be stripped.
+- The test block does not introduce a separate module namespace for the purpose of `pub` visibility; it is purely a scoped block that can be stripped.
 
 This RFC does **not** define a general-purpose module system beyond existing file/module semantics; `module tests:` inside a file is specifically a scoped block that can be stripped in non-test compilation modes.
 
@@ -479,8 +458,7 @@ This RFC does **not** define a general-purpose module system beyond existing fil
 
 ## Alternatives considered
 
-- **Top-level `@test` next to production functions**: rejected; it pollutes the production namespace and makes it hard
-to keep test-only imports/helpers contained.
+- **Top-level `@test` next to production functions**: rejected; it pollutes the production namespace and makes it hard to keep test-only imports/helpers contained.
 - **Magic language keywords for tests/fixtures**: rejected; harms tooling and contradicts the "stdlib-gated" principle.
 - **Compile-time-only assertions**: rejected; `assert` is intended for always-on runtime invariants.
 

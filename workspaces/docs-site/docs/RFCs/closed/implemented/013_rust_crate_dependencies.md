@@ -1,21 +1,25 @@
 # RFC 013: Rust Crate Dependencies
 
-**Status:** Implemented  
-**Created:** 2025-12-16  
-**Issue:** [#72](https://github.com/dannys-code-corner/incan/issues/72)
-**Author(s):** Danny Meijer (@danny-meijer)  
-**Supersedes:** Parts of RFC 005 (Cargo integration section)  
-**Related:** RFC 015 (project lifecycle + `incan.toml`), RFC 020 (Cargo offline/locked policy)
+- **Status:** Implemented
+- **Created:** 2025-12-16
+- **Author(s):** Danny Meijer (@dannymeijer)
+- **Supersedes:** Parts of RFC 005 (Cargo integration section)
+- **Related:**
+    - RFC 005 (Rust interop)
+    - RFC 015 (project lifecycle + `incan.toml`)
+    - RFC 020 (Cargo offline/locked policy)
+- **Issue:** [#72](https://github.com/dannys-code-corner/incan/issues/72)
+- **RFC PR:** —
+- **Written against:** v0.1
+- **Shipped in:** v0.2
 
 ## Summary
 
-Define a comprehensive system for specifying Rust crate dependencies in Incan, including inline version annotations,
-project configuration (`incan.toml`), and lock files for reproducibility.
+Define a comprehensive system for specifying Rust crate dependencies in Incan, including inline version annotations, project configuration (`incan.toml`), and lock files for reproducibility.
 
 ## Motivation
 
-Incan compiles to Rust, meaning access to the Rust ecosystem is a core value proposition.
-The current implementation (v0.1) has limitations:
+Incan compiles to Rust, meaning access to the Rust ecosystem is a core value proposition. The current implementation (v0.1) has limitations:
 
 1. **Known-good crates work** - common crates like `serde`, `tokio` have curated defaults
 2. **Unknown crates error** - no user-facing way to specify version/features
@@ -63,8 +67,7 @@ import rust::exact_crate @ "=1.2.3" # exactly 1.2.3
 
 #### 1.1.1 Version requirement syntax (normative)
 
-All version requirement strings in this RFC use **Cargo’s SemVer requirement syntax** (the same syntax accepted by Cargo
-in `Cargo.toml`).
+All version requirement strings in this RFC use **Cargo’s SemVer requirement syntax** (the same syntax accepted by Cargo in `Cargo.toml`).
 
 - Shorthand `"1.2.3"` is equivalent to caret `"^1.2.3"`.
 - Comma-separated constraints (e.g. `">=1.30, <2.0"`) are allowed.
@@ -100,16 +103,14 @@ import_list     = IDENT { "," IDENT } ;
 
 Normative note (interop alignment):
 
-- A `rust::...` import may include a module path (e.g. `rust::chrono::naive::date`), but dependency resolution is always
-  keyed by the **crate segment** (the first identifier after `rust::`), per RFC 005’s crate/path decomposition rules.
+- A `rust::...` import may include a module path (e.g. `rust::chrono::naive::date`), but dependency resolution is always keyed by the **crate segment** (the first identifier after `rust::`), per RFC 005’s crate/path decomposition rules.
 - Therefore, `@ "..."` / `with [...]` always apply to that crate segment, not to the module path.
 
 ---
 
 ## 2. Project Configuration (`incan.toml`)
 
-We propose to add a central configuration file for Incan projects called `incan.toml`. The `incan.toml` format is heavily
-inspired by Python's `pyproject.toml` - familiar, readable, and declarative.
+We propose to add a central configuration file for Incan projects called `incan.toml`. The `incan.toml` format is heavily inspired by Python's `pyproject.toml` - familiar, readable, and declarative.
 
 Schema note (normative):
 
@@ -118,17 +119,13 @@ Schema note (normative):
     - **`[dev-dependencies]`** for test-only dependencies (bench tooling is a future extension)
 - Compatibility/aliasing (for this RFC):
     - `[rust.dependencies]` / `[rust.dev-dependencies]` are accepted as aliases for `[dependencies]` / `[dev-dependencies]`.
-    - It is a configuration error to specify both the canonical and alias tables for the same kind (e.g. both
-      `[dependencies]` and `[rust.dependencies]`).
-- RFC 015 defines the broader project lifecycle and treats `incan.toml` as the project metadata root; it must not define
-  a separate, conflicting table for dependency policy.
+    - It is a configuration error to specify both the canonical and alias tables for the same kind (e.g. both `[dependencies]` and `[rust.dependencies]`).
+- RFC 015 defines the broader project lifecycle and treats `incan.toml` as the project metadata root; it must not define a separate, conflicting table for dependency policy.
 
 Clarity note (future-proofing):
 
-- In this RFC, `[dependencies]` / `[dev-dependencies]` refer specifically to **Cargo/Rust crates** used by `rust::...`
-  imports.
-- Incan does not yet define a separate “Incan package registry” concept. If a future packaging story is added, it must
-  not overload these tables in a way that breaks Rust dependency determinism.
+- In this RFC, `[dependencies]` / `[dev-dependencies]` refer specifically to **Cargo/Rust crates** used by `rust::...` imports.
+- Incan does not yet define a separate “Incan package registry” concept. If a future packaging story is added, it must not overload these tables in a way that breaks Rust dependency determinism.
 
 Recommended practice (strongly suggested):
 
@@ -209,11 +206,8 @@ full = ["json", "fancy_logging"]
 Note:
 
 - `[project.features]` is part of the general Incan project model (RFC 015). It is included here for context only.
-- This RFC does **not** specify an automatic mapping between `[project.features]` and Rust crate features/optional
-  dependencies. Any such mapping should be specified by RFC 015 (or a dedicated follow-up), so that Cargo feature
-  semantics are not implicitly re-invented in multiple places.
-- `[build]` is also part of the general Incan project model (RFC 015). This RFC references it only for completeness in
-  the “full example”; dependency resolution and `incan.lock` do not depend on build settings like `rust-edition`.
+- This RFC does **not** specify an automatic mapping between `[project.features]` and Rust crate features/optional dependencies. Any such mapping should be specified by RFC 015 (or a dedicated follow-up), so that Cargo feature semantics are not implicitly re-invented in multiple places.
+- `[build]` is also part of the general Incan project model (RFC 015). This RFC references it only for completeness in the “full example”; dependency resolution and `incan.lock` do not depend on build settings like `rust-edition`.
 
 ### 2.3 Section Reference
 
@@ -253,11 +247,9 @@ crate_h = { version = "1.0", default-features = false, features = ["only-this"] 
 
 ### 2.4.1 Dependency renames (`package = "..."`) (normative)
 
-Cargo supports depending on a package whose crates.io/package name differs from the identifier you want to use in code via
-dependency renaming (`package = "..."`).
+Cargo supports depending on a package whose crates.io/package name differs from the identifier you want to use in code via dependency renaming (`package = "..."`).
 
-In Incan, `rust::...` imports refer to the **dependency key** (the Rust identifier form), which is also the name used in
-generated Rust code.
+In Incan, `rust::...` imports refer to the **dependency key** (the Rust identifier form), which is also the name used in generated Rust code.
 
 Supported (for this RFC):
 
@@ -271,14 +263,11 @@ serde_json = { package = "serde-json", version = "1.0" }
 
 - The `rust::` import must use the dependency key (`rust::serde_json` in the example above).
 - If `package` is specified, it must be a non-empty string.
-- It is a configuration error to specify two dependencies that would resolve to the same `(source, package)` pair with
-  different `crate_name` keys.
+- It is a configuration error to specify two dependencies that would resolve to the same `(source, package)` pair with different `crate_name` keys.
 
 Note:
 
-- For the common case where the crates.io package name differs only by `-` vs `_`, Cargo/crates.io name normalization is
-  typically sufficient. Using `package = "..."` is still allowed (and may improve clarity), and is required for
-  non-trivial mismatches beyond `-`/`_` normalization.
+- For the common case where the crates.io package name differs only by `-` vs `_`, Cargo/crates.io name normalization is typically sufficient. Using `package = "..."` is still allowed (and may improve clarity), and is required for non-trivial mismatches beyond `-`/`_` normalization.
 
 Out of scope (for this RFC):
 
@@ -294,8 +283,7 @@ Incan supports Cargo-style optional dependencies via the standard Cargo fields:
 Enablement model (for this RFC):
 
 - This RFC does **not** define an Incan-native feature system that automatically toggles Cargo optional dependencies.
-- Optional dependency enablement is controlled by **Cargo features** (Cargo semantics), surfaced to users via RFC 020’s
-  `--cargo-args` escape hatch (e.g. `--cargo-args "--features" "fancy_logging"`), and/or a future RFC 015 mapping.
+- Optional dependency enablement is controlled by **Cargo features** (Cargo semantics), surfaced to users via RFC 020’s `--cargo-args` escape hatch (e.g. `--cargo-args "--features" "fancy_logging"`), and/or a future RFC 015 mapping.
 
 `[dependencies.optional]` table:
 
@@ -304,10 +292,8 @@ Enablement model (for this RFC):
 
 Cargo project generation (normative):
 
-- Optional dependencies in `incan.toml` must be emitted as Cargo optional dependencies in the generated `Cargo.toml`
-  (`optional = true` on the dependency entry).
-- The generated Cargo package must expose a Cargo feature with the **same name as the dependency key** that enables the
-  optional dependency (using Cargo’s namespaced dependency feature form):
+- Optional dependencies in `incan.toml` must be emitted as Cargo optional dependencies in the generated `Cargo.toml` (`optional = true` on the dependency entry).
+- The generated Cargo package must expose a Cargo feature with the **same name as the dependency key** that enables the optional dependency (using Cargo’s namespaced dependency feature form):
 
 ```toml
 [dependencies]
@@ -317,18 +303,15 @@ fancy_logging = { version = "0.3", optional = true }
 fancy_logging = ["dep:fancy_logging"]
 ```
 
-This avoids relying on “implicit optional-dependency features,” which are edition/toolchain-sensitive and can create
-confusing behavior.
+This avoids relying on “implicit optional-dependency features,” which are edition/toolchain-sensitive and can create confusing behavior.
 
 Locking note (normative):
 
-- Because Cargo feature selection can change the resolved dependency graph, strict builds (`--locked` / `--frozen`) must
-  ensure that the **feature selection used for the build/test** matches the one that was used to generate `incan.lock`.
+- Because Cargo feature selection can change the resolved dependency graph, strict builds (`--locked` / `--frozen`) must ensure that the **feature selection used for the build/test** matches the one that was used to generate `incan.lock`.
 
 Diagnostics expectation (normative):
 
-- If user code imports an optional dependency but the required Cargo feature(s) are not enabled for the build/test, the
-  toolchain must produce a targeted diagnostic explaining:
+- If user code imports an optional dependency but the required Cargo feature(s) are not enabled for the build/test, the toolchain must produce a targeted diagnostic explaining:
     - the crate is optional,
     - which Cargo feature name is expected (typically the dependency key),
     - and how to enable it (e.g. via RFC 020’s `--cargo-args "--features" "<name>"`, or via a future RFC 015 mapping).
@@ -339,15 +322,12 @@ Incan supports Rust **development dependencies** for test tooling that must not 
 
 #### 2.5.1 What they are
 
-- `[dev-dependencies]` has the **same specification formats** as `[dependencies]` (version string shorthand or table form
-  with `version`, `features`, `git`, `path`, `default-features`, etc.).
-- A crate listed in `[dev-dependencies]` is **dev-only**: it is available only in test contexts and must not be
-  used by production code.
+- `[dev-dependencies]` has the **same specification formats** as `[dependencies]` (version string shorthand or table form with `version`, `features`, `git`, `path`, `default-features`, etc.).
+- A crate listed in `[dev-dependencies]` is **dev-only**: it is available only in test contexts and must not be used by production code.
 
 #### 2.5.2 Where dev-dependencies may be used (import gating)
 
-Crates that are only present in `[dev-dependencies]` may be imported via `rust::...` **only** from test contexts as
-defined by the testing RFCs:
+Crates that are only present in `[dev-dependencies]` may be imported via `rust::...` **only** from test contexts as defined by the testing RFCs:
 
 - test files under `tests/` (`test_*.incn` / `*_test.incn`) (RFC 019), and
 - inline `module tests:` blocks inside production source files (RFC 018/019).
@@ -404,8 +384,7 @@ Design goal:
 
 - `incan.lock` lives at the **project root** and is intended to be **committed** to version control.
 - `incan.lock` is the **source of truth** for what “locked” means in Incan.
-- In locked modes, tooling must never silently change dependency resolution; any drift must be a hard error with a clear
-  instruction to run `incan lock`.
+- In locked modes, tooling must never silently change dependency resolution; any drift must be a hard error with a clear instruction to run `incan lock`.
 
 #### 3.0.1 Project mode vs single-file mode (normative)
 
@@ -420,12 +399,10 @@ Rules:
 
 - In **project mode**, strict flags (`--locked` / `--frozen`, RFC 020) are enforced against `incan.lock`:
     - `incan.lock` must exist and be up to date (fingerprint matches), otherwise error with "run `incan lock`".
-    - Cargo is invoked with the corresponding Cargo policy flags (RFC 020), and `Cargo.lock` is materialized from
-      `incan.lock` into the generated project directory.
+    - Cargo is invoked with the corresponding Cargo policy flags (RFC 020), and `Cargo.lock` is materialized from `incan.lock` into the generated project directory.
 - In **single-file mode**, there is no `incan.lock`:
     - Rust dependencies may only be specified via inline annotations (`@ "..."` / `with [...]`) and/or known-good defaults.
-    - Strict flags (`--locked` / `--frozen`) are interpreted at the Cargo layer only (RFC 020) using the generated
-      project’s `Cargo.lock` as the lock artifact.
+    - Strict flags (`--locked` / `--frozen`) are interpreted at the Cargo layer only (RFC 020) using the generated project’s `Cargo.lock` as the lock artifact.
 
 ### 3.1 Format
 
@@ -484,8 +461,7 @@ Notes:
 
 ### 3.1.1 Canonicalization and `deps-fingerprint` (normative)
 
-The canonicalization rules for the embedded Cargo lock payload, and the full `deps-fingerprint` algorithm, are specified
-in **Appendix A**.
+The canonicalization rules for the embedded Cargo lock payload, and the full `deps-fingerprint` algorithm, are specified in **Appendix A**.
 
 ### 3.2 CLI Commands
 
@@ -500,10 +476,8 @@ Note (normative):
 
 Default behavior (normative; uv-inspired):
 
-- If `incan.lock` is missing and no strict policy flag is set, `incan build` / `incan test` may resolve dependencies and
-  create `incan.lock` automatically (first-run convenience).
-- If a strict policy flag is set (`--locked` or `--frozen` per RFC 020), `incan.lock` must already exist; otherwise the
-  command must fail with a targeted diagnostic instructing the user to run `incan lock`.
+- If `incan.lock` is missing and no strict policy flag is set, `incan build` / `incan test` may resolve dependencies and create `incan.lock` automatically (first-run convenience).
+- If a strict policy flag is set (`--locked` or `--frozen` per RFC 020), `incan.lock` must already exist; otherwise the command must fail with a targeted diagnostic instructing the user to run `incan lock`.
 
 > Note: Cargo-level offline/locked enforcement flags (`--offline/--locked/--frozen`) are specified by RFC 020. This RFC
 > defines the Incan-level dependency and lockfile model; Cargo policy is a separate concern.
@@ -518,19 +492,16 @@ These flags have a **combined** effect:
 Rules:
 
 - `incan build/test --locked`:
-    - **Incan lock layer**: `incan.lock` must exist and be **up to date** (its `deps-fingerprint` matches the current
-      effective dependency inputs). If not, fail with “run `incan lock`”.
+    - **Incan lock layer**: `incan.lock` must exist and be **up to date** (its `deps-fingerprint` matches the current effective dependency inputs). If not, fail with “run `incan lock`”.
     - **Cargo policy layer**: Incan must invoke Cargo with `--locked`.
 - `incan build/test --frozen`:
     - **Incan lock layer**: same as `--locked` (lock must exist and be up to date).
-    - **Cargo policy layer**: Incan must invoke Cargo with `--frozen` (equivalent to Cargo `--offline --locked`, per RFC
-      020).
+    - **Cargo policy layer**: Incan must invoke Cargo with `--frozen` (equivalent to Cargo `--offline --locked`, per RFC 020).
 
 Rationale:
 
 - `--frozen` is the **strictest** mode and should not allow stale locks.
-- The difference between `--locked` and `--frozen` is the **offline** constraint at the Cargo layer, not whether lock
-  freshness is checked.
+- The difference between `--locked` and `--frozen` is the **offline** constraint at the Cargo layer, not whether lock freshness is checked.
 
 #### 3.2.2 `incan lock` and restricted environments (normative direction)
 
@@ -538,24 +509,18 @@ Rationale:
 
 Normative requirements:
 
-- Strict flags `--locked/--frozen` are not meaningful for `incan lock` and should be rejected with a clear diagnostic
-  (including when set via CI environment variables).
+- Strict flags `--locked/--frozen` are not meaningful for `incan lock` and should be rejected with a clear diagnostic (including when set via CI environment variables).
 - `incan lock` must accept the same Cargo policy sources as other commands (RFC 020 precedence rules):
     - CLI flags: `--offline` and `--cargo-args ...`
     - Environment variables: `INCAN_OFFLINE=1` and `INCAN_CARGO_ARGS="..."`
   
-- `incan lock` must forward the relevant policy to the underlying Cargo operations it uses for resolution (e.g. it must
-  honor `--offline` when set).
-- In offline mode, lock generation must fail if the required dependency sources are not already available locally (Cargo
-  cache, mirror, or vendor directory). This is expected behavior and should surface Cargo’s error with a short prefix
-  clarifying that offline policy caused the failure.
+- `incan lock` must forward the relevant policy to the underlying Cargo operations it uses for resolution (e.g. it must honor `--offline` when set).
+- In offline mode, lock generation must fail if the required dependency sources are not already available locally (Cargo cache, mirror, or vendor directory). This is expected behavior and should surface Cargo’s error with a short prefix clarifying that offline policy caused the failure.
 
 Recommended workflows (informative; enterprise-friendly):
 
-- **Cache priming**: run `incan lock` once without offline policy in a controlled environment to populate registries/git
-  caches, then use `--frozen` in CI.
-- **Mirrors**: use Cargo registry mirrors / sparse index configuration via `.cargo/config.toml` (generated-project
-  compatible) to avoid public network dependencies.
+- **Cache priming**: run `incan lock` once without offline policy in a controlled environment to populate registries/git caches, then use `--frozen` in CI.
+- **Mirrors**: use Cargo registry mirrors / sparse index configuration via `.cargo/config.toml` (generated-project compatible) to avoid public network dependencies.
 - **Vendoring**: prefer a `cargo vendor`-style workflow for fully air-gapped builds (future extension; RFC 020).
 
 ### 3.3 Relationship to `Cargo.lock` (normative)
@@ -565,13 +530,11 @@ Cargo uses `Cargo.lock` as its lockfile.
 Rules:
 
 - `incan.lock` is the project’s committed lockfile and contains an embedded `Cargo.lock` payload.
-- `Cargo.lock` files written into generated Rust output directories are **derived artifacts** produced by extracting the
-  embedded payload from `incan.lock`.
+- `Cargo.lock` files written into generated Rust output directories are **derived artifacts** produced by extracting the embedded payload from `incan.lock`.
 - In locked modes, Incan must ensure the embedded lock matches the current dependency inputs:
     - `--locked`: lock must exist and be **up to date** (fingerprint matches); otherwise fail and instruct `incan lock`.
     - `--frozen`: same as `--locked` for freshness; additionally enforce Cargo frozen/offline policy (RFC 020).
-- Cargo policy flags still apply to the underlying Cargo invocation (RFC 020), but the authoritative lock artifact is
-  `incan.lock` at the project root.
+- Cargo policy flags still apply to the underlying Cargo invocation (RFC 020), but the authoritative lock artifact is `incan.lock` at the project root.
 
 ### 3.4 Design inspiration (informative): Hatch vs uv
 
@@ -597,8 +560,7 @@ Note (normative):
 
 ### 4.1 Known-Good Defaults
 
-The compiler maintains a curated list of common crates with tested version/feature combinations.
-These serve as **convenient defaults**, not restrictions:
+The compiler maintains a curated list of common crates with tested version/feature combinations. These serve as **convenient defaults**, not restrictions:
 
 ```rust
 // In compiler (simplified)
@@ -620,12 +582,10 @@ Normative governance:
 
 User-facing contract (strongly recommended):
 
-- The toolchain must publish a documented list of “known-good crates” (and their default version/features) per release
-  (e.g. in release notes and/or a dedicated docs page).
+- The toolchain must publish a documented list of “known-good crates” (and their default version/features) per release (e.g. in release notes and/or a dedicated docs page).
 - Changes to known-good defaults are allowed, but they must be treated as compatibility-relevant:
     - security updates may require updating defaults,
-    - and toolchain upgrades may require re-locking for projects that rely on defaults (because defaults participate in
-      `deps-fingerprint`).
+    - and toolchain upgrades may require re-locking for projects that rely on defaults (because defaults participate in `deps-fingerprint`).
 - If a project wants stability across toolchain upgrades, it should pin versions/features explicitly in `incan.toml`.
 
 ### 4.2 Conflict Resolution
@@ -656,14 +616,12 @@ The resolver collects all crate requirements across a project before invoking Ca
 
 Definitions:
 
-- A **crate spec** is the resolved dependency request for a single Rust crate (version requirement, source, features,
-  and `default-features` policy).
+- A **crate spec** is the resolved dependency request for a single Rust crate (version requirement, source, features, and `default-features` policy).
 
 Rules:
 
 - **Single source of truth when `incan.toml` exists**:
-    - If a crate is specified in `incan.toml` (either `[dependencies]` or `[dev-dependencies]`, including their `rust.*`
-      aliases), inline annotations for that crate are a **compile-time error**.
+    - If a crate is specified in `incan.toml` (either `[dependencies]` or `[dev-dependencies]`, including their `rust.*` aliases), inline annotations for that crate are a **compile-time error**.
     - Rationale: avoid scattering dependency policy throughout code; keep audits and reviews centralized.
 - **Multiple inline sites (no `incan.toml` entry)**:
     - Version requirement strings must match exactly across all inline sites for a given crate (for this RFC).
@@ -671,18 +629,14 @@ Rules:
     - Features are **unioned** across all sites.
     - `default-features` must be consistent across all sites; mismatches are an error.
 
-Future extensions may loosen the “inline is error when `incan.toml` exists” rule (e.g. allow inline *feature adds* only),
-but within the scope of this RFC, it should remain strict.
+Future extensions may loosen the “inline is error when `incan.toml` exists” rule (e.g. allow inline *feature adds* only), but within the scope of this RFC, it should remain strict.
 
 ### 4.4 Source policy (security + reproducibility) (normative direction)
 
 Git and path dependencies are supported, but reproducible builds require additional constraints:
 
-- In locked/CI mode, git dependencies must resolve to an **exact commit** (e.g. `rev = "..."` or an immutable tag that is
-  recorded as a commit in `incan.lock`). Floating `branch = "..."` is not reproducible and should be rejected in strict
-  mode.
-- Path dependencies are inherently machine-local unless vendored; locked/CI mode may reject them unless explicitly
-  allowlisted by configuration (future RFC 020 / RFC 015 integration).
+- In locked/CI mode, git dependencies must resolve to an **exact commit** (e.g. `rev = "..."` or an immutable tag that is recorded as a commit in `incan.lock`). Floating `branch = "..."` is not reproducible and should be rejected in strict mode.
+- Path dependencies are inherently machine-local unless vendored; locked/CI mode may reject them unless explicitly allowlisted by configuration (future RFC 020 / RFC 015 integration).
 
 ---
 
@@ -861,8 +815,7 @@ Fix: keep only one key for this package/source, or use a different package/sourc
 
 Optional escape hatch (non-default; not required by this RFC):
 
-- If an “unpinned dependencies” mode exists for local prototyping, it must be **explicitly enabled** (e.g. via a CLI
-  flag) and must produce a visibly non-reproducible build warning suitable for CI policy enforcement.
+- If an “unpinned dependencies” mode exists for local prototyping, it must be **explicitly enabled** (e.g. via a CLI flag) and must produce a visibly non-reproducible build warning suitable for CI policy enforcement.
 
 ### Phase 2: Features Support
 
@@ -981,8 +934,7 @@ from rust::chrono @ "0.4" with ["serde", "clock"] import DateTime, Utc
 
 1. **Workspace support**: Should `incan.toml` support workspaces with multiple packages?
 2. **Private registries**: How to authenticate with private Cargo registries?
-3. **Auto-update tooling**: Dependency update behavior (an `incan update` command) is intentionally out of scope for this
-   RFC and should be specified in a dedicated future RFC (likely alongside project lifecycle tooling).
+3. **Auto-update tooling**: Dependency update behavior (an `incan update` command) is intentionally out of scope for this RFC and should be specified in a dedicated future RFC (likely alongside project lifecycle tooling).
 
 ---
 
@@ -1002,8 +954,7 @@ from rust::chrono @ "0.4" with ["serde", "clock"] import DateTime, Utc
 - [x] Parser: `with ["features"]` syntax
 - [x] Resolution: features are unioned across sites per merging rules
 - [x] Codegen: emit features in generated Cargo metadata
-- [x] Error: unknown feature — **deferred to Cargo**: feature validation requires querying crate registry
-  metadata, which Incan does not currently do. Invalid features are caught by Cargo during the build step.
+- [x] Error: unknown feature — **deferred to Cargo**: feature validation requires querying crate registry metadata, which Incan does not currently do. Invalid features are caught by Cargo during the build step.
 
 ### Implementing Phase 3: Project Configuration
 
@@ -1016,18 +967,15 @@ from rust::chrono @ "0.4" with ["serde", "clock"] import DateTime, Utc
 - [x] CLI: `incan init` command
 - [x] Resolution: apply precedence rules (incan.toml > inline > known-good > error)
 - [x] Known-good defaults: apply only when there is no `incan.toml` spec (canonical or alias) and no inline annotation
-- [x] Rule: if a crate is specified in incan.toml (canonical or alias tables), inline annotations for that crate are a
-  compile-time error
-- [x] Dev-dependencies gating: crates that are only in `[dev-dependencies]` are only allowed in test contexts (RFC 018/019)
-  and error in production code
+- [x] Rule: if a crate is specified in incan.toml (canonical or alias tables), inline annotations for that crate are a compile-time error
+- [x] Dev-dependencies gating: crates that are only in `[dev-dependencies]` are only allowed in test contexts (RFC 018/019) and error in production code
 - [x] Error: version/source/default-features conflicts across sites (per §4.2/§4.3)
 - [x] Multiple inline sites (no incan.toml entry): enforce this RFC’s merge rules:
     - [x] version requirement strings must match exactly across inline sites
     - [x] source must match across inline sites (inline imports are always registry)
     - [x] `default-features` must match across inline sites (inline imports always use default)
     - [x] features are unioned across inline sites
-- [x] Diagnostics: conflicting specs and resolution failures produce actionable errors that point to all relevant locations
-  (e.g. inline import site(s) + `incan.toml`), and suggest the concrete fix
+- [x] Diagnostics: conflicting specs and resolution failures produce actionable errors that point to all relevant locations (e.g. inline import site(s) + `incan.toml`), and suggest the concrete fix
 
 ### Implementing Phase 4: Lock File
 
@@ -1035,14 +983,11 @@ from rust::chrono @ "0.4" with ["serde", "clock"] import DateTime, Utc
 - [x] `incan.lock` format (container + embedded Cargo.lock payload):
     - [x] `[incan]` metadata (`format`, `incan-version`, `generated`, `deps-fingerprint`, cargo feature selection)
     - [x] `[cargo].lock` verbatim embedded `Cargo.lock` payload
-- [x] `deps-fingerprint` computation fingerprints dependency inputs and Cargo feature selection, and excludes non-dependency
-  settings like `[build].rust-edition`
-- [x] Default behavior: if `incan.lock` is missing and no strict policy flag is set, builds/tests may generate it
-  (first-run convenience)
+- [x] `deps-fingerprint` computation fingerprints dependency inputs and Cargo feature selection, and excludes non-dependency settings like `[build].rust-edition`
+- [x] Default behavior: if `incan.lock` is missing and no strict policy flag is set, builds/tests may generate it (first-run convenience)
 - [x] Strict behavior (uv-style; see RFC 020 for flags):
     - [x] `--locked`: `incan.lock` must exist and be up-to-date (fingerprint matches) or fail with “run incan lock”
-    - [x] `--frozen`: `incan.lock` must exist and be up-to-date (fingerprint matches); use it and also enforce Cargo
-      `--frozen` policy (offline + locked)
+    - [x] `--frozen`: `incan.lock` must exist and be up-to-date (fingerprint matches); use it and also enforce Cargo `--frozen` policy (offline + locked)
 - [x] Diagnostics: missing/out-of-date lock failures are targeted and instruct the user to run `incan lock`
 - [x] Materialization: embedded `Cargo.lock` is written as `Cargo.lock` into generated build/test Cargo project directories
 - [x] Ensure dev-dependencies are represented so `incan test --locked` is meaningful
@@ -1057,10 +1002,8 @@ from rust::chrono @ "0.4" with ["serde", "clock"] import DateTime, Utc
 ### Error messages (section 5)
 
 - [x] 5.1: Unknown crate without version
-- [x] 5.2: Feature not found -- **deferred to Cargo** (requires registry queries; invalid features are caught by Cargo
-  during the build step)
-- [x] 5.3: Version not found -- **deferred to Cargo** (requires registry queries; invalid versions are caught by Cargo
-  during the build step)
+- [x] 5.2: Feature not found -- **deferred to Cargo** (requires registry queries; invalid features are caught by Cargo during the build step)
+- [x] 5.3: Version not found -- **deferred to Cargo** (requires registry queries; invalid versions are caught by Cargo during the build step)
 - [x] 5.4: Lock out of date (includes fingerprint details and explanation)
 - [x] 5.5: Optional dependency not enabled
 - [x] 5.6: Inline annotation forbidden (crate in incan.toml)
@@ -1080,8 +1023,7 @@ To avoid cross-platform churn and ensure deterministic `incan.lock` files:
 - The embedded `[cargo].lock` payload must be stored as **UTF-8** text.
 - Newlines must be normalized to `\n` (LF). `\r\n` must not appear in the embedded payload.
 - The payload must end with a trailing newline.
-- The payload content is otherwise treated as an opaque string (verbatim Cargo output); Incan does not attempt to
-  reformat or “pretty print” it.
+- The payload content is otherwise treated as an opaque string (verbatim Cargo output); Incan does not attempt to reformat or “pretty print” it.
 
 ### A.2 `deps-fingerprint` algorithm
 
@@ -1116,8 +1058,7 @@ Canonical representation:
 
 `specs`:
 
-- Build a list of entries `Spec { crate_name, kind, source, version_req, default_features, features, optional, package }`
-  where:
+- Build a list of entries `Spec { crate_name, kind, source, version_req, default_features, features, optional, package }` where:
     - `crate_name` is the dependency key used by `rust::crate_name` imports (Rust identifier form).
     - `kind` is `"normal"` or `"dev"`.
     - `source` is one of:
@@ -1136,14 +1077,11 @@ Canonical representation:
     - `optional` is a boolean (missing defaults to `false`).
     - `package` is either absent or a string (see §2.4.1 for renames).
 - Sort the list by `(kind, crate_name)` where `kind` sorts `"normal"` before `"dev"`.
-- Serialize the canonical object into canonical JSON (UTF-8, no whitespace, deterministic key order) and compute:
-  `deps-fingerprint = "sha256:" + hex(sha256(json_bytes))`.
+- Serialize the canonical object into canonical JSON (UTF-8, no whitespace, deterministic key order) and compute: `deps-fingerprint = "sha256:" + hex(sha256(json_bytes))`.
 
 Stability note:
 
-- Because the fingerprint is computed from the **effective** crate specs, toolchain-provided known-good defaults become
-  part of the fingerprint for projects that rely on defaults. Changing the toolchain may therefore require re-locking,
-  which is expected when you are not fully pinned by explicit `incan.toml` configuration.
+- Because the fingerprint is computed from the **effective** crate specs, toolchain-provided known-good defaults become part of the fingerprint for projects that rely on defaults. Changing the toolchain may therefore require re-locking, which is expected when you are not fully pinned by explicit `incan.toml` configuration.
 
 ---
 
@@ -1151,8 +1089,7 @@ Stability note:
 
 This design is inspired by the developer experience of modern Python tooling:
 
-- Tools like Hatch focus on project workflow and environment management; reproducible installs are often achieved via a
-  separate lock mechanism or plugin ecosystem.
+- Tools like Hatch focus on project workflow and environment management; reproducible installs are often achieved via a separate lock mechanism or plugin ecosystem.
 - Tools like Astral’s `uv` popularized a clear separation between:
     - “lock” (resolve and write a lockfile), and
     - “sync/run” (use the lockfile in strict modes).
@@ -1160,7 +1097,6 @@ This design is inspired by the developer experience of modern Python tooling:
 Incan adopts the same mental model:
 
 - `incan lock` produces/refreshes `incan.lock`
-- `--locked` / `--frozen` (RFC 020) control the Cargo policy mode (`--locked` vs `--frozen`).
-  In both cases, Incan requires a project-root `incan.lock` that is present and up to date (fingerprint matches).
+- `--locked` / `--frozen` (RFC 020) control the Cargo policy mode (`--locked` vs `--frozen`). In both cases, Incan requires a project-root `incan.lock` that is present and up to date (fingerprint matches).
 
 RFC 015 provides more details on the project model and lifecycle.

@@ -1,7 +1,6 @@
 # 12. Newtypes (stronger types)
 
-A **newtype** is a “zero-cost wrapper” around another type. It lets you create **distinct types** that the compiler won’t
-let you accidentally mix up.
+A **newtype** is a “zero-cost wrapper” around another type. It lets you create **distinct types** that the compiler won’t let you accidentally mix up.
 
 ## Why newtypes?
 
@@ -31,8 +30,7 @@ def main() -> None:
 ```
 
 !!! tip "Coming from Python?"
-    This is similar to creating a tiny wrapper class just to avoid mixing up values, but with less runtime overhead and
-    better static checking.
+    This is similar to creating a tiny wrapper class just to avoid mixing up values, but with less runtime overhead and better static checking.
 
 ## Constructing and unwrapping
 
@@ -50,8 +48,7 @@ type Attempts = newtype int:
         return Ok(Attempts(n))
 ```
 
-If a newtype defines `from_underlying`, then calling it like `Attempts(5)` performs **checked construction**
-(it calls `Attempts.from_underlying(5)` and raises a validation error if it returns `Err(...)`).
+If a newtype defines `from_underlying`, then calling it like `Attempts(5)` performs **checked construction** (it calls `Attempts.from_underlying(5)` and raises a validation error if it returns `Err(...)`).
 
 The compiler also applies that checked construction at typed boundary sites where the destination type is already known:
 

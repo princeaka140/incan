@@ -24,12 +24,9 @@ Start with a `class` when:
 - you need **mutable state** (`mut self`) or **inheritance** (`extends`)
 
 !!! tip "Coming from Python?"
-    A `model` is closest to a Python `@dataclass` (or a Pydantic `Basemodel`) in spirit: you declare fields, and you get
-    a constructor automatically.
+    A `model` is closest to a Python `@dataclass` (or a Pydantic `Basemodel`) in spirit: you declare fields, and you get a constructor automatically.
 
-    In Incan you **don’t** write an `__init__`/init method. You construct values with keyword arguments matching the declared
-    fields (as shown below), and you can give fields default values in the declaration when needed. For validation or alternate 
-    construction, write a separate helper/factory function (often returning `Result`).
+    In Incan you **don’t** write an `__init__`/init method. You construct values with keyword arguments matching the declared fields (as shown below), and you can give fields default values in the declaration when needed. For validation or alternate construction, write a separate helper/factory function (often returning `Result`).
 
 ## A `model` (data-first)
 
@@ -64,8 +61,7 @@ def main() -> None:
 
 #### Schema-safe field names (aliases) are model-only
 
-When a wire format uses keywords like `"type"` or `"from"`, keep a safe canonical name in code and map the wire key with
-an alias.
+When a wire format uses keywords like `"type"` or `"from"`, keep a safe canonical name in code and map the wire key with an alias.
 
 ```incan
 from std.serde import json
@@ -79,8 +75,7 @@ def demo(a: Account) -> str:
     return a.type_
 ```
 
-Classes do **not** support field metadata/aliases. If you need schema mapping, use a `model` (or embed a model in a class).
-For the full alias behavior (including where aliases can be written in code), see: [Models](../../explanation/models_and_classes/models.md).
+Classes do **not** support field metadata/aliases. If you need schema mapping, use a `model` (or embed a model in a class). For the full alias behavior (including where aliases can be written in code), see: [Models](../../explanation/models_and_classes/models.md).
 
 ## A `class` (behavior-first)
 
@@ -132,9 +127,7 @@ def main() -> None:
 
 ## Where to learn more
 
-This chapter covers the basics. For the full feature surface—model schema mapping (aliases/metadata), derives
-(serialization/validation), reflection (`__fields__()`), and class features like inheritance and trait composition—see the
-guides and reference pages below.
+This chapter covers the basics. For the full feature surface—model schema mapping (aliases/metadata), derives (serialization/validation), reflection (`__fields__()`), and class features like inheritance and trait composition—see the guides and reference pages below.
 
 - Full guide and decision table: [Models & Classes](../../explanation/models_and_classes/index.md)
 - Models (deep dive): [Models](../../explanation/models_and_classes/models.md)

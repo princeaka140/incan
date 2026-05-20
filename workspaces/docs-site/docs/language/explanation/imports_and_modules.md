@@ -14,15 +14,13 @@ For details and tasks, use the split pages:
 - Directories can act as modules; use `mod.incn` as the “main file” for a directory module when needed.
 - Common types and functions are available without imports via the prelude (see the reference page for the full list).
 - The **standard library** lives under the `std` namespace (e.g. `from std.web import route`). The compiler activates features automatically based on which `std.*` modules you import.
-- Some language keywords are **import-activated** (soft keywords), for example `async` / `await` after importing
-  `std.async` (details in the reference page).
+- Some language keywords are **import-activated** (soft keywords), for example `async` / `await` after importing `std.async` (details in the reference page).
 - Modules may also export **shared runtime state** via `pub static`, which importing modules access as the same live storage cell rather than as a copied value.
 
 <!-- TODO: Add a link to the standard library sections once we create them -->
 
 !!! info "Coming from Python?"
-    In Python, packages are driven by directory structure and `__init__.py`.  
-    In Incan, directories are recognized automatically; you can use `mod.incn` when you need a directory/module
+    In Python, packages are driven by directory structure and `__init__.py`. In Incan, directories are recognized automatically; you can use `mod.incn` when you need a directory/module
     entrypoint.
 
 ## How module discovery works (conceptual)
@@ -36,13 +34,11 @@ When you import a local module, the compiler:
 
 ### Coming from Rust
 
-In Rust, you typically need explicit module declarations before importing. In Incan, you generally “just import” and the
-compiler discovers modules automatically.
+In Rust, you typically need explicit module declarations before importing. In Incan, you generally “just import” and the compiler discovers modules automatically.
 
 ### Coming from Python
 
-In Python, packages are driven by directory structure and `__init__.py`. In Incan, directories are recognized as modules
-without `__init__.py`; use `mod.incn` when you need a directory entrypoint.
+In Python, packages are driven by directory structure and `__init__.py`. In Incan, directories are recognized as modules without `__init__.py`; use `mod.incn` when you need a directory entrypoint.
 
 ## Where to go next
 

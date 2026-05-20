@@ -25,9 +25,7 @@ This RFC intentionally avoids overlap with:
 
 - **RFC 013** (dependency specification + `incan.lock`): this RFC does *not* define `incan.lock` or `incan lock/update`.
 - **RFC 015** (project metadata + lifecycle): this RFC does *not* define `incan.toml` schema or project layout/init/new.
-- **RFC 019** (test runner + CLI): this RFC does *not* define
-test discovery/selection/reporting flags; it only adds Cargo policy flags that constrain the underlying Cargo subprocess invocations used by
-  `incan test`.
+- **RFC 019** (test runner + CLI): this RFC does *not* define test discovery/selection/reporting flags; it only adds Cargo policy flags that constrain the underlying Cargo subprocess invocations used by `incan test`.
 
 ## Motivation
 
@@ -65,8 +63,7 @@ Users can work around this by `cd`-ing into generated Cargo projects and running
 - **Policy**: constraints applied to underlying Cargo invocation(s) (offline/locked/frozen, plus advanced cargo args).
 - **Lockfile**:
     - **Cargo lockfile**: `Cargo.lock` used by Cargo to pin transitive crates.
-    - **Incan lockfile** (future): `incan.lock` (RFC 013 direction), a
-      source-of-truth lock that can materialize Cargo state.
+    - **Incan lockfile** (future): `incan.lock` (RFC 013 direction), a source-of-truth lock that can materialize Cargo state.
 
 ## Guide-level explanation (how users think about it)
 
@@ -134,8 +131,7 @@ Flags:
 
 - `--offline`
     - Semantics: underlying Cargo invocations must not access the network.
-    - Implementation requirement: pass Cargo’s offline semantics through
-      (e.g. `cargo ... --offline` and/or `CARGO_NET_OFFLINE=true`).
+    - Implementation requirement: pass Cargo’s offline semantics through (e.g. `cargo ... --offline` and/or `CARGO_NET_OFFLINE=true`).
 - `--locked`
     - Semantics: builds/tests must use an existing lockfile and must not modify it.
     - Implementation requirement: pass Cargo’s `--locked` to Cargo invocations.
@@ -143,8 +139,7 @@ Flags:
     - Semantics: equivalent to `--offline --locked` (mirrors Cargo’s “no network and no lockfile updates”).
     - If implemented, `--frozen` implies both `--offline` and `--locked` and they are treated as set.
 - `--cargo-args <ARGS...>`
-    - Semantics: additional arguments forwarded to the underlying Cargo
-      invocation **after** policy flags, as an escape hatch.
+    - Semantics: additional arguments forwarded to the underlying Cargo invocation **after** policy flags, as an escape hatch.
     - Safety: `incan` should not attempt to validate arbitrary Cargo args beyond basic well-formedness.
 
 ### Configuration + precedence (normative)
@@ -200,8 +195,7 @@ Notes:
 Out of scope (to avoid overlap with RFC 015):
 
 - A project-level config key in `incan.toml` that sets default Cargo policy.
-    If and when we add it, it must follow RFC 015’s `incan.toml` approach and
-    must not conflict with the CLI/env precedence defined above.
+    If and when we add it, it must follow RFC 015’s `incan.toml` approach and must not conflict with the CLI/env precedence defined above.
 
 ### Generated project locations and persistence (normative)
 
@@ -219,8 +213,7 @@ The `<name>` for a generated project is computed as follows:
    - Example: `target/incan/`**`my_app`**`/`
 
 2. **Single-file mode** (no `incan.toml`):
-   - Use the file's path relative to the current working directory, with path
-     separators replaced by `_` and the `.incn` extension removed.
+   - Use the file's path relative to the current working directory, with path separators replaced by `_` and the `.incn` extension removed.
    - Examples (the `<name>` portion is shown in **bold**):
      - `incan run src/main.incn` → `target/incan/`**`src_main`**`/`
      - `incan run examples/main.incn` → `target/incan/`**`examples_main`**`/`
@@ -247,9 +240,7 @@ Rationale: preserving `Cargo.lock` is required for meaningful `--locked` behavio
 Future compatibility note (RFC 013):
 
 - RFC 013 introduces a project-root `incan.lock` as the source-of-truth lockfile, embedding a Cargo lock payload.
-- If and when RFC 013 is implemented, `Cargo.lock` files inside generated
-project directories become **derived artifacts** materialized from
-  `incan.lock` and may be overwritten deterministically.
+- If and when RFC 013 is implemented, `Cargo.lock` files inside generated project directories become **derived artifacts** materialized from `incan.lock` and may be overwritten deterministically.
 - In that world, the “preserved `Cargo.lock`” rule is superseded by RFC 013’s lock materialization contract.
 
 #### Lockfile requirements for policy modes
@@ -262,9 +253,7 @@ When `--locked` or `--frozen` is set:
         - explain that `incan.lock` is required for strict modes
         - instruct the user to run `incan lock`
         - point to the project root (`incan.toml` location)
-    - Incan must materialize the embedded Cargo lock payload from `incan.lock`
-      into `Cargo.lock` inside the generated project directory before invoking
-      Cargo.
+    - Incan must materialize the embedded Cargo lock payload from `incan.lock` into `Cargo.lock` inside the generated project directory before invoking Cargo.
 
 - **Single-file mode** (no `incan.toml`):
     - The authoritative lock artifact is `Cargo.lock` inside the generated project directory.
@@ -275,8 +264,7 @@ When `--locked` or `--frozen` is set:
 
 When `--offline` or `--frozen` is set:
 
-- If Cargo would require network access (registry index, git fetch, etc.), the
-command must fail and surface Cargo’s error.
+- If Cargo would require network access (registry index, git fetch, etc.), the command must fail and surface Cargo’s error.
 - Incan should add a short prefix that clarifies that this failure was expected under offline policy.
 
 ### Relationship to RFC 013 (`incan.lock`) (informative, non-normative)
@@ -286,8 +274,7 @@ RFC 013 proposes an Incan lockfile (`incan.lock`) as a reproducible source-of-tr
 This RFC does **not** define `incan.lock`. It only defines:
 
 - how `incan` forwards Cargo policy flags (`--offline/--locked/--frozen`)
-- how generated Cargo projects are treated (notably: `Cargo.lock` handling
-differs by project vs single-file mode; see above)
+- how generated Cargo projects are treated (notably: `Cargo.lock` handling differs by project vs single-file mode; see above)
 
 If and when RFC 013 is implemented, its `incan.lock` workflow must compose with this RFC’s guarantees. In particular, policy flags still constrain Cargo subprocesses, and generated-project persistence rules remain true unless superseded by a newer RFC.
 
@@ -295,8 +282,7 @@ In practice, that means:
 
 - The same CLI flags (`--offline/--locked/--frozen`) constrain Cargo subprocesses exactly as specified here.
 - RFC 013 additionally defines Incan-level lock freshness requirements for `incan.lock` under strict modes.
-- Generated-project lockfile handling may change from “preserve `Cargo.lock`”
-to “materialize `Cargo.lock` from `incan.lock`” once RFC 013 is implemented.
+- Generated-project lockfile handling may change from “preserve `Cargo.lock`” to “materialize `Cargo.lock` from `incan.lock`” once RFC 013 is implemented.
 
 ## Design details
 
@@ -334,8 +320,7 @@ The stable, recommended surface is `--offline/--locked/--frozen`.
 - **Environment variables only**:
     - Rejected: discoverability is worse; flags are the primary, user-facing contract (env vars remain useful for CI).
 - **Make offline/locked the default**:
-    - Rejected (for now): would be breaking for new users and for first-time
-      builds; revisit once `incan lock` and vendoring exist.
+    - Rejected (for now): would be breaking for new users and for first-time builds; revisit once `incan lock` and vendoring exist.
 
 ## Drawbacks
 
@@ -345,14 +330,10 @@ The stable, recommended surface is `--offline/--locked/--frozen`.
 
 ## Layers affected
 
-- **CLI / tooling**: must expose and propagate Cargo policy flags consistently
-across `incan build`, `incan run`, and `incan test`.
-- **Build orchestration**: must thread policy through all Cargo subprocess
-invocation paths rather than only selected commands.
-- **Generated project management**: must preserve the documented persistence
-and overwrite behavior for generated Cargo projects under `target/incan/**` and `target/incan_tests/**`.
-- **Docs / examples**: must explain offline, locked, and frozen behavior
-clearly enough that CI and restricted-environment users can reason about failure modes.
+- **CLI / tooling**: must expose and propagate Cargo policy flags consistently across `incan build`, `incan run`, and `incan test`.
+- **Build orchestration**: must thread policy through all Cargo subprocess invocation paths rather than only selected commands.
+- **Generated project management**: must preserve the documented persistence and overwrite behavior for generated Cargo projects under `target/incan/**` and `target/incan_tests/**`.
+- **Docs / examples**: must explain offline, locked, and frozen behavior clearly enough that CI and restricted-environment users can reason about failure modes.
 
 ## Implementation Plan
 

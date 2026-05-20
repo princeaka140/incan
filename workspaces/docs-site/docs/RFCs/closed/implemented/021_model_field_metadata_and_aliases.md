@@ -1,11 +1,15 @@
 # RFC 021: Model field metadata and schema-safe aliases
 
-## Status
-
-**Status:** Implemented  
-**Author(s):** Danny Meijer (@danny-meijer)  
-**Issue:** [#94](https://github.com/dannys-code-corner/incan/issues/94)
-**Related:** RFC 005 (Rust interop), RFC 017 (constrained types)
+- **Status:** Implemented
+- **Created:** —
+- **Author(s):** Danny Meijer (@dannymeijer)
+- **Related:**
+    - RFC 005 (Rust interop)
+    - RFC 017 (constrained types)
+- **Issue:** [#94](https://github.com/dannys-code-corner/incan/issues/94)
+- **RFC PR:** —
+- **Written against:** v0.1
+- **Shipped in:** v0.1
 
 ## Summary
 
@@ -17,8 +21,7 @@ Specifically, this RFC introduces:
 - **Alias sugar**: `name as "wire": T`
 - **Alias-aware name resolution**: member access (`obj.type`) and constructor arguments (`Type(type=...)`)
 - **Alias-aware destructuring**: pattern field names resolve via aliases (same rules as constructor arguments)
-- **Keyword compatibility**: keywords (e.g. `type`, `class`, `from`) are permitted after `.`, in named arguments, and in
-  destructuring pattern field names; elsewhere they remain reserved.
+- **Keyword compatibility**: keywords (e.g. `type`, `class`, `from`) are permitted after `.`, in named arguments, and in destructuring pattern field names; elsewhere they remain reserved.
 
 Syntax summary:
 
@@ -47,25 +50,19 @@ model Account:
 
 ## Motivation
 
-External schemas often use names that are reserved keywords in Incan (e.g. `type`, `class`, `from`). This makes it awkward
-to model wire formats without either renaming fields (sacrificing fidelity) or adopting non-idiomatic workarounds.
+External schemas often use names that are reserved keywords in Incan (e.g. `type`, `class`, `from`). This makes it awkward to model wire formats without either renaming fields (sacrificing fidelity) or adopting non-idiomatic workarounds.
 
-We want to preserve **schema fidelity** (the wire name stays `type`), keep **safe internal identifiers** (`type_`), and
-support **idiomatic access** in Incan (`obj.type`, `Type(type=...)`) even when the wire name is a keyword.
+We want to preserve **schema fidelity** (the wire name stays `type`), keep **safe internal identifiers** (`type_`), and support **idiomatic access** in Incan (`obj.type`, `Type(type=...)`) even when the wire name is a keyword.
 
-Beyond aliases, production models benefit from lightweight, self-describing **field metadata**. Following Python’s
-`pydantic.Field(...)` and `dataclasses.field(...)`, this RFC standardizes `description="..."` as a first-class metadata
-key so tools can surface documentation (IDE hover, generated docs) without changing compilation semantics.
+Beyond aliases, production models benefit from lightweight, self-describing **field metadata**. Following Python’s `pydantic.Field(...)` and `dataclasses.field(...)`, this RFC standardizes `description="..."` as a first-class metadata key so tools can surface documentation (IDE hover, generated docs) without changing compilation semantics.
 
-To keep the surface coherent and extensible, this RFC defines the **syntax and storage** for field metadata and
-standardizes only two keys in this RFC: `alias` and `description`.
+To keep the surface coherent and extensible, this RFC defines the **syntax and storage** for field metadata and standardizes only two keys in this RFC: `alias` and `description`.
 
 ## Non-goals
 
-- This RFC does not introduce a general-purpose `schema:` block for bulk mappings (out of scope for this RFC). This RFC
-  is limited to standardizing per-field metadata on field declarations.
+- This RFC does not introduce a general-purpose `schema:` block for bulk mappings (out of scope for this RFC). This RFC is limited to standardizing per-field metadata on field declarations.
 
-  Example of a possible future `schema:` block (non-normative; exact syntax/semantics are out of scope for this RFC):
+Example of a possible future `schema:` block (non-normative; exact syntax/semantics are out of scope for this RFC):
 
   ```incan
   model Account:
@@ -80,38 +77,27 @@ standardizes only two keys in this RFC: `alias` and `description`.
           from_:  alias="from",  description="Source system"
   ```
 
-- This RFC does not define a full pydantic-like “Field(...)" feature surface (constraints, validation semantics, examples,
-  etc.). It does create a **slot** for field metadata and standardizes `alias` and `description` with the possibility to
-  expand this in the future.
-- This RFC does not introduce **arbitrary** field metadata keys for adapter ecosystems (e.g. `spark.*`, `sql.*`,
-  proprietary namespaces). Only `alias="..."` and `description="..."` are standardized here; broader, namespaced metadata
-  is not part of the scope of this RFC.
-- This RFC does not move type constraints into field metadata. Type-level constraints belong to constrained types/newtypes
-  (see RFC 017).
-- This RFC does not apply field aliases/metadata to `class` declarations. Extending the feature to `class` (especially with
-  inheritance) is out-of-scope for this RFC and can be revisited if user demand emerges.
-- This RFC does not define protobuf schema/tag rules. Protobuf as a long-term primary interface is captured as a future
-  direction below, but the details are out of scope for this RFC.
+- This RFC does not define a full pydantic-like “Field(...)" feature surface (constraints, validation semantics, examples, etc.). It does create a **slot** for field metadata and standardizes `alias` and `description` with the possibility to expand this in the future.
+- This RFC does not introduce **arbitrary** field metadata keys for adapter ecosystems (e.g. `spark.*`, `sql.*`, proprietary namespaces). Only `alias="..."` and `description="..."` are standardized here; broader, namespaced metadata is not part of the scope of this RFC.
+- This RFC does not move type constraints into field metadata. Type-level constraints belong to constrained types/newtypes (see RFC 017).
+- This RFC does not apply field aliases/metadata to `class` declarations. Extending the feature to `class` (especially with inheritance) is out-of-scope for this RFC and can be revisited if user demand emerges.
+- This RFC does not define protobuf schema/tag rules. Protobuf as a long-term primary interface is captured as a future direction below, but the details are out of scope for this RFC.
 
 ## Future direction (out of scope for this RFC): protobuf-first model schema (proposal)
 
 Long-term, Incan intends to treat **protobuf** as a primary interface for typed APIs and service boundaries.
 
-This RFC’s goal is to ensure field aliasing/metadata is compatible with a proto-first future without committing to the full
-protobuf surface yet.
+This RFC’s goal is to ensure field aliasing/metadata is compatible with a proto-first future without committing to the full protobuf surface yet.
 
 Non-normative requirements (out of scope for this RFC):
 
-- **Stable field identity**: protobuf field numbers (“tags”) are the wire identity; they must be explicit and stable.
-  This avoids accidental breaking changes from field reordering.
+- **Stable field identity**: protobuf field numbers (“tags”) are the wire identity; they must be explicit and stable. This avoids accidental breaking changes from field reordering.
 - **Nested models**: nested `model` types should map to nested `message` types.
 - **Presence semantics**: define how `Option[T]` maps to proto3 `optional` / wrapper semantics.
-- **Naming + JSON mapping**: define the relationship between canonical names, aliases, proto field names, and ProtoJSON
-  field names (including casing defaults and migration knobs like “accept by name”).
+- **Naming + JSON mapping**: define the relationship between canonical names, aliases, proto field names, and ProtoJSON field names (including casing defaults and migration knobs like “accept by name”).
 - **Compatibility rules**: reserved tag ranges, rename-vs-retag rules, and diagnostics for collisions.
 
-This RFC does not define whether `alias` is treated as a universal “wire name” by default across formats
-(JSON/YAML/TOON/TOML/proto JSON), nor does it define format-scoped overrides.
+This RFC does not define whether `alias` is treated as a universal “wire name” by default across formats (JSON/YAML/TOON/TOML/proto JSON), nor does it define format-scoped overrides.
 
 ## Guide-level explanation (how users think about it)
 
@@ -125,8 +111,7 @@ model Account:
     from_ [alias="from"]: str
 ```
 
-You can then construct the type using the *wire names* (requires the parser changes described in "Keyword compatibility"
-below):
+You can then construct the type using the *wire names* (requires the parser changes described in "Keyword compatibility" below):
 
 ```incan
 def f() -> Account:
@@ -192,9 +177,7 @@ model Account:
 
 #### Syntax position rationale (why metadata is on the name)
 
-This RFC intentionally attaches both the metadata block and `as` sugar to the **field name**, not to the type, so it
-remains compatible with type-level bracket syntax (e.g. constrained primitives / generics) and stays unambiguous as the
-type system evolves (see RFC 017).
+This RFC intentionally attaches both the metadata block and `as` sugar to the **field name**, not to the type, so it remains compatible with type-level bracket syntax (e.g. constrained primitives / generics) and stays unambiguous as the type system evolves (see RFC 017).
 
 Preferred forms:
 
@@ -237,8 +220,7 @@ For this RFC, the following metadata keys are specified:
 Rules (this RFC):
 
 - Duplicate metadata keys are compile-time errors (e.g. `name [alias="a", alias="b"]: T` is invalid).
-- For the standardized keys in this RFC (`alias`, `description`), values must be **string literals**; non-string values
-  are compile-time errors.
+- For the standardized keys in this RFC (`alias`, `description`), values must be **string literals**; non-string values are compile-time errors.
 - Any other keys are compile-time errors in this RFC.
 
 #### Alias sugar (`as "..."`)
@@ -271,24 +253,14 @@ default = "=" expr ;
 
 - Each field has a **canonical name** (the identifier written before metadata).
 - A field may additionally declare an **alias** via `alias="..."` (or `as "..."` sugar).
-- Within a single type, aliases must be unique and must not collide with **any** canonical field name in the model
-  (not just the same field). For example, if a model has fields `type_` and `foo`, an alias of `"foo"` on `type_` is
-  an error because it collides with the canonical name of another field.
-- Aliases must not collide with any **method name** declared in the same `model`. This avoids ambiguous member access
-  (e.g. `obj.type` should never have to choose between a field and a method).
-- Collision checks apply to the full **visible member surface** of the model type (fields + methods) to ensure unambiguous
-  access.
-    - At minimum, this includes all user-declared methods plus any compiler-provided/builtin members and any
-      derive-introduced members that are part of Incan’s curated derive contract (RFC 005). Implementations must perform
-      this check at typecheck time based on the members that are known to exist in the current compilation configuration.
+- Within a single type, aliases must be unique and must not collide with **any** canonical field name in the model (not just the same field). For example, if a model has fields `type_` and `foo`, an alias of `"foo"` on `type_` is an error because it collides with the canonical name of another field.
+- Aliases must not collide with any **method name** declared in the same `model`. This avoids ambiguous member access (e.g. `obj.type` should never have to choose between a field and a method).
+- Collision checks apply to the full **visible member surface** of the model type (fields + methods) to ensure unambiguous access.
+    - At minimum, this includes all user-declared methods plus any compiler-provided/builtin members and any derive-introduced members that are part of Incan’s curated derive contract (RFC 005). Implementations must perform this check at typecheck time based on the members that are known to exist in the current compilation configuration.
 - If both `alias="..."` and `as "..."` are specified for the same field, it is a compile-time error.
 - Aliases must be non-empty string literals that contain at least one non-whitespace code point.
-- Aliases are **wire/schema keys**, not identifiers. Aliases may contain characters that are not legal in Incan identifiers
-  (e.g. `alias="1"`). Such aliases still work for wire mapping (serde/codegen) and reflection, but they cannot be used in
-  member access (`obj.<name>`), constructor named args (`Type(<name>=...)`), or destructuring pattern keys, because those
-  syntactic positions accept only `IDENT | KEYWORD` tokens. In those cases, users must use the canonical field name.
-- Alias matching uses exact string equality; no Unicode normalization or case-folding is performed. This keeps wire names
-  as byte-level identifiers and avoids silent behavior changes.
+- Aliases are **wire/schema keys**, not identifiers. Aliases may contain characters that are not legal in Incan identifiers (e.g. `alias="1"`). Such aliases still work for wire mapping (serde/codegen) and reflection, but they cannot be used in member access (`obj.<name>`), constructor named args (`Type(<name>=...)`), or destructuring pattern keys, because those syntactic positions accept only `IDENT | KEYWORD` tokens. In those cases, users must use the canonical field name.
+- Alias matching uses exact string equality; no Unicode normalization or case-folding is performed. This keeps wire names as byte-level identifiers and avoids silent behavior changes.
 
 #### Alias-aware field key resolution (`obj.x`, `Type(x=...)`, `Type(x=pat)`)
 
@@ -303,18 +275,14 @@ When typechecking a field key `x` in any of these positions:
 1. If `x` matches a declared **canonical field name**, resolve/bind to that field.
 2. Otherwise, if `x` matches a declared **alias**, resolve/bind to that field.
 3. Otherwise:
-   - for member access (`obj.x`): continue with normal member lookup (e.g. methods); if no member matches, report
-     “unknown member”.
+   - for member access (`obj.x`): continue with normal member lookup (e.g. methods); if no member matches, report “unknown member”.
    - for constructor calls / patterns: report “unknown field”.
 
 Diagnostics note:
 
-- When reporting “unknown field” for constructor calls / patterns, implementations should include the set of valid keys
-  (canonical field names + aliases that are usable as `IDENT | KEYWORD`) and, where feasible, a “did you mean …” suggestion
-  for close matches.
+- When reporting “unknown field” for constructor calls / patterns, implementations should include the set of valid keys (canonical field names + aliases that are usable as `IDENT | KEYWORD`) and, where feasible, a “did you mean …” suggestion for close matches.
 
-Within a single constructor call or destructuring pattern, it is a compile-time error to provide both the canonical name
-and its alias for the same field (duplicate field assignment).
+Within a single constructor call or destructuring pattern, it is a compile-time error to provide both the canonical name and its alias for the same field (duplicate field assignment).
 
 Example:
 
@@ -322,8 +290,7 @@ Example:
 Account(type="x", type_="y")  # error: same field provided twice
 ```
 
-Because alias/canonical collisions are rejected at definition time, this resolution is deterministic (a name cannot validly
-refer to multiple fields).
+Because alias/canonical collisions are rejected at definition time, this resolution is deterministic (a name cannot validly refer to multiple fields).
 
 Example (member access fallback):
 
@@ -337,8 +304,7 @@ model Example:
 # error at definition time: alias "len" collides with method name "len"
 ```
 
-Without such a collision, `obj.<name>` resolves to a field (canonical/alias) first; only if no field matches does it
-fall back to normal member lookup (e.g. methods).
+Without such a collision, `obj.<name>` resolves to a field (canonical/alias) first; only if no field matches does it fall back to normal member lookup (e.g. methods).
 
 #### Keyword compatibility
 
@@ -348,8 +314,7 @@ Because aliases may be keywords (e.g. `type`), the parser must allow **all** key
 - as the name of a named argument (`Type(type=...)`, `Foo(if=...)`, etc.)
 - as the name of a named field in destructuring patterns (see “Alias-aware field key resolution” above)
 
-This is the simpler grammar approach: rather than enumerating a subset of "safe" keywords, we allow any keyword in these
-positions. Resolution then follows the normal alias lookup rules—if there's no alias matching the keyword, it's an error.
+This is the simpler grammar approach: rather than enumerating a subset of "safe" keywords, we allow any keyword in these positions. Resolution then follows the normal alias lookup rules—if there's no alias matching the keyword, it's an error.
 
 EBNF (Extended Backus–Naur Form) helper productions:
 
@@ -363,9 +328,7 @@ Outside these three positions, keywords remain reserved.
 
 This RFC does **not** propose making keywords generally usable as identifiers elsewhere (e.g. `let type = 1` remains illegal).
 
-This RFC also does **not** add a "string key" syntax for model field access or constructor arguments. As a result, aliases
-like `alias="1"` are valid wire names, but cannot be used in `obj.1` / `Type(1=...)` syntax (they are not valid tokens in
-those positions).
+This RFC also does **not** add a "string key" syntax for model field access or constructor arguments. As a result, aliases like `alias="1"` are valid wire names, but cannot be used in `obj.1` / `Type(1=...)` syntax (they are not valid tokens in those positions).
 
 #### Serde integration
 
@@ -374,28 +337,19 @@ If a `model` derives `Serialize` and/or `Deserialize` (RFC 005), codegen must em
 - Rust field name = canonical Incan name (e.g. `type_`)
 - `#[serde(rename = "wire")]` for fields with `alias="wire"`
 
-If neither `Serialize` nor `Deserialize` is derived, aliases still participate in frontend name resolution (member access
-and named arguments), but do not affect Rust emission.
+If neither `Serialize` nor `Deserialize` is derived, aliases still participate in frontend name resolution (member access and named arguments), but do not affect Rust emission.
 
-This RFC does not define any model-level casing/rename policy (e.g. `rename_all`). Where serde attributes are emitted,
-field-level `alias` is the source of truth for the wire name.
+This RFC does not define any model-level casing/rename policy (e.g. `rename_all`). Where serde attributes are emitted, field-level `alias` is the source of truth for the wire name.
 
 ### Interaction with existing features
 
 - **Keywords**: keywords remain reserved in general; aliases can reuse them via the limited parsing + resolution rules above.
-- **Type constraints**: numeric/string constraints should use type-level constrained types / newtypes (RFC 017), not field
-  metadata keys like `gt=`. This keeps constraints in the “type” family and keeps field metadata focused on schema/wire
-  mapping and other future non-type metadata.
-- **Descriptions**: `description="..."` is inert (no semantic effect) and is exposed via reflection (`FieldInfo.description`).
-  IDEs and doc tooling may surface it (hover, completion details, generated docs), but compilation must not depend on it.
-  This RFC does not define schema-generation derives (e.g. JSON Schema / OpenAPI / proto docs).
-- **Pattern matching**: aliases participate in destructuring patterns, using the same name resolution rules as constructor
-  calls (canonical first, then alias).
-- **Spread/rest patterns**: if a feature exists that captures remaining fields into a dict (e.g. `**kwargs`), the captured
-  keys are canonical field names (not aliases).
+- **Type constraints**: numeric/string constraints should use type-level constrained types / newtypes (RFC 017), not field metadata keys like `gt=`. This keeps constraints in the “type” family and keeps field metadata focused on schema/wire mapping and other future non-type metadata.
+- **Descriptions**: `description="..."` is inert (no semantic effect) and is exposed via reflection (`FieldInfo.description`). IDEs and doc tooling may surface it (hover, completion details, generated docs), but compilation must not depend on it. This RFC does not define schema-generation derives (e.g. JSON Schema / OpenAPI / proto docs).
+- **Pattern matching**: aliases participate in destructuring patterns, using the same name resolution rules as constructor calls (canonical first, then alias).
+- **Spread/rest patterns**: if a feature exists that captures remaining fields into a dict (e.g. `**kwargs`), the captured keys are canonical field names (not aliases).
 - **Reflection**:
-    - `__fields__()` returns `List[FieldInfo]` (rich field info), instead of `List[str]` (just names). This is a
-      **breaking change**.
+    - `__fields__()` returns `List[FieldInfo]` (rich field info), instead of `List[str]` (just names). This is a **breaking change**.
     - Migration for the previous behavior: `[f.name for f in Model.__fields__()]`
 
 #### `FieldInfo`
@@ -404,15 +358,10 @@ field-level `alias` is the source of truth for the wire name.
 
 Implementation notes (Rust):
 
-**Things that were changed while implementing**: the generated Rust `__fields__()` returns a `FrozenList[FieldInfo]` backed
-by static data, the runtime `FieldInfo` value type uses frozen containers (`FrozenStr`, `FrozenDict`) for zero-allocation
-backing, and the reflection trait was renamed to `HasFieldInfo` to avoid a name collision with the value type.
-These implementation details were captured in docs and PRs.
+**Things that were changed while implementing**: the generated Rust `__fields__()` returns a `FrozenList[FieldInfo]` backed by static data, the runtime `FieldInfo` value type uses frozen containers (`FrozenStr`, `FrozenDict`) for zero-allocation backing, and the reflection trait was renamed to `HasFieldInfo` to avoid a name collision with the value type. These implementation details were captured in docs and PRs.
 
-- Today, generated Rust uses a reflection trait named `incan_stdlib::reflection::FieldInfo` and derives it via
-  `incan_derive::FieldInfo`.
-- This RFC introduces a **value type** named `FieldInfo` (returned by `__fields__()`), which is distinct from the existing
-  Rust reflection trait. The implementation must avoid name collisions on the Rust side by either:
+- Today, generated Rust uses a reflection trait named `incan_stdlib::reflection::FieldInfo` and derives it via `incan_derive::FieldInfo`.
+- This RFC introduces a **value type** named `FieldInfo` (returned by `__fields__()`), which is distinct from the existing Rust reflection trait. The implementation must avoid name collisions on the Rust side by either:
     - renaming the existing Rust trait/derive (e.g. `FieldInfo` → `FieldInfoTrait` / `DeriveFieldInfo`), or
     - introducing the new value type under a different Rust name/module path and mapping it to the Incan `FieldInfo` class.
 - Regardless of the Rust layout, the Incan surface must treat `FieldInfo` as always-available (no imports required).
@@ -433,12 +382,9 @@ Notes:
 
 - `FieldInfo` is a core built-in and is immutable (frozen) by definition; user code cannot mutate its fields.
 - `wire_name` is derived as `alias` if present, otherwise `name`, and is stored as a field populated by the compiler/runtime.
-- `type_name` is the canonical display string produced by the typechecker (fully-resolved and stable); it is not required
-  to preserve the source spelling. Type aliases are expanded, and constraints are included where applicable
-  (e.g. `int[ge=0]`).
+- `type_name` is the canonical display string produced by the typechecker (fully-resolved and stable); it is not required to preserve the source spelling. Type aliases are expanded, and constraints are included where applicable (e.g. `int[ge=0]`).
 - In this RFC, `extra` is always populated as an empty dict by the compiler/runtime.
-- `extra` is reserved for future adapter-specific annotations; its keys/meaning are not specified here, but the field name
-  and type are stable. Consumers should treat it as opaque until a future RFC defines concrete keys.
+- `extra` is reserved for future adapter-specific annotations; its keys/meaning are not specified here, but the field name and type are stable. Consumers should treat it as opaque until a future RFC defines concrete keys.
 - Supporting richer metadata value types (e.g. lists/objects) is not part of the scope of this RFC.
 
 ### Errors / diagnostics
@@ -481,34 +427,25 @@ error: alias must be a non-empty string literal
 
 Diagnostics expectations:
 
-- The typechecker should surface these as normal type errors with precise spans pointing at the offending metadata key/value
-  (or alias sugar) so editors can underline them immediately.
-- The LSP should report these diagnostics without requiring a full build/codegen step (same behavior as other syntax/type
-  errors today).
+- The typechecker should surface these as normal type errors with precise spans pointing at the offending metadata key/value (or alias sugar) so editors can underline them immediately.
+- The LSP should report these diagnostics without requiring a full build/codegen step (same behavior as other syntax/type errors today).
 
 LSP completion expectations:
 
 - Member completion after `.` should include both canonical field names and aliases.
-- If a field has an alias, the alias should be ranked above the canonical name (preferred insertion) to keep access
-  ergonomic (e.g. `obj.type` instead of `obj.type_`).
-- Completion item details should clarify the mapping (e.g. show `type → type_`) so users can discover the canonical name
-  when needed.
-- Completion items should be de-duplicated and linked so selecting one suggestion inserts a single identifier (not both
-  the alias and the canonical name).
+- If a field has an alias, the alias should be ranked above the canonical name (preferred insertion) to keep access ergonomic (e.g. `obj.type` instead of `obj.type_`).
+- Completion item details should clarify the mapping (e.g. show `type → type_`) so users can discover the canonical name when needed.
+- Completion items should be de-duplicated and linked so selecting one suggestion inserts a single identifier (not both the alias and the canonical name).
 
 ## Impact / compatibility
 
-- **Additive syntax**: Field metadata (`name [alias="..."]: T`, `name [description="..."]: T`) and alias sugar
-  (`name as "wire": T`) are new syntax forms. Existing valid programs are unaffected; some previously-invalid programs
-  will now parse (notably keyword member access, named args, and destructuring keys).
+- **Additive syntax**: Field metadata (`name [alias="..."]: T`, `name [description="..."]: T`) and alias sugar (`name as "wire": T`) are new syntax forms. Existing valid programs are unaffected; some previously-invalid programs will now parse (notably keyword member access, named args, and destructuring keys).
 - **Keyword compatibility is deliberately narrow**: keywords are permitted only
     - after `.`
     - as constructor named-argument keys
-    - as destructuring pattern field keys
-  Elsewhere, keywords remain reserved.
+    - as destructuring pattern field keys Elsewhere, keywords remain reserved.
 - **Behavioral**: Name resolution for model fields becomes alias-aware:
-    - Member access consults canonical field names first, then aliases; if no field matches, it falls back to normal member
-      lookup (methods).
+    - Member access consults canonical field names first, then aliases; if no field matches, it falls back to normal member lookup (methods).
     - Constructor named args and destructuring keys consult canonical first, then alias; if no field matches, it is an error.
 - **Breaking change**: `Model.__fields__()` changes from `List[str]` to `List[FieldInfo]`.
     - Migration (canonical names): `[f.name for f in Model.__fields__()]`
@@ -516,22 +453,16 @@ LSP completion expectations:
 
 ## Alternatives considered
 
-- **Allow keywords as identifiers globally** (raw identifiers / quoted identifiers): broad surface area; impacts many
-  language contexts and does not directly address schema mapping needs (aliases, multiple names, etc.).
-- **`schema:` block**: useful for very large mappings, but disjoint from the declaration site; not part of the scope of
-  this RFC.
+- **Allow keywords as identifiers globally** (raw identifiers / quoted identifiers): broad surface area; impacts many language contexts and does not directly address schema mapping needs (aliases, multiple names, etc.).
+- **`schema:` block**: useful for very large mappings, but disjoint from the declaration site; not part of the scope of this RFC.
 - **Decorator-based field attributes**: not Pythonic for fields; creates noisy inline decorator stacks.
-- **Pydantic-like metadata wrapper values** (e.g. `name: T = Meta(alias="wire")`): expressive, but overloads the meaning
-  of default values and risks turning “field metadata” into a runtime value story rather than a static schema/type story.
-- **Separate `__field_info__()` method**: keep `__fields__() -> List[str]` and add a new `__field_info__() -> List[FieldInfo]`
-  for rich metadata. Rejected because it fragments the API; since we're pre-1.0, enriching `__fields__()` directly is cleaner
-  and more future-proof.
+- **Pydantic-like metadata wrapper values** (e.g. `name: T = Meta(alias="wire")`): expressive, but overloads the meaning of default values and risks turning “field metadata” into a runtime value story rather than a static schema/type story.
+- **Separate `__field_info__()` method**: keep `__fields__() -> List[str]` and add a new `__field_info__() -> List[FieldInfo]` for rich metadata. Rejected because it fragments the API; since we're pre-1.0, enriching `__fields__()` directly is cleaner and more future-proof.
 
 ## Drawbacks
 
 - Adds syntax surface (field metadata brackets + `as` sugar).
-- Requires consistent behavior across parsing, typechecking, and codegen, especially around keywords in member/named-arg
-  positions.
+- Requires consistent behavior across parsing, typechecking, and codegen, especially around keywords in member/named-arg positions.
 
 ## Implementation plan
 
@@ -542,8 +473,7 @@ LSP completion expectations:
         - member access name (`obj.<name>`)
         - named-arg keys (`Type(<name>=...)`)
         - destructuring pattern field keys
-    - Ensure non-identifier aliases (e.g. `alias="1"`) remain valid as wire names but do not become usable in those syntax
-      positions (no `obj.1` / `Type(1=...)`).
+    - Ensure non-identifier aliases (e.g. `alias="1"`) remain valid as wire names but do not become usable in those syntax positions (no `obj.1` / `Type(1=...)`).
 - **Typechecker / name resolution (`src/frontend/typechecker`)**:
     - Extend model field typing to store `alias` and `description` metadata.
     - Build an alias map per model and validate:
@@ -603,8 +533,7 @@ LSP completion expectations:
 
 **IDE rename behavior:**
 
-When an IDE performs a “rename symbol” on the **canonical field identifier**, it should rename only the identifier, not
-any alias string literals. The alias represents the external wire/schema name and usually must stay stable for compatibility.
+When an IDE performs a “rename symbol” on the **canonical field identifier**, it should rename only the identifier, not any alias string literals. The alias represents the external wire/schema name and usually must stay stable for compatibility.
 
 Example:
 
@@ -641,8 +570,7 @@ This RFC can be considered "implemented" when the following are complete.
 - [ ] Parser (`crates/incan_syntax`): support alias sugar `name as "wire": T` as sugar for `alias="wire"`.
 - [ ] Parser: error if both `alias="..."` and `as "..."` are present for the same field.
 - [ ] Parser (`crates/incan_syntax`): allow keyword tokens after `.`, as named-arg keys, and as destructuring field keys.
-- [ ] AST (`crates/incan_syntax`): represent field metadata (alias/description) explicitly on model field declarations
-  (not as ad-hoc strings).
+- [ ] AST (`crates/incan_syntax`): represent field metadata (alias/description) explicitly on model field declarations (not as ad-hoc strings).
 - [ ] Formatter (`src/format`): produce and preserve stable formatting for both bracket metadata and `as` sugar.
 
 ### Frontend (typechecker)
@@ -677,8 +605,7 @@ This RFC can be considered "implemented" when the following are complete.
 
 - [ ] Define the Incan `FieldInfo` as a frozen core `class` (always available; no imports).
 - [ ] Rust runtime: introduce a `FieldInfo` **value type** backing the class (`crates/incan_stdlib`).
-- [ ] Rust runtime: resolve naming conflict with the existing `incan_stdlib::reflection::FieldInfo` trait (rename or
-  namespace) and update `incan_derive`/codegen imports accordingly.
+- [ ] Rust runtime: resolve naming conflict with the existing `incan_stdlib::reflection::FieldInfo` trait (rename or namespace) and update `incan_derive`/codegen imports accordingly.
 - [ ] Update `__fields__()` to return `List[FieldInfo]` with:
     - [ ] `name`, `alias`, `description`, `wire_name`, `type_name`, `has_default`
     - [ ] `wire_name` derived as alias-or-name
@@ -710,8 +637,7 @@ This RFC can be considered "implemented" when the following are complete.
     - [ ] serde rename attributes emitted correctly
 - [ ] Reflection tests:
     - [ ] `__fields__()` returns `FieldInfo` objects with correct `wire_name`/`alias`/`description`/`has_default`
-    - [ ] Rust snapshots updated to reflect any rename/namespace changes for the existing Rust `FieldInfo` derive/trait
-      (if changed as part of implementing this RFC)
+    - [ ] Rust snapshots updated to reflect any rename/namespace changes for the existing Rust `FieldInfo` derive/trait (if changed as part of implementing this RFC)
 - [ ] Edge cases:
     - [ ] `alias="self"` resolves correctly via `obj.self` (no collision with receiver-only `self` keyword)
     - [ ] `alias="super"` resolves correctly via `obj.super` (no collision with import-path `super` keyword)

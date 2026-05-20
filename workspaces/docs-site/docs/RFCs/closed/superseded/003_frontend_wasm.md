@@ -391,8 +391,7 @@ def app() -> Element:
 
 ### Part 2b: JSX Template Syntax (Alternative)
 
-As an alternative to `html()` string templates, Incan supports JSX (JavaScript XML) syntax via the `jsx()` wrapper.
-This provides a more familiar experience for developers coming from React/TypeScript, with full IDE support.
+As an alternative to `html()` string templates, Incan supports JSX (JavaScript XML) syntax via the `jsx()` wrapper. This provides a more familiar experience for developers coming from React/TypeScript, with full IDE support.
 
 #### Why a `jsx()` Wrapper?
 
@@ -599,9 +598,7 @@ def list_items() -> Element:
 
 #### Parser Implementation Notes
 
-Incan supports two wrapper modes: `html()` and `jsx()`.
-Both compile to the same UI intermediate representation, but they parse differently:
-`html()` takes a string, while `jsx()` is native syntax the IDE can understand.
+Incan supports two wrapper modes: `html()` and `jsx()`. Both compile to the same UI intermediate representation, but they parse differently: `html()` takes a string, while `jsx()` is native syntax the IDE can understand.
 
 - `html()` takes a string:
 
@@ -610,8 +607,7 @@ Both compile to the same UI intermediate representation, but they parse differen
     #            ↑ This is a string literal
     ```
 
-    The content inside `html()` is a **string** that gets parsed at compile time.
-    Your IDE sees a string, not markup.
+    The content inside `html()` is a **string** that gets parsed at compile time. Your IDE sees a string, not markup.
 
 - `jsx()` enables native syntax (inspired by React's JSX syntax):
 
@@ -620,8 +616,7 @@ Both compile to the same UI intermediate representation, but they parse differen
     #          ↑ This is NOT a string — it's native Incan syntax
     ```
 
-    The content inside `jsx()` is **parsed directly by Incan** as first-class syntax.
-    Your IDE sees markup, not a string.
+    The content inside `jsx()` is **parsed directly by Incan** as first-class syntax. Your IDE sees markup, not a string.
 
 #### Parser Behavior
 
@@ -879,10 +874,7 @@ my_app/
 
 #### Configuration (Cargo.toml)
 
-Incan uses Cargo.toml with `[package.metadata.incan]` for Incan-specific settings.
-This follows Rust ecosystem conventions (used by wasm-pack, cargo-deb, etc.).
-Rust dependencies are auto-injected by the Incan toolchain based on what your
-Incan code imports and the build target.
+Incan uses Cargo.toml with `[package.metadata.incan]` for Incan-specific settings. This follows Rust ecosystem conventions (used by wasm-pack, cargo-deb, etc.). Rust dependencies are auto-injected by the Incan toolchain based on what your Incan code imports and the build target.
 
 ```toml
 [package]

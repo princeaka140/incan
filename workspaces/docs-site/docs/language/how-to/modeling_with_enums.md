@@ -1,13 +1,11 @@
 # Modeling with enums
 
-This guide shows practical ways to use enums to model real program structure: state machines, commands, error types, and
-expression trees.
+This guide shows practical ways to use enums to model real program structure: state machines, commands, error types, and expression trees.
 
 If you haven’t read it yet, start with: [Enums](../explanation/enums.md).
 
 ??? info "Coming from TS/JS?"
-    If you’re used to discriminated unions (`{ kind: "A", ... } | { kind: "B", ... }`), Incan enums play the same role:
-    a closed set of variants with typed payloads, and `match` for case handling.
+    If you’re used to discriminated unions (`{ kind: "A", ... } | { kind: "B", ... }`), Incan enums play the same role: a closed set of variants with typed payloads, and `match` for case handling.
 
     **Example**:
 
@@ -114,8 +112,7 @@ def execute(cmd: Command) -> Result[str, str]:
 Tips:
 
 - Keep the payload minimal; prefer IDs over large embedded objects if you can look them up.
-- If the set of commands is open-ended (plugins), consider a trait-based approach instead.
-  See: [Traits as language hooks](../explanation/traits_as_language_hooks.md) (open-ended “interfaces” via `trait`).
+- If the set of commands is open-ended (plugins), consider a trait-based approach instead. See: [Traits as language hooks](../explanation/traits_as_language_hooks.md) (open-ended “interfaces” via `trait`).
 
 ## Pattern 3: Error hierarchies
 

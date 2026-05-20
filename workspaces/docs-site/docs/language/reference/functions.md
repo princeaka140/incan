@@ -74,10 +74,8 @@ def main() -> int:
     - Python `*args` collects a tuple; Incan `*args: T` collects `List[T]`.
     - Python `**kwargs` collects a dict; Incan `**kwargs: T` collects `Dict[str, T]`.
     - Python `**kwargs` is often used as an untyped escape hatch; Incan keyword captures are typed.
-    - Python can unpack any iterable or mapping at runtime; Incan only unpacks into fixed parameters when the compiler
-      can prove the length or key set statically.
-    - `*expr` means "positional expansion" and is valid in calls and list literals. `**expr` means "mapping expansion"
-      and is valid in calls and dictionary literals.
+    - Python can unpack any iterable or mapping at runtime; Incan only unpacks into fixed parameters when the compiler can prove the length or key set statically.
+    - `*expr` means "positional expansion" and is valid in calls and list literals. `**expr` means "mapping expansion" and is valid in calls and dictionary literals.
 
 ## When to Use Rest Parameters
 
@@ -269,9 +267,7 @@ def main() -> int:
     return ok_fixed + ok_rest
 ```
 
-For fixed positional parameters, the minimum shaped values are tuple expressions and inline list literals. A variable with
-type `List[T]` is still a homogeneous list whose length is not part of the type, so it can feed a `*args` rest parameter
-but cannot silently satisfy a fixed pair such as `fixed(x: int, y: int)`.
+For fixed positional parameters, the minimum shaped values are tuple expressions and inline list literals. A variable with type `List[T]` is still a homogeneous list whose length is not part of the type, so it can feed a `*args` rest parameter but cannot silently satisfy a fixed pair such as `fixed(x: int, y: int)`.
 
 For fixed keyword parameters, the minimum shaped value is an inline dictionary literal with string literal keys:
 
@@ -295,8 +291,7 @@ def main() -> List[int]:
     return [1, *middle, 4]
 ```
 
-List spread preserves source order. Direct elements and spread elements must all be compatible with the resulting list
-element type.
+List spread preserves source order. Direct elements and spread elements must all be compatible with the resulting list element type.
 
 Use `**expr` inside a dictionary literal to expand an existing dictionary-like value into a new dictionary:
 
@@ -306,8 +301,7 @@ def main() -> Dict[str, str]:
     return {**defaults, "trace": "enabled"}
 ```
 
-Dictionary spread preserves source order, and later keys overwrite earlier keys just like ordinary dictionary insertion.
-That example returns a dictionary whose `"trace"` value is `"enabled"`.
+Dictionary spread preserves source order, and later keys overwrite earlier keys just like ordinary dictionary insertion. That example returns a dictionary whose `"trace"` value is `"enabled"`.
 
 The destination decides the valid marker:
 
@@ -330,9 +324,7 @@ builds a rest list equivalent to:
 [1] + extra + [4]
 ```
 
-Keyword rest values and dictionary spread entries are inserted into a dictionary in source order. Duplicate direct named
-arguments are rejected, but a duplicate key that arrives through `**dict_value` follows ordinary dictionary insertion
-behavior: later entries replace earlier entries.
+Keyword rest values and dictionary spread entries are inserted into a dictionary in source order. Duplicate direct named arguments are rejected, but a duplicate key that arrives through `**dict_value` follows ordinary dictionary insertion behavior: later entries replace earlier entries.
 
 ```incan
 def request(path: str, **headers: str) -> int:
@@ -406,8 +398,7 @@ lowers conceptually to a call with explicit rest containers:
 collect("event", [1] + xs, <dict containing "kind": "demo" plus labels inserted in source order>)
 ```
 
-The emitted Rust uses ordinary `Vec` and `HashMap` construction; it does not use runtime reflection or Rust variadics.
-Collection literal spread is for runtime list and dictionary expressions; const frozen collection initializers still require direct entries.
+The emitted Rust uses ordinary `Vec` and `HashMap` construction; it does not use runtime reflection or Rust variadics. Collection literal spread is for runtime list and dictionary expressions; const frozen collection initializers still require direct entries.
 
 ## Type Errors
 

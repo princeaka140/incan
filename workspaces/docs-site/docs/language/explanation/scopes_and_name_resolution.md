@@ -13,9 +13,7 @@ This page explains how those rules interact, and how to write clear, predictable
 
 ## Mental model
 
-Think of the compiler keeping a **stack of scopes**. When you enter a new syntactic region (module, function, block, …)
-it pushes a scope; when you leave it pops the scope. Name lookup walks from the top of the stack outward until it finds
-a match.
+Think of the compiler keeping a **stack of scopes**. When you enter a new syntactic region (module, function, block, …) it pushes a scope; when you leave it pops the scope. Name lookup walks from the top of the stack outward until it finds a match.
 
 This diagram shows how the compiler resolves a name:
 
@@ -31,25 +29,19 @@ flowchart TB
     Exit --> Pop["Pop scope from the stack"]
 ```
 
-Internally this is implemented by the compiler’s symbol table (`lookup()` searches outward; `lookup_local()` checks only
-the current scope).
+Internally this is implemented by the compiler’s symbol table (`lookup()` searches outward; `lookup_local()` checks only the current scope).
 
 !!! note "Coming from Python?"
     Two differences tend to surprise people:
 
     - In Python, `if`/`for`/`while` blocks **don’t** create a new scope (so names can “leak” out of blocks).
-    - Python resolves names with **LEGB** (Local → Enclosing → Global → Builtins), and has a key rule:
-      **any assignment in a function makes that name local to the entire function**, unless you declare it
-      `global`/`nonlocal`. In Incan, blocks are scopes and `x = ...` is inferred as “new vs reassign” by looking
-      outward for an existing binding.
+    - Python resolves names with **LEGB** (Local → Enclosing → Global → Builtins), and has a key rule: **any assignment in a function makes that name local to the entire function**, unless you declare it `global`/`nonlocal`. In Incan, blocks are scopes and `x = ...` is inferred as “new vs reassign” by looking outward for an existing binding.
 
 !!! note "Coming from Rust?"
     The spirit is similar (lexical scopes, `mut` for reassignment), but the surface syntax differs:
 
-    - Incan’s `let x = ...` is the explicit way to introduce a **new binding** in the current scope (often used for
-      shadowing).
-    - Plain `x = ...` is context-sensitive: it either **reassigns** an existing `mut` binding, or introduces a new
-      immutable binding if `x` doesn’t exist yet.
+    - Incan’s `let x = ...` is the explicit way to introduce a **new binding** in the current scope (often used for shadowing).
+    - Plain `x = ...` is context-sensitive: it either **reassigns** an existing `mut` binding, or introduces a new immutable binding if `x` doesn’t exist yet.
 
 ## What counts as a scope in Incan?
 
@@ -107,8 +99,7 @@ Each `def ...:` body is a **function scope**.
 Methods also have a function-like scope and define receiver names for the method body:
 
 - Instance methods define `self` or `mut self`.
-- Class methods define their explicit first parameter, conventionally `cls`. Inside a `@classmethod`, calling
-  `cls(...)` constructs the declaring type.
+- Class methods define their explicit first parameter, conventionally `cls`. Inside a `@classmethod`, calling `cls(...)` constructs the declaring type.
 
 For example:
 
@@ -196,10 +187,8 @@ def shadows_in_block() -> int:
 Notes on `let`:
 
 - `let x = ...` is the explicit form for “**introduce a new binding** in the current scope”.
-- It’s **optional** when introducing a name for the first time (plain `x = ...` will do that if `x` doesn’t exist yet),
-  but `let` is how you make **shadowing** unambiguous and readable in nested scopes.
-- `mut x = ...` introduces a **new mutable** binding. Reassigning later uses plain `x = ...` (and requires that `x` was
-  introduced with `mut`).
+- It’s **optional** when introducing a name for the first time (plain `x = ...` will do that if `x` doesn’t exist yet), but `let` is how you make **shadowing** unambiguous and readable in nested scopes.
+- `mut x = ...` introduces a **new mutable** binding. Reassigning later uses plain `x = ...` (and requires that `x` was introduced with `mut`).
 
 You get an error if you write this:
 
@@ -214,8 +203,7 @@ That’s because plain `x = 2` is treated as a reassignment (since `x` already e
 
 ### Prefer explicit `let` / `mut`
 
-Use `let`/`mut` when you care about whether you’re shadowing or reassigning; it avoids surprises and matches what you
-intended.
+Use `let`/`mut` when you care about whether you’re shadowing or reassigning; it avoids surprises and matches what you intended.
 
 Example:
 
@@ -239,11 +227,9 @@ Incan closures use arrow syntax:
 add1 = (x) => x + 1
 ```
 
-Closures introduce their own function scope (parameters are local to the closure body). Names from outer scopes can be
-**read** by normal lexical lookup.
+Closures introduce their own function scope (parameters are local to the closure body). Names from outer scopes can be **read** by normal lexical lookup.
 
-Plain assignment inside a closure behaves the same as elsewhere: if the name exists already, it’s treated as a reassignment
-(so it requires the outer binding to be `mut`). Shadow with `let` if you want a closure-local name.
+Plain assignment inside a closure behaves the same as elsewhere: if the name exists already, it’s treated as a reassignment (so it requires the outer binding to be `mut`). Shadow with `let` if you want a closure-local name.
 
 Example:
 
@@ -264,12 +250,10 @@ def closure_capture() -> int:
     - If you intended a new block-local `x`, use `let x = ...` in the block.
 
 - **“Why does `x = ...` sometimes require `mut`?”**
-    - Only *reassignment* requires `mut`. Plain assignment is inferred: it reassigns if `x` already exists; otherwise it
-    creates a new immutable binding.
+    - Only *reassignment* requires `mut`. Plain assignment is inferred: it reassigns if `x` already exists; otherwise it creates a new immutable binding.
 
 - **“Where do imported names live?”**
-    - Imports add names to the **module scope** (file scope). Inside functions, you can refer to them like any
-    other outer binding.
+    - Imports add names to the **module scope** (file scope). Inside functions, you can refer to them like any other outer binding.
 
 ## See also
 

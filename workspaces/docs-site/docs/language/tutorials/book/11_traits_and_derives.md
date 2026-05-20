@@ -4,8 +4,7 @@ Traits describe shared behavior. Derives automatically generate common behavior 
 
 ## Derives: add behavior without boilerplate
 
-Derives add behavior to a type. One of the most common is `Debug`, which lets you print a structured representation of a
-value.
+Derives add behavior to a type. One of the most common is `Debug`, which lets you print a structured representation of a value.
 
 !!! tip "Coming from Python?"
     **Derives** are like getting common “dunder methods” (`__repr__`, `__eq__`, etc.) without writing them by hand.
@@ -41,8 +40,7 @@ Traits are always abstract in Incan. That means two things:
 - You can use a trait directly in annotations to mean “any concrete adopter of this capability”.
 
 !!! tip "Coming from Python?"
-    **Traits** are like a typed interface (represented in Python by a `Protocol` or `abc.ABC`): “anything that implements
-    these methods can be treated as this capability”.
+    **Traits** are like a typed interface (represented in Python by a `Protocol` or `abc.ABC`): “anything that implements these methods can be treated as this capability”.
 
 ### Protocol traits and hooks
 
@@ -83,8 +81,7 @@ Here, `OrderedCollection[T]` is also a `Collection[T]`, so any concrete adopter 
 
 ### Default methods and adopter fields (`@requires`)
 
-If a trait default method accesses adopter fields directly (for example `self.name`), the trait must declare those fields
-in `@requires(...)`. Mutating fields still requires `mut self` (same as normal methods).
+If a trait default method accesses adopter fields directly (for example `self.name`), the trait must declare those fields in `@requires(...)`. Mutating fields still requires `mut self` (same as normal methods).
 
 Example:
 

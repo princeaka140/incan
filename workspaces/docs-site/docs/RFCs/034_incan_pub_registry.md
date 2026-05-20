@@ -293,8 +293,7 @@ If verification fails, `incan build` refuses to use the package and emits a clea
 
 **Sigstore is optional in Phase 1** — the `signatures` field in the index is nullable. Unsigned packages are accepted but display a warning during `incan build`. The goal is to make signing the default from early on, then make it mandatory once the tooling is proven.
 
-**Implementation note:** the service can rely on existing Sigstore client
-libraries rather than inventing its own signing stack. The registry still verifies signatures on publish so invalid artifacts are rejected early.
+**Implementation note:** the service can rely on existing Sigstore client libraries rather than inventing its own signing stack. The registry still verifies signatures on publish so invalid artifacts are rejected early.
 
 ### Security properties
 
@@ -446,8 +445,7 @@ The important design constraint is portability:
 
 1. the service must be able to run on EU-hosted infrastructure with hard cost caps;
 2. object storage and CDN choices should remain replaceable;
-3. the registry protocol must not depend on whether the service is implemented
-in Incan or in a temporary bootstrap implementation.
+3. the registry protocol must not depend on whether the service is implemented in Incan or in a temporary bootstrap implementation.
 
 ## Interaction with existing features
 
@@ -482,8 +480,7 @@ German provider, good pricing. However: no scale-to-zero compute (minimum €4.5
 - **Complexity.** A package registry is a significant piece of infrastructure to build and maintain, even a simple one.
 - **Dependency on Scaleway/Bunny.net.** The architecture is provider-portable (S3 API + HTTP CDN), but the initial deployment is tied to these specific providers.
 - **Sigstore learning curve.** Keyless signing via OIDC is unfamiliar to many developers. Clear documentation and good CLI UX can mitigate this.
-- **Bootstrap dependency.** A first-class Incan implementation depends on the
-relevant web/runtime capabilities shipping in time. A temporary bootstrap implementation may be needed if ecosystem timing forces the registry to arrive earlier.
+- **Bootstrap dependency.** A first-class Incan implementation depends on the relevant web/runtime capabilities shipping in time. A temporary bootstrap implementation may be needed if ecosystem timing forces the registry to arrive earlier.
 
 ## Implementation architecture
 
