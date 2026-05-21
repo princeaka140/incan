@@ -233,6 +233,11 @@ impl<'a> IrEmitter<'a> {
         )
     }
 
+    /// Return whether an argument expression already has Rust reference shape in IR.
+    fn method_arg_already_has_reference_shape(arg: &TypedExpr) -> bool {
+        Self::method_arg_already_borrowed_for_ref_param(&arg.ty)
+    }
+
     /// Emit method-call arguments with Rust-boundary borrowing and union wrapping applied from callable metadata.
     fn emit_method_call_args(
         &self,
@@ -395,6 +400,7 @@ impl<'a> IrEmitter<'a> {
                     } else if external_method_shape
                         && idx == 0
                         && Self::method_arg_needs_fallback_borrow(method, &arg.ty)
+                        && !Self::method_arg_already_has_reference_shape(arg)
                     {
                         emitted = quote! { &#emitted };
                     }
@@ -409,25 +415,11 @@ impl<'a> IrEmitter<'a> {
                 {
                     emitted = coerced;
                 }
-                if external_method_shape
-                    && !external_param_planned
-                    && idx == 0
-                    && Self::method_arg_needs_fallback_mut_borrow(method, &arg.ty)
-                {
-                    return Ok(quote! { &mut #emitted });
-                }
-                if external_method_shape
-                    && !external_param_planned
-                    && idx == 0
-                    && Self::method_arg_needs_fallback_borrow(method, &arg.ty)
-                {
-                    return Ok(quote! { &#emitted });
-                }
                 if !external_param_planned {
                     match &param.ty {
                         IrType::Ref(_) if matches!(base_use_site, ValueUseSite::MethodArg) => {}
                         IrType::Ref(_) => match &arg.ty {
-                            _ if Self::method_arg_already_borrowed_for_ref_param(&arg.ty) => {}
+                            _ if Self::method_arg_already_has_reference_shape(arg) => {}
                             _ => emitted = quote! { &#emitted },
                         },
                         IrType::RefMut(_) => match &arg.ty {
