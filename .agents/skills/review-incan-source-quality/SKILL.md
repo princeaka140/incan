@@ -109,6 +109,7 @@ Flag Incan source that has:
 - `@rust.extern`, `rusttype`, or `rust.module` used to avoid writing expressible Incan behavior;
 - design narrowing or backend fallback justified by “Incan cannot do this” without local examples, tests, or probe evidence;
 - sentinel initialization such as `value = 0` only to satisfy later branch assignment;
+- nested `match` ladders that only peel `Option`/enum variants before continuing, when `if let`, early returns, or a focused shallow `match` would state the same control flow more directly; also flag helper forests that merely hide the ladder one branch at a time;
 - verbose `match` blocks that just rewrap a `Result` where `?` would read naturally;
 - verbose `match` blocks that only transform one `Result` branch where RFC 070 combinators such as `map`, `map_err`, `and_then`, or `or_else` would state the intent directly;
 - unnecessary type noise when inference or a local helper would be clearer;
