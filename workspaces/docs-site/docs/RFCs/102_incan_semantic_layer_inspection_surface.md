@@ -20,7 +20,7 @@
     - RFC 092 (interactive runtime stdlib contracts)
     - RFC 096 (declaration metadata blocks)
     - RFC 097 (Rust-hosted Incan caller)
-- **Issue:** —
+- **Issue:** https://github.com/dannys-code-corner/incan/issues/666
 - **RFC PR:** —
 - **Written against:** v0.3
 - **Shipped in:** —
