@@ -303,7 +303,7 @@ Adapter outputs must remain projections of checked descriptors, not source truth
 
 ### Relationship to RFC 092 and RFC 097
 
-RFC 092 owns interactive runtime target manifests and host capability contracts. RFC 097 owns the Rust-hosted caller boundary. This RFC allows those emitted manifests, host capability facts, generated Rust-facing artifacts, and caller metadata to appear in the semantic package when available, especially for LSP, docs, CI, and registry inspection.
+RFC 092 owns interactive runtime target manifests and host capability contracts. RFC 097 owns the Rust-hosted caller boundary. This RFC allows those emitted manifests, host capability facts, Rust-facing ABI/caller artifacts, and caller metadata to appear in the semantic package when available, especially for LSP, docs, CI, and registry inspection.
 
 ## Alternatives considered
 
