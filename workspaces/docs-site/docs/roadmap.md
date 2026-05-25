@@ -24,12 +24,14 @@ Incan's current direction is:
 
 That means Incan should not compete as a small systems language or as a generic Python clone. The compiler, standard library, and tooling should make domain packages, capability metadata, policy, generated artifacts, diagnostics, and backend facts inspectable by humans and agents.
 
-The near-term roadmap is therefore split into four release lanes:
+The near-term roadmap is therefore split into six release lanes:
 
 - Tooling and first-contact inspection.
 - Backend replacement foundation.
 - Backend cutover.
 - Broader feature reopening after the compiler architecture is no longer split between old and new semantic paths.
+- Freestanding target foundations.
+- Kernel capability proof before 1.0 stabilization.
 
 ## Release Milestones
 
@@ -125,11 +127,64 @@ Examples of deferred lanes:
 - trait/newtype language features not required by backend cutover.
 - broader editor and package lifecycle work.
 
+0.7 should not absorb freestanding/kernel primitives by default. That work needs its own release lanes so feature reopening does not become the place where unsafe, layout, target, runtime, and kernel proof work all land at once.
+
+### 0.8 Release: freestanding foundations
+
+The 0.8 milestone defines the compiler, runtime, ABI, and package foundations needed for freestanding targets. It should make low-level targets possible without promising a production kernel or stabilizing every low-level surface.
+
+The release should answer how Incan code can compile without assuming hosted `std`, a process environment, filesystem access, threads, default allocator availability, or ordinary hosted panic behavior.
+
+Expected scope:
+
+- freestanding target profiles and capability manifests;
+- runtime layering across `core`, `alloc`, hosted `std`, and future kernel-facing APIs;
+- no-std/freestanding build mode;
+- panic strategy and allocator hooks;
+- ABI/layout/repr/alignment/calling-convention controls;
+- an explicit unsafe model for raw pointers, volatile access, MMIO, and low-level intrinsics;
+- package metadata for freestanding compatibility.
+
+Core tracking issues:
+
+- [#681](https://github.com/dannys-code-corner/incan/issues/681): RFC proposal for freestanding targets and runtime layering.
+- [#682](https://github.com/dannys-code-corner/incan/issues/682): RFC proposal for unsafe blocks and low-level operations.
+- [#683](https://github.com/dannys-code-corner/incan/issues/683): RFC proposal for representation, layout, and calling convention controls.
+- [#684](https://github.com/dannys-code-corner/incan/issues/684): stdlib/runtime layer inventory for freestanding foundations.
+- [#685](https://github.com/dannys-code-corner/incan/issues/685): freestanding target profiles and runtime requirement reports.
+- [#686](https://github.com/dannys-code-corner/incan/issues/686): no-std freestanding build mode and restricted artifact smoke test.
+- [#687](https://github.com/dannys-code-corner/incan/issues/687): unsafe low-level operation surface v0.
+- [#688](https://github.com/dannys-code-corner/incan/issues/688): layout, repr, and calling-convention metadata v0.
+- [#689](https://github.com/dannys-code-corner/incan/issues/689): panic strategy and allocator hooks for freestanding targets.
+
+0.8 is successful when Incan can compile a restricted freestanding artifact and report which runtime, allocator, panic, target, and ABI capabilities it requires.
+
+### 0.9 Release: kernel capability proof
+
+The 0.9 milestone is the vertical proof that the freestanding foundations work under real low-level pressure. It should boot a tiny Incan-authored kernel under an emulator, not ship a production operating system.
+
+Expected scope:
+
+- minimal architecture support layer;
+- linker and boot configuration;
+- QEMU runner and smoke harness;
+- serial output;
+- panic halt/report path;
+- allocator hookup;
+- MMIO/volatile/raw pointer use;
+- one interrupt, timer, or simple task proof.
+
+Core tracking issues:
+
+- [#690](https://github.com/dannys-code-corner/incan/issues/690): QEMU tiny kernel capability proof.
+
+0.9 is successful when Incan can build and boot a tiny freestanding kernel under QEMU with Incan-authored init logic and a concrete low-level capability proof.
+
 ### 1.0 Release: stabilization and public contracts
 
-The 1.0 milestone consolidates the post-cutover compiler architecture, ABI/package direction, tooling contracts, stdlib maturity, ecosystem workflows, and documentation into a coherent public surface.
+The 1.0 milestone consolidates the post-cutover compiler architecture, ABI/package direction, tooling contracts, stdlib maturity, ecosystem workflows, freestanding lessons, and documentation into a coherent public surface.
 
-1.0 should describe what Incan is, what it guarantees, how packages and generated artifacts are consumed, and where Rust-facing interop boundaries are stable.
+1.0 should describe what Incan is, what it guarantees, how packages and generated artifacts are consumed, where Rust-facing interop boundaries are stable, and which freestanding/kernel-facing surfaces are stable, experimental, or intentionally deferred.
 
 ## Status by Area
 

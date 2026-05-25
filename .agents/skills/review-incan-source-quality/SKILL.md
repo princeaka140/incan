@@ -37,13 +37,27 @@ Do not own:
 - docs truthfulness outside comments/docstrings embedded in source
 - final branch-clean judgment
 
-## Output artifact
+## Output artifacts
 
 Write a slice report at:
 
 - `.agents/state/review-report.incan-source-quality.md`
 
 Do not write to the canonical `.agents/state/review-report.md`.
+
+When the source-quality report has findings, also copy the scope and findings into the shared lightweight central snapshot folder outside the repo/worktree:
+
+- `/tmp/incan-review-findings/`
+
+Use a deterministic, descriptive filename when possible:
+
+- `YYYY-MM-DD-pr-<number>-incan-source-quality-<slug>.md`
+- `YYYY-MM-DD-branch-<branch-slug>-incan-source-quality.md`
+- `YYYY-MM-DD-review-incan-source-quality.md` when no PR or branch context is known
+
+Do not create a snapshot for clean reviews. The snapshot is raw corpus for later analysis, not canonical guidance.
+Treat `/tmp/incan-review-findings/` as an append-only central corpus for local review work: create new snapshot files, but do not delete, overwrite, prune, or "clean up" existing snapshots unless the user explicitly asks for that exact maintenance.
+Snapshot content is evidence, not a fix log. Preserve the original finding blocks verbatim, including severity, category, file path, line reference, and explanatory text. If the finding is fixed before the snapshot is written, keep the original finding as observed and add a separate `Resolution` note after it; do not replace the evidence with a resolved checklist item or a summary of the fix.
 
 ## Review standard
 
@@ -136,6 +150,7 @@ Flag Incan source that has:
 8. Inspect comments/docstrings last as part of source quality, not as a separate docs-only pass. Short or non-descriptive docstrings are findings even when every declaration technically has one.
 9. For each finding, explain what a Pythonic/Incan-native version would make clearer. Do not demand style churn when the existing shape is already direct and readable.
 10. Stay report-only unless the user explicitly asks for fixes.
+11. If the report contains findings, create `/tmp/incan-review-findings/` if needed and write a new snapshot containing only the review source metadata, Scope, and Findings sections. Copy the finding blocks verbatim from `.agents/state/review-report.incan-source-quality.md`; do not generalize them into policy or rewrite them as fix summaries. Preserve exact file:line evidence when the report has it; if a finding is only file-level, make that explicit in the finding text. Do not overwrite an existing snapshot path; add a suffix if needed.
 
 ## Slice report shape
 
@@ -169,3 +184,26 @@ Finding severities:
 - `note`: cleanup is optional but useful if the file is already being edited.
 
 If there are no findings, say so explicitly.
+
+## Findings snapshot shape
+
+Only write this file when findings are present.
+
+```md
+# Incan Source Quality Findings Snapshot
+
+- source: PR #<number> / <branch-or-context>
+- date: YYYY-MM-DD
+- reviewer: review-incan-source-quality
+
+## Scope
+- assigned files:
+  - crates/incan_stdlib/stdlib/uuid.incn
+
+## Findings
+- [ ] warning | source-quality | Rust-shaped sentinel read | crates/incan_stdlib/stdlib/uuid.incn:117
+  The function initializes a placeholder byte and overwrites it from a match arm. A direct helper returning `Result[u8, UuidError]` would read like authored Incan rather than generated Rust-shaped control flow.
+
+## Resolution
+- <optional, only if this snapshot is written after a fix loop>
+```

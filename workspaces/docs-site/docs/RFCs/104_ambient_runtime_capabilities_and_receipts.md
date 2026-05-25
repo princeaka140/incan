@@ -71,6 +71,7 @@ The key design constraint is usability. This RFC must not turn ordinary Incan in
 - This RFC does not require every function type to include a capability parameter or effect row.
 - This RFC does not make imports fail merely because the current run has not granted a capability.
 - This RFC does not define a complete operating-system sandbox.
+- This RFC does not define no-std/freestanding target profiles, kernel support, unsafe/layout controls, panic strategy, or allocator strategy. Capability and receipt metadata may inform those later RFCs, but this RFC is not the freestanding/kernel RFC.
 - This RFC does not guarantee perfect deterministic replay for external systems.
 - This RFC does not replace `std.telemetry`, `std.logging`, diagnostics, or semantic inspection.
 - This RFC does not require every package to publish capability metadata.
