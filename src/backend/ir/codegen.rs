@@ -165,6 +165,8 @@ pub struct IrCodegen<'a> {
     strict_generated_lints: bool,
     /// Private IR items called by generated code that is appended outside normal IR emission.
     externally_reachable_items: HashSet<String>,
+    /// Private dependency-module IR items called by generated code appended inside that module.
+    externally_reachable_items_by_module: HashMap<Vec<String>, HashSet<String>>,
     /// Public serialized value-enum identities for library builds, keyed by source identity (`module.Type`).
     public_ordinal_type_identities: HashMap<String, String>,
     /// Whether non-stdlib dependency modules keep public items that are not otherwise reachable.
@@ -189,6 +191,7 @@ impl<'a> IrCodegen<'a> {
             library_manifest_index: None,
             strict_generated_lints: false,
             externally_reachable_items: HashSet::new(),
+            externally_reachable_items_by_module: HashMap::new(),
             public_ordinal_type_identities: HashMap::new(),
             preserve_dependency_public_items: true,
             #[cfg(feature = "rust_inspect")]
@@ -204,6 +207,11 @@ impl<'a> IrCodegen<'a> {
     /// Set private generated Rust entrypoints called by code injected after IR emission.
     pub fn set_externally_reachable_items(&mut self, names: HashSet<String>) {
         self.externally_reachable_items = names;
+    }
+
+    /// Set private generated Rust entrypoints called by code injected into dependency modules.
+    pub fn set_externally_reachable_items_by_module(&mut self, names: HashMap<Vec<String>, HashSet<String>>) {
+        self.externally_reachable_items_by_module = names;
     }
 
     /// Set public serialized value-enum identities for library emission.
@@ -761,7 +769,10 @@ impl<'a> IrCodegen<'a> {
 
         let mut modules = HashMap::new();
         for (name, module_path, ir) in &lowered_modules {
-            let reachable_items = dependency_reachable_items.get(module_path).cloned().unwrap_or_default();
+            let mut reachable_items = dependency_reachable_items.get(module_path).cloned().unwrap_or_default();
+            if let Some(injected_items) = self.externally_reachable_items_by_module.get(module_path) {
+                reachable_items.extend(injected_items.iter().cloned());
+            }
             let preserve_public_items =
                 should_preserve_dependency_public_items(module_path, self.preserve_dependency_public_items);
             let use_emit_service = env::var("INCAN_EMIT_SERVICE").ok().as_deref() == Some("1");
@@ -893,14 +904,15 @@ impl<'a> IrCodegen<'a> {
 
         // Generate module files by path
         let mut lowered_modules = Vec::new();
-        for (name, ast, _) in &self.dependency_modules {
-            // Find matching path by comparing joined segments with module name
-            // Module name is path segments joined with "_" (e.g., "db_models")
-            for path in module_paths {
-                let path_name = path.join("_");
-                if path_name != *name {
-                    continue;
-                }
+        for (name, ast, stored_path_segments) in &self.dependency_modules {
+            let matching_path = if let Some(stored_path_segments) = stored_path_segments {
+                module_paths.iter().find(|path| *path == stored_path_segments)
+            } else {
+                // Legacy callers may still register only a flat module name. Prefer explicit path segments when they
+                // exist because distinct paths such as `a_b` and `a/b` share the same underscore-joined fallback.
+                module_paths.iter().find(|path| path.join("_") == *name)
+            };
+            if let Some(path) = matching_path {
                 let module_type_info = {
                     use crate::frontend::typechecker::TypeChecker;
                     let mut tc = TypeChecker::new();
@@ -920,7 +932,6 @@ impl<'a> IrCodegen<'a> {
                 // newtypes (e.g., stdlib wrapper types like std.web.request.Query/Path).
                 super::trait_bound_inference::infer_trait_bounds(&mut ir);
                 lowered_modules.push((path.clone(), ir));
-                break;
             }
         }
         for idx in 0..lowered_modules.len() {
@@ -949,7 +960,10 @@ impl<'a> IrCodegen<'a> {
 
         let mut modules = HashMap::new();
         for (path, ir) in &lowered_modules {
-            let reachable_items = dependency_reachable_items.get(path).cloned().unwrap_or_default();
+            let mut reachable_items = dependency_reachable_items.get(path).cloned().unwrap_or_default();
+            if let Some(injected_items) = self.externally_reachable_items_by_module.get(path) {
+                reachable_items.extend(injected_items.iter().cloned());
+            }
             let preserve_public_items =
                 should_preserve_dependency_public_items(path, self.preserve_dependency_public_items);
             let use_emit_service = env::var("INCAN_EMIT_SERVICE").ok().as_deref() == Some("1");
@@ -1184,6 +1198,38 @@ def main() -> int:
         assert!(code.contains("pub use avg as average;"), "{code}");
         assert!(code.contains("return avg(10);"), "{code}");
         assert!(!code.contains("fn mean"), "{code}");
+    }
+
+    #[test]
+    fn top_level_keyword_named_callable_alias_uses_raw_identifier_reexport() {
+        let code = generate(
+            r#"
+pub def modulo_value(value: int) -> int:
+  return value
+
+pub mod = alias modulo_value
+
+def main() -> int:
+  return mod(10)
+"#,
+        );
+        assert!(code.contains("pub fn modulo_value(value: i64) -> i64"), "{code}");
+        assert!(code.contains("pub use modulo_value as r#mod;"), "{code}");
+        assert!(code.contains("return modulo_value(10);"), "{code}");
+    }
+
+    #[test]
+    fn top_level_alias_to_keyword_named_callable_uses_raw_identifier_target_path() {
+        let code = generate(
+            r#"
+pub def mod(value: int) -> int:
+  return value
+
+pub modulo = alias mod
+"#,
+        );
+        assert!(code.contains("pub fn r#mod(value: i64) -> i64"), "{code}");
+        assert!(code.contains("pub use r#mod as modulo;"), "{code}");
     }
 
     #[test]

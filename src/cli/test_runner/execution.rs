@@ -15,7 +15,7 @@ use crate::cli::commands::common::{
     collect_rust_inspect_query_paths, ensure_rust_inspect_workspace, prewarm_rust_inspect_workspace,
 };
 use crate::cli::prelude::ParsedModule;
-use crate::dependency_resolver::resolve_dependencies;
+use crate::dependency_resolver::resolve_reachable_dependencies;
 use crate::dependency_resolver::{InlineRustImport, ResolvedDependencies};
 use crate::frontend::ast::{
     AssertKind, AssertStmt, CallArg, Declaration, DictEntry, Expr, ImportItem, ImportKind, ListEntry, ParamKind,
@@ -23,6 +23,7 @@ use crate::frontend::ast::{
 };
 use crate::frontend::decorator_resolution;
 use crate::frontend::library_manifest_index::LibraryManifestIndex;
+use crate::frontend::module::logical_module_segments_from_file;
 use crate::frontend::testing_markers::{TestingMarkerKind, load_testing_marker_semantics, resolve_testing_marker_kind};
 use crate::frontend::vocab_desugar_pass;
 use crate::frontend::{lexer, parser};
@@ -33,7 +34,7 @@ use sha2::{Digest, Sha256};
 use super::module_graph::collect_source_modules_for_test;
 use super::types::{FixtureScope, TestInfo, TestResult};
 
-/// Generated `#[cfg(test)]` module that wraps Incan test functions as Rust `#[test]` cases, one `cargo test` per file.
+/// Generated `#[cfg(test)]` module that wraps Incan test functions as Rust `#[test]` cases.
 const INCAN_FILE_TEST_MOD: &str = "__incan_file_tests";
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -67,9 +68,9 @@ fn collect_test_dependency_inline_imports(
     test_module: &ParsedModule,
     source_modules: &[ParsedModule],
 ) -> Vec<crate::dependency_resolver::InlineRustImport> {
-    let mut inline_imports = common::collect_inline_rust_imports(test_module, true);
+    let mut inline_imports = common::collect_rust_dependency_uses(test_module, true);
     for module in source_modules {
-        inline_imports.extend(common::collect_inline_rust_imports(module, false));
+        inline_imports.extend(common::collect_rust_dependency_uses(module, false));
     }
     inline_imports
 }
@@ -219,14 +220,27 @@ fn dedupe_import_declarations(ast: &mut Program) {
     ast.declarations = declarations;
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct TopLevelNames {
     types: HashSet<String>,
     values: HashSet<String>,
+    imported_types: HashSet<String>,
+    imported_values: HashSet<String>,
+}
+
+#[derive(Debug, Clone)]
+struct TopLevelNameSummary {
+    path: PathBuf,
+    names: TopLevelNames,
 }
 
 /// Collect top-level Rust item names that would collide if multiple Incan files were concatenated.
 fn collect_top_level_decl_names(program: &Program) -> TopLevelNames {
+    fn add_import_binding(name: &str, names: &mut TopLevelNames) {
+        names.imported_types.insert(name.to_string());
+        names.imported_values.insert(name.to_string());
+    }
+
     /// Add the Rust type/value namespace names contributed by one declaration.
     fn collect_from_decl(decl: &Declaration, names: &mut TopLevelNames) {
         match decl {
@@ -268,7 +282,40 @@ fn collect_top_level_decl_names(program: &Program) -> TopLevelNames {
                     collect_from_decl(&nested.node, names);
                 }
             }
-            Declaration::Import(_) | Declaration::Partial(_) | Declaration::Docstring(_) => {}
+            Declaration::Import(decl) => match &decl.kind {
+                ImportKind::Module(path) => {
+                    let local = decl
+                        .alias
+                        .as_ref()
+                        .or_else(|| path.segments.last())
+                        .map(String::as_str)
+                        .unwrap_or("module");
+                    add_import_binding(local, names);
+                }
+                ImportKind::From { items, .. }
+                | ImportKind::PubFrom { items, .. }
+                | ImportKind::RustFrom { items, .. } => {
+                    for item in items {
+                        add_import_binding(item.alias.as_deref().unwrap_or(&item.name), names);
+                    }
+                }
+                ImportKind::PubLibrary { library } => {
+                    add_import_binding(decl.alias.as_deref().unwrap_or(library), names);
+                }
+                ImportKind::Python(pkg) => {
+                    add_import_binding(decl.alias.as_deref().unwrap_or(pkg), names);
+                }
+                ImportKind::RustCrate { crate_name, path, .. } => {
+                    let local = decl
+                        .alias
+                        .as_ref()
+                        .or_else(|| path.last())
+                        .map(String::as_str)
+                        .unwrap_or(crate_name);
+                    add_import_binding(local, names);
+                }
+            },
+            Declaration::Partial(_) | Declaration::Docstring(_) => {}
         }
     }
 
@@ -279,10 +326,91 @@ fn collect_top_level_decl_names(program: &Program) -> TopLevelNames {
     names
 }
 
+fn collect_top_level_name_summary(
+    path: &Path,
+    source: &str,
+    library_imported_vocab: Option<&parser::ImportedLibraryVocab>,
+) -> Option<TopLevelNameSummary> {
+    let tokens = lexer::lex(source).ok()?;
+    let ast =
+        parser::parse_with_context(&tokens, Some(path.to_string_lossy().as_ref()), library_imported_vocab).ok()?;
+    let names = collect_top_level_decl_names(&ast_with_inline_test_declarations(&ast));
+    Some(TopLevelNameSummary {
+        path: path.to_path_buf(),
+        names,
+    })
+}
+
+fn collect_top_level_name_summaries(
+    sources_by_file: &[(PathBuf, String)],
+    library_imported_vocab: Option<&parser::ImportedLibraryVocab>,
+) -> Option<Vec<TopLevelNameSummary>> {
+    sources_by_file
+        .iter()
+        .map(|(path, source)| collect_top_level_name_summary(path, source, library_imported_vocab))
+        .collect()
+}
+
+fn top_level_summaries_have_collision<'a>(summaries: impl IntoIterator<Item = &'a TopLevelNameSummary>) -> bool {
+    let mut type_owner: HashMap<String, PathBuf> = HashMap::new();
+    let mut value_owner: HashMap<String, PathBuf> = HashMap::new();
+    let mut imported_type_owner: HashMap<String, PathBuf> = HashMap::new();
+    let mut imported_value_owner: HashMap<String, PathBuf> = HashMap::new();
+    for summary in summaries {
+        for name in &summary.names.types {
+            if imported_type_owner
+                .get(name)
+                .is_some_and(|owner| owner != &summary.path)
+            {
+                return true;
+            }
+            if type_owner
+                .insert(name.clone(), summary.path.clone())
+                .is_some_and(|owner| owner != summary.path)
+            {
+                return true;
+            }
+        }
+        for name in &summary.names.values {
+            if imported_value_owner
+                .get(name)
+                .is_some_and(|owner| owner != &summary.path)
+            {
+                return true;
+            }
+            if value_owner
+                .insert(name.clone(), summary.path.clone())
+                .is_some_and(|owner| owner != summary.path)
+            {
+                return true;
+            }
+        }
+        for name in &summary.names.imported_types {
+            if type_owner.get(name).is_some_and(|owner| owner != &summary.path) {
+                return true;
+            }
+            imported_type_owner
+                .entry(name.clone())
+                .or_insert_with(|| summary.path.clone());
+        }
+        for name in &summary.names.imported_values {
+            if value_owner.get(name).is_some_and(|owner| owner != &summary.path) {
+                return true;
+            }
+            imported_value_owner
+                .entry(name.clone())
+                .or_insert_with(|| summary.path.clone());
+        }
+    }
+
+    false
+}
+
 /// Return whether concatenating source files into one worker harness would collide at Rust module scope.
 ///
 /// Worker batches can share one process only when their source files can coexist in the generated crate. If two files
-/// define the same model, function, or other top-level Rust item, the runner falls back to per-file harnesses.
+/// define the same model, function, or another top-level Rust item, or when one file imports a name another file
+/// declares, the runner falls back to per-file harnesses.
 fn batch_has_cross_file_top_level_collision(
     sources_by_file: &[(PathBuf, String)],
     library_imported_vocab: Option<&parser::ImportedLibraryVocab>,
@@ -290,38 +418,8 @@ fn batch_has_cross_file_top_level_collision(
     if sources_by_file.len() <= 1 {
         return false;
     }
-
-    let mut type_owner: HashMap<String, PathBuf> = HashMap::new();
-    let mut value_owner: HashMap<String, PathBuf> = HashMap::new();
-    for (path, source) in sources_by_file {
-        let Ok(tokens) = lexer::lex(source) else {
-            return false;
-        };
-        let Ok(ast) =
-            parser::parse_with_context(&tokens, Some(path.to_string_lossy().as_ref()), library_imported_vocab)
-        else {
-            return false;
-        };
-        let names = collect_top_level_decl_names(&ast_with_inline_test_declarations(&ast));
-        for name in names.types {
-            if type_owner
-                .insert(name, path.clone())
-                .is_some_and(|owner| owner != *path)
-            {
-                return true;
-            }
-        }
-        for name in names.values {
-            if value_owner
-                .insert(name, path.clone())
-                .is_some_and(|owner| owner != *path)
-            {
-                return true;
-            }
-        }
-    }
-
-    false
+    collect_top_level_name_summaries(sources_by_file, library_imported_vocab)
+        .is_some_and(|summaries| top_level_summaries_have_collision(&summaries))
 }
 
 /// Partition files into greedy groups that can still share a generated Rust module scope.
@@ -333,23 +431,258 @@ fn partition_collision_free_file_groups(
     sources_by_file: &[(PathBuf, String)],
     library_imported_vocab: Option<&parser::ImportedLibraryVocab>,
 ) -> Vec<Vec<PathBuf>> {
-    let mut groups: Vec<Vec<(PathBuf, String)>> = Vec::new();
-    'source: for (path, source) in sources_by_file {
+    let Some(summaries) = collect_top_level_name_summaries(sources_by_file, library_imported_vocab) else {
+        return vec![sources_by_file.iter().map(|(path, _)| path.clone()).collect()];
+    };
+
+    let mut groups: Vec<Vec<TopLevelNameSummary>> = Vec::new();
+    'source: for summary in summaries {
         for group in &mut groups {
             let mut candidate = group.clone();
-            candidate.push((path.clone(), source.clone()));
-            if !batch_has_cross_file_top_level_collision(&candidate, library_imported_vocab) {
-                group.push((path.clone(), source.clone()));
+            candidate.push(summary.clone());
+            if !top_level_summaries_have_collision(&candidate) {
+                group.push(summary);
                 continue 'source;
             }
         }
-        groups.push(vec![(path.clone(), source.clone())]);
+        groups.push(vec![summary]);
     }
 
     groups
         .into_iter()
-        .map(|group| group.into_iter().map(|(path, _)| path).collect())
+        .map(|group| group.into_iter().map(|summary| summary.path).collect())
         .collect()
+}
+
+/// Parse each source file in a generated test batch independently, then merge declarations for the shared harness.
+///
+/// The parser's `module tests:` cardinality rule is intentionally per source file. A worker batch may contain several
+/// files, so the runner must not concatenate source text and ask the parser to treat that batch as one file.
+fn parse_test_batch_sources(
+    batch_sources: &[(PathBuf, String)],
+    library_imported_vocab: Option<&parser::ImportedLibraryVocab>,
+    library_imported_dsl_surfaces: Option<&parser::ImportedLibraryDslSurfaces>,
+) -> Result<Program, String> {
+    let mut declarations = Vec::new();
+    let mut warnings = Vec::new();
+    let mut rust_module_path = None;
+    let source_path = batch_sources
+        .first()
+        .map(|(path, _)| path.to_string_lossy().to_string());
+
+    for (path, source) in batch_sources {
+        let tokens = lexer::lex(source).map_err(|e| format!("Lexer error in {}: {:?}", path.display(), e))?;
+        let parsed = parser::parse_with_context_and_surfaces(
+            &tokens,
+            Some(path.to_string_lossy().as_ref()),
+            library_imported_vocab,
+            library_imported_dsl_surfaces,
+        )
+        .map_err(|e| format!("Parser error in {}: {:?}", path.display(), e))?;
+        if let Some(module_path) = parsed.rust_module_path {
+            if rust_module_path.is_some() {
+                return Err(format!(
+                    "Parser error in {}: duplicate rust.module() directives in test batch",
+                    path.display()
+                ));
+            }
+            rust_module_path = Some(module_path);
+        }
+        warnings.extend(parsed.warnings);
+        declarations.extend(parsed.declarations);
+    }
+
+    Ok(Program {
+        declarations,
+        source_path,
+        rust_module_path,
+        warnings,
+    })
+}
+
+struct InlineSourceModuleBatch {
+    ast: Program,
+    source_modules: Vec<ParsedModule>,
+    harnesses: Vec<PreparedModuleHarness>,
+}
+
+fn empty_test_batch_root(first_path: &Path) -> Program {
+    Program {
+        declarations: Vec::new(),
+        source_path: Some(first_path.to_string_lossy().to_string()),
+        rust_module_path: None,
+        warnings: Vec::new(),
+    }
+}
+
+fn program_has_inline_test_module(program: &Program) -> bool {
+    program
+        .declarations
+        .iter()
+        .any(|decl| matches!(decl.node, Declaration::TestModule(_)))
+}
+
+fn prepare_runner_program(ast: &Program) -> Result<(Program, HashMap<String, FixtureExecutionInfo>), String> {
+    let mut runner_ast = ast_with_inline_test_declarations(ast);
+    normalize_runner_assert_statements(&mut runner_ast);
+    prune_shadowed_fixture_declarations(&mut runner_ast);
+    dedupe_import_declarations(&mut runner_ast);
+    let mut fixtures = collect_fixture_execution_info(&runner_ast, &HashMap::new());
+    let fixture_teardowns = split_yield_fixture_declarations(&mut runner_ast)?;
+    apply_fixture_teardowns(&mut fixtures, &fixture_teardowns);
+    Ok((runner_ast, fixtures))
+}
+
+fn parse_and_desugar_test_sources(
+    batch_sources: &[(PathBuf, String)],
+    library_manifest_index: &LibraryManifestIndex,
+    library_imported_vocab: &parser::ImportedLibraryVocab,
+    library_imported_dsl_surfaces: &parser::ImportedLibraryDslSurfaces,
+) -> Result<Program, String> {
+    let mut ast = parse_test_batch_sources(
+        batch_sources,
+        Some(library_imported_vocab),
+        Some(library_imported_dsl_surfaces),
+    )?;
+    let path_display = batch_sources
+        .last()
+        .or_else(|| batch_sources.first())
+        .map(|(path, _)| path.to_string_lossy());
+    if let Err(errors) =
+        vocab_desugar_pass::desugar_program_vocab_blocks(&mut ast, path_display.as_deref(), library_manifest_index)
+    {
+        return Err(format!("Vocab desugar error: {:?}", errors));
+    }
+    Ok(ast)
+}
+
+fn module_name_for_segments(segments: &[String]) -> String {
+    let mut hasher = Sha256::new();
+    for segment in segments {
+        hasher.update(segment.as_bytes());
+        hasher.update([0]);
+    }
+    let digest = hex::encode(hasher.finalize());
+    let stem = if segments.is_empty() {
+        "module".to_string()
+    } else {
+        segments.join("_")
+    };
+    format!("{stem}_{}", &digest[..8])
+}
+
+fn read_conftest_sources(paths: &[PathBuf]) -> Result<Vec<(PathBuf, String)>, String> {
+    let mut sources = Vec::new();
+    for path in paths {
+        let source =
+            fs::read_to_string(path).map_err(|err| format!("Failed to read conftest {}: {}", path.display(), err))?;
+        sources.push((path.clone(), source));
+    }
+    Ok(sources)
+}
+
+fn prepare_inline_source_module_batch(
+    sources_by_file: &[(PathBuf, String)],
+    conftest_files_by_file: &HashMap<PathBuf, Vec<PathBuf>>,
+    source_root: &Path,
+    library_manifest_index: &LibraryManifestIndex,
+    library_imported_vocab: &parser::ImportedLibraryVocab,
+    library_imported_dsl_surfaces: &parser::ImportedLibraryDslSurfaces,
+) -> Result<Option<InlineSourceModuleBatch>, String> {
+    if sources_by_file.len() <= 1 {
+        return Ok(None);
+    }
+
+    let mut source_modules = Vec::new();
+    let mut harnesses = Vec::new();
+    let mut batch_files = HashSet::new();
+    let mut seen_module_paths = HashSet::new();
+    let mut parsed_sources = Vec::new();
+
+    for (path, source) in sources_by_file {
+        let Some(module_path) = logical_module_segments_from_file(source_root, path) else {
+            return Ok(None);
+        };
+        let ast = parse_and_desugar_test_sources(
+            &[(path.clone(), source.clone())],
+            library_manifest_index,
+            library_imported_vocab,
+            library_imported_dsl_surfaces,
+        )?;
+        if !program_has_inline_test_module(&ast) {
+            return Ok(None);
+        }
+        batch_files.insert(canonical_path_for_cache_key(path));
+        parsed_sources.push((path.clone(), source.clone(), module_path, ast));
+    }
+
+    let mut deferred_dependencies = Vec::new();
+    for (path, source, module_path, ast) in parsed_sources {
+        let mut module_sources =
+            read_conftest_sources(conftest_files_by_file.get(&path).map(Vec::as_slice).unwrap_or(&[]))?;
+        module_sources.push((path.clone(), source.clone()));
+        let combined_ast = if module_sources.len() == 1 {
+            ast
+        } else {
+            parse_and_desugar_test_sources(
+                &module_sources,
+                library_manifest_index,
+                library_imported_vocab,
+                library_imported_dsl_surfaces,
+            )?
+        };
+        let (runner_ast, fixtures) = prepare_runner_program(&combined_ast)?;
+        let module_name = module_name_for_segments(&module_path);
+        let module_source = module_sources
+            .iter()
+            .map(|(_, source)| source.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        for dependency in collect_source_modules_for_test(
+            &runner_ast,
+            source_root,
+            Some(library_imported_vocab),
+            Some(library_imported_dsl_surfaces),
+            Some(library_manifest_index),
+        )? {
+            deferred_dependencies.push(dependency);
+        }
+
+        if seen_module_paths.insert(module_path.clone()) {
+            source_modules.push(ParsedModule {
+                name: module_name,
+                path_segments: module_path.clone(),
+                file_path: path.clone(),
+                source: module_source,
+                ast: runner_ast,
+            });
+        }
+        harnesses.push(PreparedModuleHarness {
+            file_path: path,
+            module_path,
+            fixtures,
+        });
+    }
+
+    for dependency in deferred_dependencies {
+        if batch_files.contains(&canonical_path_for_cache_key(&dependency.file_path)) {
+            continue;
+        }
+        if seen_module_paths.insert(dependency.path_segments.clone()) {
+            source_modules.push(dependency);
+        }
+    }
+
+    let first_path = sources_by_file
+        .first()
+        .map(|(path, _)| path.as_path())
+        .unwrap_or_else(|| Path::new("."));
+    Ok(Some(InlineSourceModuleBatch {
+        ast: empty_test_batch_root(first_path),
+        source_modules,
+        harnesses,
+    }))
 }
 
 /// Resolve a dotted expression path using local import aliases collected from the runner AST.
@@ -494,6 +827,7 @@ pub(super) struct PreparedTestFile {
     pub library_manifest_index: LibraryManifestIndex,
     pub ast: Program,
     pub fixtures: HashMap<String, FixtureExecutionInfo>,
+    pub module_harnesses: Vec<PreparedModuleHarness>,
     pub source_modules: Vec<ParsedModule>,
     pub project_root: PathBuf,
     pub resolved: ResolvedDependencies,
@@ -502,6 +836,13 @@ pub(super) struct PreparedTestFile {
     pub lock_payload: Option<String>,
     #[cfg(feature = "rust_inspect")]
     pub rust_inspect_manifest_dir: PathBuf,
+}
+
+/// Runner harness metadata for one inline source file emitted as its own Rust module.
+pub(super) struct PreparedModuleHarness {
+    pub file_path: PathBuf,
+    pub module_path: Vec<String>,
+    pub fixtures: HashMap<String, FixtureExecutionInfo>,
 }
 
 /// Parsed dependency context for the project lock-validation entry point, shared across test batches in one session.
@@ -1008,9 +1349,9 @@ fn compute_test_prep_cache_key(
 
 /// Merge stdlib feature flags from previously prepared files with the current file requirements.
 ///
-/// The rust-inspect workspace lives under one shared `target/incan_lock` directory per package. If files in a single
-/// `incan test` session require different stdlib features, a non-monotonic feature set can cause workspace
-/// fingerprint churn and expensive mid-run rewrites. Keeping a session-local feature union avoids that churn.
+/// Rust-inspect workspaces are keyed by dependency fingerprint under `target/incan_lock`. If files in a single
+/// `incan test` session require different stdlib features, a non-monotonic feature set can fan out into extra
+/// workspaces. Keeping a session-local feature union avoids that churn.
 fn merge_rust_inspect_stdlib_features<'a>(
     existing_feature_sets: impl Iterator<Item = &'a [String]>,
     current_features: &[String],
@@ -1045,7 +1386,7 @@ fn prepare_lock_entry(
     let modules = common::collect_modules(&lock_entry_arg).map_err(|err| err.message.clone())?;
     let mut inline_imports = Vec::new();
     for module in &modules {
-        inline_imports.extend(common::collect_inline_rust_imports(module, false));
+        inline_imports.extend(common::collect_rust_dependency_uses(module, false));
     }
     let project_requirements =
         common::collect_project_requirements(&modules, library_manifest_index).map_err(|err| err.message.clone())?;
@@ -1064,34 +1405,7 @@ fn merge_lock_project_requirements(
     current: &ProjectRequirements,
     lock_entry: &ProjectRequirements,
 ) -> Result<ProjectRequirements, String> {
-    let stdlib_features = current
-        .stdlib_features
-        .iter()
-        .chain(lock_entry.stdlib_features.iter())
-        .cloned()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-
-    let mut dependencies = current.dependencies.clone();
-    for candidate in &lock_entry.dependencies {
-        if let Some(existing) = dependencies.iter().find(|dep| dep.crate_name == candidate.crate_name) {
-            if existing != candidate {
-                return Err(format!(
-                    "dependency requirement `{}` conflicts between test batch and lock entry context",
-                    candidate.crate_name
-                ));
-            }
-            continue;
-        }
-        dependencies.push(candidate.clone());
-    }
-    dependencies.sort_by(|left, right| left.crate_name.cmp(&right.crate_name));
-
-    Ok(ProjectRequirements {
-        stdlib_features,
-        dependencies,
-    })
+    common::merge_project_requirements(current, lock_entry).map_err(|err| err.message)
 }
 
 /// Promote project dev dependencies into ordinary dependencies for generated test-runner crates.
@@ -1356,6 +1670,30 @@ fn test_runner_stdlib_features(
 ) -> Vec<String> {
     let mut features = base.iter().cloned().collect::<BTreeSet<_>>();
     if harness_needs_async_runtime(tests, fixtures) {
+        features.insert("async".to_string());
+    }
+    features.into_iter().collect()
+}
+
+fn test_runner_stdlib_features_for_batch(
+    base: &[String],
+    tests: &[TestInfo],
+    fixtures: &HashMap<String, FixtureExecutionInfo>,
+    module_harnesses: &[PreparedModuleHarness],
+) -> Vec<String> {
+    if module_harnesses.is_empty() {
+        return test_runner_stdlib_features(base, tests, fixtures);
+    }
+
+    let mut features = base.iter().cloned().collect::<BTreeSet<_>>();
+    if module_harnesses.iter().any(|harness| {
+        let file_tests = tests
+            .iter()
+            .filter(|test| test.file_path == harness.file_path)
+            .cloned()
+            .collect::<Vec<_>>();
+        harness_needs_async_runtime(&file_tests, &harness.fixtures)
+    }) {
         features.insert("async".to_string());
     }
     features.into_iter().collect()
@@ -1691,6 +2029,17 @@ fn inject_file_test_harness(
     project_root: &Path,
     fixtures: &HashMap<String, FixtureExecutionInfo>,
 ) -> String {
+    let test_indices = (0..tests.len()).collect::<Vec<_>>();
+    inject_file_test_harness_with_indices(rust_code, tests, &test_indices, project_root, fixtures)
+}
+
+fn inject_file_test_harness_with_indices(
+    rust_code: &str,
+    tests: &[TestInfo],
+    test_indices: &[usize],
+    project_root: &Path,
+    fixtures: &HashMap<String, FixtureExecutionInfo>,
+) -> String {
     let mut out = rust_code.to_string();
     let project_root_literal = project_root.to_string_lossy().to_string();
     out.push_str("\n\n#[cfg(test)]\nmod ");
@@ -1765,7 +2114,7 @@ fn inject_file_test_harness(
         );
     }
     let teardown_fixtures = ordered_teardown_fixtures(tests, fixtures);
-    for (index, t) in tests.iter().enumerate() {
+    for (index, t) in test_indices.iter().copied().zip(tests.iter()) {
         let fname = harness_fn_name(t, index);
         let call = harness_call(t, index, fixtures);
         out.push_str("    #[test]\n    fn ");
@@ -2338,10 +2687,11 @@ fn preheat_status_label(status: HarnessPreheatStatus) -> &'static str {
     }
 }
 
-/// Run every collected test in `tests` that lives in the same `.incn` file with **one** `cargo test` invocation (#271).
+/// Run one collected test execution unit with a single generated Cargo/libtest invocation.
 ///
-/// Returns an empty vector when `tests` is empty. Otherwise every entry must share the same [`TestInfo::file_path`].
-/// Skip/xfail handling stays in [`super::run_tests`].
+/// Ordinary test files still use the root harness shape. Cross-file inline source batches emit each tested source file
+/// as its own Rust module and inject the harness beside the file-local declarations, so imports and public declarations
+/// from different source files do not share one synthetic Rust scope.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_file_tests_batch(
     tests: &[TestInfo],
@@ -2362,6 +2712,7 @@ pub(super) fn run_file_tests_batch(
 
     // ---- Context: load test source, discover manifest, parse and vocab-desugar the test file ----
     let mut source_parts = Vec::new();
+    let mut batch_parse_sources = Vec::new();
     let mut sources_by_file = Vec::new();
     let mut seen_conftests = BTreeSet::new();
     let mut seen_files = BTreeSet::new();
@@ -2375,7 +2726,10 @@ pub(super) fn run_file_tests_batch(
                     continue;
                 }
                 match fs::read_to_string(conftest) {
-                    Ok(source) => source_parts.push(source),
+                    Ok(source) => {
+                        source_parts.push(source.clone());
+                        batch_parse_sources.push((conftest.clone(), source));
+                    }
                     Err(err) => {
                         let message = format!("Failed to read conftest {}: {}", conftest.display(), err);
                         return tests
@@ -2389,6 +2743,7 @@ pub(super) fn run_file_tests_batch(
         match fs::read_to_string(&test.file_path) {
             Ok(source) => {
                 sources_by_file.push((test.file_path.clone(), source.clone()));
+                batch_parse_sources.push((test.file_path.clone(), source.clone()));
                 source_parts.push(source);
             }
             Err(e) => {
@@ -2427,100 +2782,6 @@ pub(super) fn run_file_tests_batch(
     let library_imported_vocab = library_manifest_index.library_imported_vocab();
     let library_imported_dsl_surfaces = library_manifest_index.library_imported_dsl_surfaces();
 
-    if batch_has_cross_file_top_level_collision(&sources_by_file, Some(&library_imported_vocab)) {
-        let mut split_results = Vec::new();
-        for file_group in partition_collision_free_file_groups(&sources_by_file, Some(&library_imported_vocab)) {
-            let file_group = file_group.into_iter().collect::<BTreeSet<_>>();
-            let file_tests = tests
-                .iter()
-                .filter(|test| file_group.contains(&test.file_path))
-                .cloned()
-                .collect::<Vec<_>>();
-            split_results.extend(run_file_tests_batch(
-                &file_tests,
-                conftest_files_by_file,
-                prep_cache,
-                cargo_policy,
-                cargo_features,
-                cargo_no_default_features,
-                cargo_all_features,
-                options,
-            ));
-        }
-        return split_results;
-    }
-
-    let tokens = match lexer::lex(&source) {
-        Ok(t) => t,
-        Err(e) => {
-            return tests
-                .iter()
-                .map(|t| {
-                    (
-                        t.clone(),
-                        TestResult::Failed(start.elapsed(), format!("Lexer error: {:?}", e)),
-                    )
-                })
-                .collect();
-        }
-    };
-
-    let path_display = first.file_path.to_string_lossy();
-    let mut ast = match parser::parse_with_context_and_surfaces(
-        &tokens,
-        Some(path_display.as_ref()),
-        Some(&library_imported_vocab),
-        Some(&library_imported_dsl_surfaces),
-    ) {
-        Ok(a) => a,
-        Err(e) => {
-            return tests
-                .iter()
-                .map(|t| {
-                    (
-                        t.clone(),
-                        TestResult::Failed(start.elapsed(), format!("Parser error: {:?}", e)),
-                    )
-                })
-                .collect();
-        }
-    };
-    if let Err(errors) =
-        vocab_desugar_pass::desugar_program_vocab_blocks(&mut ast, Some(path_display.as_ref()), &library_manifest_index)
-    {
-        return tests
-            .iter()
-            .map(|t| {
-                (
-                    t.clone(),
-                    TestResult::Failed(start.elapsed(), format!("Vocab desugar error: {:?}", errors)),
-                )
-            })
-            .collect();
-    }
-    let mut runner_ast = ast_with_inline_test_declarations(&ast);
-    normalize_runner_assert_statements(&mut runner_ast);
-    prune_shadowed_fixture_declarations(&mut runner_ast);
-    dedupe_import_declarations(&mut runner_ast);
-    let mut fixtures = collect_fixture_execution_info(&runner_ast, &HashMap::new());
-    let fixture_teardowns = match split_yield_fixture_declarations(&mut runner_ast) {
-        Ok(teardowns) => teardowns,
-        Err(message) => {
-            return tests
-                .iter()
-                .map(|t| (t.clone(), TestResult::Failed(start.elapsed(), message.clone())))
-                .collect();
-        }
-    };
-    apply_fixture_teardowns(&mut fixtures, &fixture_teardowns);
-
-    let cargo_feature_selection = CargoFeatureSelection {
-        cargo_features: cargo_features.to_vec(),
-        cargo_no_default_features,
-        cargo_all_features,
-    }
-    .normalized();
-
     // ---- Context: resolve project paths and collect transitive Incan modules for the test ----
     let project_root = manifest
         .as_ref()
@@ -2528,26 +2789,102 @@ pub(super) fn run_file_tests_batch(
         .unwrap_or_else(|| infer_project_root_without_manifest(&first.file_path));
     let project_root = absolute_project_root(&project_root);
     let source_root = common::resolve_source_root(&project_root, manifest.as_ref());
-    let source_modules = match collect_source_modules_for_test(
-        &runner_ast,
+
+    let inline_module_batch = match prepare_inline_source_module_batch(
+        &sources_by_file,
+        conftest_files_by_file,
         &source_root,
-        Some(&library_imported_vocab),
-        Some(&library_imported_dsl_surfaces),
-        Some(&library_manifest_index),
+        &library_manifest_index,
+        &library_imported_vocab,
+        &library_imported_dsl_surfaces,
     ) {
-        Ok(m) => m,
-        Err(e) => {
+        Ok(batch) => batch,
+        Err(message) => {
             return tests
                 .iter()
-                .map(|t| {
-                    (
-                        t.clone(),
-                        TestResult::Failed(start.elapsed(), format!("Failed to collect source modules: {}", e)),
-                    )
-                })
+                .map(|t| (t.clone(), TestResult::Failed(start.elapsed(), message.clone())))
                 .collect();
         }
     };
+
+    let (runner_ast, fixtures, source_modules, module_harnesses) = if let Some(batch) = inline_module_batch {
+        (batch.ast, HashMap::new(), batch.source_modules, batch.harnesses)
+    } else {
+        if batch_has_cross_file_top_level_collision(&sources_by_file, Some(&library_imported_vocab)) {
+            let mut split_results = Vec::new();
+            for file_group in partition_collision_free_file_groups(&sources_by_file, Some(&library_imported_vocab)) {
+                let file_group = file_group.into_iter().collect::<BTreeSet<_>>();
+                let file_tests = tests
+                    .iter()
+                    .filter(|test| file_group.contains(&test.file_path))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                split_results.extend(run_file_tests_batch(
+                    &file_tests,
+                    conftest_files_by_file,
+                    prep_cache,
+                    cargo_policy,
+                    cargo_features,
+                    cargo_no_default_features,
+                    cargo_all_features,
+                    options,
+                ));
+            }
+            return split_results;
+        }
+
+        let ast = match parse_and_desugar_test_sources(
+            &batch_parse_sources,
+            &library_manifest_index,
+            &library_imported_vocab,
+            &library_imported_dsl_surfaces,
+        ) {
+            Ok(ast) => ast,
+            Err(message) => {
+                return tests
+                    .iter()
+                    .map(|t| (t.clone(), TestResult::Failed(start.elapsed(), message.clone())))
+                    .collect();
+            }
+        };
+        let (runner_ast, fixtures) = match prepare_runner_program(&ast) {
+            Ok(prepared) => prepared,
+            Err(message) => {
+                return tests
+                    .iter()
+                    .map(|t| (t.clone(), TestResult::Failed(start.elapsed(), message.clone())))
+                    .collect();
+            }
+        };
+        let source_modules = match collect_source_modules_for_test(
+            &runner_ast,
+            &source_root,
+            Some(&library_imported_vocab),
+            Some(&library_imported_dsl_surfaces),
+            Some(&library_manifest_index),
+        ) {
+            Ok(m) => m,
+            Err(e) => {
+                return tests
+                    .iter()
+                    .map(|t| {
+                        (
+                            t.clone(),
+                            TestResult::Failed(start.elapsed(), format!("Failed to collect source modules: {}", e)),
+                        )
+                    })
+                    .collect();
+            }
+        };
+        (runner_ast, fixtures, source_modules, Vec::new())
+    };
+
+    let cargo_feature_selection = CargoFeatureSelection {
+        cargo_features: cargo_features.to_vec(),
+        cargo_no_default_features,
+        cargo_all_features,
+    }
+    .normalized();
 
     // ---- Context: session prep cache — reuse deps / lock / rust-inspect when key matches ----
     let cache_key = compute_test_prep_cache_key(
@@ -2598,7 +2935,7 @@ pub(super) fn run_file_tests_batch(
             };
 
         let mut resolved =
-            match resolve_dependencies(manifest.as_ref(), &inline_imports, true, &cargo_feature_selection) {
+            match resolve_reachable_dependencies(manifest.as_ref(), &inline_imports, true, &cargo_feature_selection) {
                 Ok(resolved) => resolved,
                 Err(errors) => {
                     let mut sources = HashMap::new();
@@ -2649,21 +2986,25 @@ pub(super) fn run_file_tests_batch(
                             .collect();
                     }
                 };
-            lock_resolved =
-                match resolve_dependencies(manifest.as_ref(), &lock_inline_imports, true, &cargo_feature_selection) {
-                    Ok(resolved) => resolved,
-                    Err(errors) => {
-                        let sources = common::build_source_map(&lock_dependency_modules);
-                        let mut msg = String::new();
-                        for err in &errors {
-                            msg.push_str(&common::format_dependency_error(err, &sources));
-                        }
-                        return tests
-                            .iter()
-                            .map(|t| (t.clone(), TestResult::Failed(start.elapsed(), msg.clone())))
-                            .collect();
+            lock_resolved = match resolve_reachable_dependencies(
+                manifest.as_ref(),
+                &lock_inline_imports,
+                true,
+                &cargo_feature_selection,
+            ) {
+                Ok(resolved) => resolved,
+                Err(errors) => {
+                    let sources = common::build_source_map(&lock_dependency_modules);
+                    let mut msg = String::new();
+                    for err in &errors {
+                        msg.push_str(&common::format_dependency_error(err, &sources));
                     }
-                };
+                    return tests
+                        .iter()
+                        .map(|t| (t.clone(), TestResult::Failed(start.elapsed(), msg.clone())))
+                        .collect();
+                }
+            };
             if let Err(err) =
                 common::merge_project_requirement_dependencies(&mut lock_resolved, &lock_project_requirements)
             {
@@ -2760,6 +3101,7 @@ pub(super) fn run_file_tests_batch(
             library_manifest_index,
             ast: runner_ast,
             fixtures,
+            module_harnesses,
             source_modules,
             project_root,
             resolved: cargo_resolved,
@@ -2787,7 +3129,26 @@ pub(super) fn run_file_tests_batch(
         codegen.add_module_with_path_segments(&module.name, &module.ast, module.path_segments.clone());
     }
     let fixtures = prepared.fixtures.clone();
-    codegen.set_externally_reachable_items(collect_harness_entrypoints(tests, &fixtures));
+    if prepared.module_harnesses.is_empty() {
+        codegen.set_externally_reachable_items(collect_harness_entrypoints(tests, &fixtures));
+    } else {
+        let reachable_by_module = prepared
+            .module_harnesses
+            .iter()
+            .map(|harness| {
+                let file_tests = tests
+                    .iter()
+                    .filter(|test| test.file_path == harness.file_path)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                (
+                    harness.module_path.clone(),
+                    collect_harness_entrypoints(&file_tests, &harness.fixtures),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        codegen.set_externally_reachable_items_by_module(reachable_by_module);
+    }
 
     let batch_file_paths = tests.iter().map(|test| test.file_path.clone()).collect::<Vec<_>>();
     let dir_suffix = file_batch_dir_suffix(&batch_file_paths);
@@ -2804,10 +3165,11 @@ pub(super) fn run_file_tests_batch(
 
     let mut generator = ProjectGenerator::new(&temp_dir, &runner_crate_name, false);
     generator.set_package_name(Some(prepared.project_name.clone()));
-    generator.set_stdlib_features(test_runner_stdlib_features(
+    generator.set_stdlib_features(test_runner_stdlib_features_for_batch(
         &prepared.project_requirements.stdlib_features,
         tests,
         &fixtures,
+        &prepared.module_harnesses,
     ));
     generator.set_cargo_lock_payload(prepared.lock_payload.clone());
     let cargo_flags = common::cargo_command_flags(cargo_policy, &cargo_feature_selection);
@@ -2845,11 +3207,40 @@ pub(super) fn run_file_tests_batch(
             .iter()
             .map(|m| m.path_segments.clone())
             .collect();
-        let (main_code, rust_modules) = match codegen.try_generate_multi_file_nested(&prepared.ast, &module_paths) {
-            Ok(result) => result,
-            Err(e) => return gen_err(format!("Code generation error: {}", e)),
-        };
-        let main_code = inject_file_test_harness(&main_code, tests, &prepared.project_root, &fixtures);
+        let (mut main_code, mut rust_modules) =
+            match codegen.try_generate_multi_file_nested(&prepared.ast, &module_paths) {
+                Ok(result) => result,
+                Err(e) => return gen_err(format!("Code generation error: {}", e)),
+            };
+        if prepared.module_harnesses.is_empty() {
+            main_code = inject_file_test_harness(&main_code, tests, &prepared.project_root, &fixtures);
+        } else {
+            for harness in &prepared.module_harnesses {
+                let tests_with_indices = tests
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, test)| test.file_path == harness.file_path)
+                    .collect::<Vec<_>>();
+                let file_tests = tests_with_indices
+                    .iter()
+                    .map(|(_, test)| (*test).clone())
+                    .collect::<Vec<_>>();
+                let test_indices = tests_with_indices.iter().map(|(index, _)| *index).collect::<Vec<_>>();
+                let Some(module_code) = rust_modules.get_mut(&harness.module_path) else {
+                    return gen_err(format!(
+                        "generated test harness module `{}` was not emitted",
+                        harness.module_path.join(".")
+                    ));
+                };
+                *module_code = inject_file_test_harness_with_indices(
+                    module_code,
+                    &file_tests,
+                    &test_indices,
+                    &prepared.project_root,
+                    &harness.fixtures,
+                );
+            }
+        }
         match generator.generate_nested(&main_code, &rust_modules) {
             Ok(changed) => changed,
             Err(e) => return gen_err(format!("Failed to generate project: {}", e)),
@@ -3478,6 +3869,52 @@ test test_runner_76001490ba86f677::__incan_file_tests::incan_harness_1_b ... FAI
     fn runner_crate_name_is_derived_from_batch_suffix() {
         let name = runner_crate_name_for_batch_suffix("batch_76001490ba86f677");
         assert_eq!(name, "test_runner_76001490ba86f677");
+    }
+
+    #[test]
+    fn partition_collision_free_file_groups_considers_import_bindings() {
+        let sources = vec![
+            (
+                PathBuf::from("tests/test_imports_col.incn"),
+                "from helpers import col\n\ndef test_imported_col() -> None:\n    assert col() == 1\n".to_string(),
+            ),
+            (
+                PathBuf::from("tests/test_declares_col.incn"),
+                "def col() -> int:\n    return 2\n\ndef test_local_col() -> None:\n    assert col() == 2\n".to_string(),
+            ),
+        ];
+
+        let groups = partition_collision_free_file_groups(&sources, None);
+
+        assert_eq!(groups.len(), 2);
+    }
+
+    #[test]
+    fn partition_collision_free_file_groups_allows_repeated_import_bindings() {
+        let sources = vec![
+            (
+                PathBuf::from("tests/test_a.incn"),
+                "from std.testing import assert_eq\n\ndef test_a() -> None:\n    assert_eq(1, 1)\n".to_string(),
+            ),
+            (
+                PathBuf::from("tests/test_b.incn"),
+                "from std.testing import assert_eq\n\ndef test_b() -> None:\n    assert_eq(2, 2)\n".to_string(),
+            ),
+        ];
+
+        let groups = partition_collision_free_file_groups(&sources, None);
+
+        assert_eq!(groups.len(), 1);
+    }
+
+    #[test]
+    fn module_name_for_segments_disambiguates_join_collisions() {
+        let flat = module_name_for_segments(&["a_b".to_string()]);
+        let nested = module_name_for_segments(&["a".to_string(), "b".to_string()]);
+
+        assert_ne!(flat, nested);
+        assert!(flat.starts_with("a_b_"));
+        assert!(nested.starts_with("a_b_"));
     }
 
     #[test]

@@ -647,6 +647,26 @@ fn incan_command() -> Command {
     command
 }
 
+fn run_incan_command_with_timeout(
+    mut command: Command,
+    timeout: std::time::Duration,
+) -> std::io::Result<(std::process::Output, bool)> {
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+    let mut child = command.spawn()?;
+    let start = std::time::Instant::now();
+    loop {
+        if child.try_wait()?.is_some() {
+            return child.wait_with_output().map(|output| (output, false));
+        }
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            return child.wait_with_output().map(|output| (output, true));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
 fn is_incan_fixture(path: &Path) -> bool {
     matches!(path.extension().and_then(|e| e.to_str()), Some("incn") | Some("incan"))
 }
@@ -2096,6 +2116,122 @@ def main() -> None:
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<&str> = stdout.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
     assert_eq!(lines, ["1", "2"], "unexpected lowercase static output");
+    Ok(())
+}
+
+#[test]
+fn test_imported_static_initializer_does_not_deadlock_issue680() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = make_temp_test_dir();
+    let project_name = unique_test_project_name("imported_static_deadlock");
+    std::fs::write(
+        dir.join("incan.toml"),
+        format!("[project]\nname = \"{project_name}\"\nversion = \"0.1.0\"\n"),
+    )?;
+    let src_dir = dir.join("src");
+    std::fs::create_dir_all(&src_dir)?;
+    let state = src_dir.join("state.incn");
+    let facade = src_dir.join("facade.incn");
+    let direct_user = src_dir.join("direct_user.incn");
+    let reexport_user = src_dir.join("reexport_user.incn");
+    let main = src_dir.join("main.incn");
+    std::fs::write(
+        &state,
+        r#"
+pub class Registry:
+  pub entries: list[int]
+
+  @staticmethod
+  def new() -> Self:
+    return Registry(entries=[])
+
+
+pub static registry: Registry = Registry.new()
+
+
+pub def registry_len() -> int:
+  return len(registry.entries)
+"#,
+    )?;
+    std::fs::write(&facade, "pub from state import registry\n")?;
+    std::fs::write(
+        &direct_user,
+        r#"
+from state import registry
+
+
+pub def add_direct() -> None:
+  registry.entries.append(1)
+"#,
+    )?;
+    std::fs::write(
+        &reexport_user,
+        r#"
+from facade import registry
+
+
+pub def add_reexport() -> None:
+  registry.entries.append(1)
+"#,
+    )?;
+    std::fs::write(
+        &main,
+        r#"
+from direct_user import add_direct
+from reexport_user import add_reexport
+from state import registry_len
+
+
+def main() -> None:
+  add_direct()
+  add_reexport()
+  assert registry_len() == 2
+  println("ok")
+"#,
+    )?;
+
+    let mut command = incan_command();
+    command
+        .arg("run")
+        .arg(main.strip_prefix(&dir)?)
+        .current_dir(&dir)
+        .env("CARGO_NET_OFFLINE", "true");
+    let (output, timed_out) = run_incan_command_with_timeout(command, std::time::Duration::from_secs(30))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !timed_out,
+        "imported static init repro timed out; likely deadlocked.\nstdout:\n{}\nstderr:\n{}",
+        stdout, stderr
+    );
+    assert!(
+        output.status.success(),
+        "expected imported static init repro to run.\nstdout:\n{}\nstderr:\n{}",
+        stdout,
+        stderr
+    );
+    assert!(
+        stdout.lines().any(|line| line.trim() == "ok"),
+        "expected imported static init repro to print ok.\nstdout:\n{stdout}"
+    );
+
+    let generated_src_dir = dir.join("target/incan").join(project_name).join("src");
+    let generated_direct_user = std::fs::read_to_string(generated_src_dir.join("direct_user.rs"))?;
+    assert!(
+        generated_direct_user
+            .contains("use crate::state::__incan_init_module_statics as __incan_init_imported_static_registry;")
+            && generated_direct_user.contains("__incan_init_imported_static_registry();"),
+        "direct imported static access should call the defining module init guard before forcing REGISTRY:\n{}",
+        generated_direct_user
+    );
+    let generated_facade = std::fs::read_to_string(generated_src_dir.join("facade.rs"))?;
+    assert!(
+        generated_facade
+            .contains("use crate::state::__incan_init_module_statics as __incan_init_imported_static_registry;")
+            && generated_facade.contains("pub(crate) fn __incan_init_module_statics()")
+            && generated_facade.contains("__incan_init_imported_static_registry();"),
+        "static re-export modules should chain the defining module init guard:\n{}",
+        generated_facade
+    );
     Ok(())
 }
 
@@ -4401,6 +4537,39 @@ pub def main_value() -> int:
         assert!(
             output.status.success(),
             "expected imported union alias list-field project to build for #622.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_keyword_named_public_alias_compiles_issue669() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let project_root = tmp.path().join("keyword_named_public_alias_repro");
+        fs::create_dir_all(&project_root)?;
+        fs::write(
+            project_root.join("test_keyword_alias_probe.incn"),
+            r#"
+pub def modulo_value(value: int) -> int:
+    return value
+
+pub mod = alias modulo_value
+
+
+def test_keyword_alias_probe__can_call_alias() -> None:
+    assert mod(7) == 7, "keyword alias should call the implementation"
+"#,
+        )?;
+
+        let output = incan_command()
+            .args(["test", "test_keyword_alias_probe.incn"])
+            .current_dir(&project_root)
+            .env("CARGO_NET_OFFLINE", "true")
+            .output()?;
+        assert!(
+            output.status.success(),
+            "expected keyword-named public alias test project to pass for #669.\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
@@ -7848,21 +8017,7 @@ def test_sleep_b() -> None:
 "#,
         )?;
 
-        let sequential_start = std::time::Instant::now();
-        let sequential = run_incan_test_with_args(&dir, &["--jobs", "1"]);
-        let sequential_elapsed = sequential_start.elapsed();
-        let sequential_stdout = String::from_utf8_lossy(&sequential.stdout);
-        let sequential_stderr = String::from_utf8_lossy(&sequential.stderr);
-        assert!(
-            sequential.status.success(),
-            "expected sequential warm-up run to pass.\nstdout:\n{}\nstderr:\n{}",
-            sequential_stdout,
-            sequential_stderr,
-        );
-
-        let parallel_start = std::time::Instant::now();
         let parallel = run_incan_test_with_args(&dir, &["--jobs", "2"]);
-        let parallel_elapsed = parallel_start.elapsed();
         let parallel_stdout = String::from_utf8_lossy(&parallel.stdout);
         let parallel_stderr = String::from_utf8_lossy(&parallel.stderr);
         assert!(
@@ -7871,11 +8026,22 @@ def test_sleep_b() -> None:
             parallel_stdout,
             parallel_stderr,
         );
+        let running_a = parallel_stdout
+            .find("test_sleep_a.incn (1 item(s))")
+            .ok_or("expected parallel output to announce test_sleep_a.incn")?;
+        let running_b = parallel_stdout
+            .find("test_sleep_b.incn (1 item(s))")
+            .ok_or("expected parallel output to announce test_sleep_b.incn")?;
+        let passed_a = parallel_stdout
+            .find("test_sleep_a.incn::test_sleep_a PASSED")
+            .ok_or("expected parallel output to report test_sleep_a passing")?;
+        let passed_b = parallel_stdout
+            .find("test_sleep_b.incn::test_sleep_b PASSED")
+            .ok_or("expected parallel output to report test_sleep_b passing")?;
+        let first_pass = passed_a.min(passed_b);
         assert!(
-            parallel_elapsed + std::time::Duration::from_millis(250) < sequential_elapsed,
-            "expected --jobs 2 to run independent file batches concurrently; sequential={:?}, parallel={:?}\nparallel stdout:\n{}",
-            sequential_elapsed,
-            parallel_elapsed,
+            running_a < first_pass && running_b < first_pass,
+            "expected --jobs 2 to launch both independent file batches before either completed\nparallel stdout:\n{}",
             parallel_stdout,
         );
         Ok(())
@@ -8681,6 +8847,126 @@ def test_inferred_generic_decorator_factory_signature() -> None:
     }
 
     #[test]
+    fn e2e_inline_decorated_sum_shadows_builtin_sum_issue677() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = write_test_project(
+            "incan.toml",
+            r#"[project]
+name = "decorated_sum_inline"
+version = "0.1.0"
+"#,
+        );
+        let src_dir = dir.join("src");
+        std::fs::create_dir_all(&src_dir)?;
+        let source_path = src_dir.join("functions.incn");
+        std::fs::write(
+            &source_path,
+            r#"
+pub model IntExpr:
+    pub value: int
+
+pub model TextExpr:
+    pub value: str
+
+pub type Expr = IntExpr | TextExpr
+
+pub model Measure:
+    pub kind: str
+
+pub def registered[F](function_ref: str) -> ((F) -> F):
+    return (func) => func
+
+pub def expr(value: int) -> Expr:
+    return IntExpr(value=value)
+
+@registered("demo.sum")
+pub def sum(value: Expr) -> Measure:
+    return Measure(kind="local")
+
+module tests:
+    def test_inline_test_resolves_decorated_sum_before_builtin_sum() -> None:
+        measure = sum(expr(1))
+        assert measure.kind == "local"
+"#,
+        )?;
+
+        let output = run_incan_test_path(&source_path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "expected decorated inline sum test to pass.\nstdout:\n{}\nstderr:\n{}",
+            stdout,
+            stderr,
+        );
+        assert!(
+            stdout.contains("functions.incn::test_inline_test_resolves_decorated_sum_before_builtin_sum"),
+            "expected the #677 inline test to run.\nstdout:\n{}\nstderr:\n{}",
+            stdout,
+            stderr,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn e2e_conventional_test_batches_split_import_declaration_collisions_issue676()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = write_test_project(
+            "incan.toml",
+            r#"[project]
+name = "import_collision_batch"
+version = "0.1.0"
+"#,
+        );
+        let src_dir = dir.join("src");
+        let tests_dir = dir.join("tests");
+        std::fs::create_dir_all(&src_dir)?;
+        std::fs::create_dir_all(&tests_dir)?;
+        std::fs::write(
+            src_dir.join("helpers.incn"),
+            r#"
+pub def col() -> int:
+    return 1
+"#,
+        )?;
+        std::fs::write(
+            tests_dir.join("test_imports_col.incn"),
+            r#"
+from helpers import col
+
+def test_imported_col() -> None:
+    assert col() == 1
+"#,
+        )?;
+        std::fs::write(
+            tests_dir.join("test_declares_col.incn"),
+            r#"
+def col() -> int:
+    return 2
+
+def test_local_col() -> None:
+    assert col() == 2
+"#,
+        )?;
+
+        let output = run_incan_test(&dir);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "expected import/local declaration collision batch to split and pass.\nstdout:\n{}\nstderr:\n{}",
+            stdout,
+            stderr,
+        );
+        assert!(
+            stdout.contains("test_imported_col") && stdout.contains("test_local_col"),
+            "expected both split test files to run.\nstdout:\n{}\nstderr:\n{}",
+            stdout,
+            stderr,
+        );
+        Ok(())
+    }
+
+    #[test]
     fn e2e_method_call_decorator_factories_use_checked_receiver_lowering() -> Result<(), Box<dyn std::error::Error>> {
         let dir = write_test_project(
             "incan.toml",
@@ -8752,10 +9038,315 @@ def main() -> None:
         );
         assert!(
             generated.contains(".with_mut(|__incan_static_value|")
-                && generated.contains("__incan_static_value.add(__incan_static_arg_0.to_string())"),
+                && (generated.contains("let __incan_static_arg_0 = \"instance\".to_string();")
+                    || generated.contains("let __incan_static_arg_0 = \"instance\".into();"))
+                && generated.contains("__incan_static_value.add(__incan_static_arg_0)"),
             "static registry receiver should lower through static storage access:\n{}",
             generated,
         );
+        Ok(())
+    }
+
+    #[test]
+    fn build_lib_imported_static_decorator_receiver_materializes_string_arg_issue671()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = write_test_project(
+            "incan.toml",
+            r#"[project]
+name = "imported_static_decorator_receiver"
+version = "0.1.0"
+"#,
+        );
+        let src_dir = dir.join("src");
+        std::fs::create_dir_all(&src_dir)?;
+        std::fs::write(
+            src_dir.join("probe_registry.incn"),
+            r#"
+@derive(Clone)
+pub class ProbeRegistry:
+    @staticmethod
+    def new() -> Self:
+        return ProbeRegistry()
+
+    def add[F](mut self, name: str, value: int) -> (F) -> F:
+        return (func) => func
+
+
+pub static PROBE_REGISTRY: ProbeRegistry = ProbeRegistry.new()
+"#,
+        )?;
+        std::fs::write(
+            src_dir.join("probe_decorated.incn"),
+            r#"
+from probe_registry import PROBE_REGISTRY
+
+@PROBE_REGISTRY.add("decorated", 1)
+pub def decorated(value: int) -> int:
+    return value
+"#,
+        )?;
+        std::fs::write(src_dir.join("lib.incn"), "pub from probe_decorated import decorated\n")?;
+
+        let output = incan_command()
+            .args(["build", "--lib"])
+            .current_dir(&*dir)
+            .env("CARGO_NET_OFFLINE", "true")
+            .output()?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "expected imported static decorator receiver project to build for #671.\nstdout:\n{}\nstderr:\n{}",
+            stdout,
+            stderr,
+        );
+
+        let generated = std::fs::read_to_string(dir.join("target/lib/src/probe_decorated.rs"))?;
+        assert!(
+            (generated.contains("let __incan_static_arg_0 = \"decorated\".into();")
+                || generated.contains("let __incan_static_arg_0 = \"decorated\".to_string();"))
+                && !generated.contains("__incan_static_arg_0.clone()"),
+            "imported static decorator string argument should materialize as owned String:\n{}",
+            generated,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn build_static_receiver_option_model_lookup_issue674() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = write_test_project(
+            "main.incn",
+            r#"
+@derive(Clone)
+model Entry:
+    value: int
+
+
+@derive(Clone)
+class Registry:
+    entries: list[Entry]
+
+    @staticmethod
+    def new() -> Self:
+        return Registry(entries=[Entry(value=1)])
+
+    def entry(self, name: str) -> Option[Entry]:
+        if len(self.entries) == 0:
+            return None
+        return Some(self.entries[0])
+
+
+static REGISTRY: Registry = Registry.new()
+
+
+pub def lookup() -> int:
+    match REGISTRY.entry("decorated"):
+        Some(entry) => return entry.value
+        None => return 0
+
+
+def main() -> None:
+    println(lookup())
+"#,
+        );
+
+        let out_dir = dir.join("out");
+        let output = run_incan_build(&dir.join("main.incn"), &out_dir);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "expected static receiver Option model lookup to build for #674.\nstdout:\n{}\nstderr:\n{}",
+            stdout,
+            stderr,
+        );
+
+        let generated = std::fs::read_to_string(out_dir.join("src/main.rs"))?;
+        assert!(
+            generated.contains("match {\n        let __incan_static_arg_0 = \"decorated\".to_string();")
+                || generated.contains("match {\n        let __incan_static_arg_0 = \"decorated\".into();"),
+            "static receiver match scrutinee should materialize args inside an expression block:\n{}",
+            generated,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn e2e_directory_run_preserves_per_file_inline_test_modules_issue676() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = write_test_project(
+            "incan.toml",
+            r#"[project]
+name = "inline_directory_batch"
+version = "0.1.0"
+"#,
+        );
+        let src_dir = dir.join("src");
+        std::fs::create_dir_all(&src_dir)?;
+        std::fs::write(
+            src_dir.join("alpha.incn"),
+            r#"
+const ALPHA_OFFSET: int = 10
+static alpha_runs: int = 0
+
+model AlphaRecord:
+    value: int
+    label: str
+
+def alpha_value() -> int:
+    return 1
+
+def alpha_record() -> AlphaRecord:
+    return AlphaRecord(value=alpha_value() + ALPHA_OFFSET, label="alpha")
+
+
+module tests:
+    def test_alpha_value() -> None:
+        alpha_runs += 1
+        record = alpha_record()
+        assert alpha_value() == 1
+        assert record.value == 11
+        assert record.label == "alpha"
+        assert alpha_runs == 1
+"#,
+        )?;
+        std::fs::write(
+            src_dir.join("beta.incn"),
+            r#"
+const BETA_OFFSET: int = 20
+static beta_runs: int = 0
+
+model BetaRecord:
+    value: int
+    label: str
+
+def beta_value() -> int:
+    return 2
+
+def beta_record() -> BetaRecord:
+    return BetaRecord(value=beta_value() + BETA_OFFSET, label="beta")
+
+
+module tests:
+    def test_beta_value() -> None:
+        beta_runs += 1
+        record = beta_record()
+        assert beta_value() == 2
+        assert record.value == 22
+        assert record.label == "beta"
+        assert beta_runs == 1
+"#,
+        )?;
+        let functions_dir = src_dir.join("functions");
+        std::fs::create_dir_all(&functions_dir)?;
+        std::fs::write(
+            functions_dir.join("columns.incn"),
+            r#"
+const COLUMN_OFFSET: int = 30
+static column_runs: int = 0
+
+model Column:
+    value: int
+    label: str
+
+pub def col() -> int:
+    return 3
+
+def column() -> Column:
+    return Column(value=col() + COLUMN_OFFSET, label="column")
+
+
+module tests:
+    def test_col() -> None:
+        column_runs += 1
+        item = column()
+        assert col() == 3
+        assert item.value == 33
+        assert item.label == "column"
+        assert column_runs == 1
+"#,
+        )?;
+        std::fs::write(
+            functions_dir.join("uses_columns.incn"),
+            r#"
+from functions.columns import col
+
+const USES_COLUMN_OFFSET: int = 40
+static uses_column_runs: int = 0
+
+model UsesColumn:
+    value: int
+    label: str
+
+def uses_col() -> int:
+    return col() + 1
+
+def uses_column() -> UsesColumn:
+    return UsesColumn(value=uses_col() + USES_COLUMN_OFFSET, label="uses-column")
+
+
+module tests:
+    def test_uses_col() -> None:
+        uses_column_runs += 1
+        item = uses_column()
+        assert uses_col() == 4
+        assert item.value == 44
+        assert item.label == "uses-column"
+        assert uses_column_runs == 1
+"#,
+        )?;
+
+        let alpha = run_incan_test_path(&src_dir.join("alpha.incn"));
+        assert!(
+            alpha.status.success(),
+            "expected direct alpha inline test run to pass.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&alpha.stdout),
+            String::from_utf8_lossy(&alpha.stderr),
+        );
+        let beta = run_incan_test_path(&src_dir.join("beta.incn"));
+        assert!(
+            beta.status.success(),
+            "expected direct beta inline test run to pass.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&beta.stdout),
+            String::from_utf8_lossy(&beta.stderr),
+        );
+        let uses_columns = run_incan_test_path(&functions_dir.join("uses_columns.incn"));
+        assert!(
+            uses_columns.status.success(),
+            "expected direct imported inline test run to pass.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&uses_columns.stdout),
+            String::from_utf8_lossy(&uses_columns.stderr),
+        );
+
+        let directory = run_incan_test_path(&src_dir);
+        let stdout = String::from_utf8_lossy(&directory.stdout);
+        let stderr = String::from_utf8_lossy(&directory.stderr);
+        assert!(
+            directory.status.success(),
+            "expected directory inline test run to keep per-file parser context.\nstdout:\n{}\nstderr:\n{}",
+            stdout,
+            stderr,
+        );
+        assert!(
+            stdout.contains("alpha.incn::test_alpha_value")
+                && stdout.contains("beta.incn::test_beta_value")
+                && stdout.contains("columns.incn::test_col")
+                && stdout.contains("uses_columns.incn::test_uses_col"),
+            "expected every inline source file to run from directory discovery.\nstdout:\n{}",
+            stdout,
+        );
+        assert!(
+            !stdout.contains("Only one `module tests:` block") && !stderr.contains("Only one `module tests:` block"),
+            "directory batching should not report duplicate inline modules across files.\nstdout:\n{}\nstderr:\n{}",
+            stdout,
+            stderr,
+        );
+        assert!(
+            !stderr.contains("the name `col` is defined multiple times"),
+            "directory batching should keep imported names inside their source module scope.\nstdout:\n{}\nstderr:\n{}",
+            stdout,
+            stderr,
+        );
+
         Ok(())
     }
 
@@ -10171,527 +10762,6 @@ pub def display[T](data: DataSet[T]) -> None:
             ),
         )?;
         std::fs::write(crate_root.join("src/lib.rs"), lib_source)?;
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    fn write_nested_wasm_vocab_companion_crate(
-        project_root: &Path,
-        relative_path: &str,
-        package_name: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let crate_root = project_root.join(relative_path);
-        std::fs::create_dir_all(crate_root.join("src"))?;
-        std::fs::write(
-            crate_root.join("Cargo.toml"),
-            format!(
-                "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\ncrate-type = [\"rlib\", \"cdylib\"]\n\n[dependencies]\nincan_vocab = {{ path = \"{}\" }}\n\n[workspace]\n",
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("crates")
-                    .join("incan_vocab")
-                    .display()
-            ),
-        )?;
-        std::fs::write(
-            crate_root.join("src/lib.rs"),
-            r#"use incan_vocab::{
-    DesugarError, DesugarOutput, HelperBinding, IncanExpr, IncanStatement, KeywordActivation,
-    KeywordPlacement, KeywordRegistration, KeywordSpec, KeywordSurfaceKind, LibraryManifest,
-    VocabBodyItem, VocabClause, VocabClauseBody, VocabDeclaration, VocabDesugarer,
-    VocabFieldSpec, VocabRegistration, VocabSyntaxNode,
-};
-
-#[derive(Default)]
-pub struct NestedOutputDesugarer;
-
-pub fn library_vocab() -> VocabRegistration {
-    VocabRegistration::new()
-        .with_keyword_registration(KeywordRegistration {
-            activation: KeywordActivation::OnImport {
-                namespace: "nested.dsl".to_string(),
-            },
-            keywords: vec![
-                KeywordSpec::new("compose", KeywordSurfaceKind::BlockDeclaration),
-                context_keyword("action", &["compose"]),
-                context_keyword("layout", &["compose"]),
-                context_keyword("page", &["compose"]),
-                context_keyword("projection", &["compose"]),
-                context_keyword("region", &["layout", "page"]),
-                context_keyword("heading", &["region"]),
-                context_keyword("text", &["region"]),
-                context_keyword("interaction", &["page"]),
-                context_keyword("require", &["interaction"]),
-            ],
-            valid_decorators: Vec::new(),
-        })
-        .with_library_manifest(LibraryManifest {
-            helper_bindings: vec![
-                helper_binding("action"),
-                helper_binding("layout"),
-                helper_binding("page_with_interactions"),
-                helper_binding("projection"),
-                helper_binding("region"),
-                helper_binding("heading"),
-                helper_binding("text"),
-                helper_binding("interaction"),
-                helper_binding("required_input"),
-                helper_binding("surface_with_governance"),
-            ],
-            ..LibraryManifest::default()
-        })
-        .with_desugarer(NestedOutputDesugarer)
-}
-
-impl VocabDesugarer for NestedOutputDesugarer {
-    fn desugar(&self, node: &VocabSyntaxNode) -> Result<DesugarOutput, DesugarError> {
-        match node {
-            VocabSyntaxNode::Declaration(declaration) if declaration.keyword == "compose" => Ok(
-                DesugarOutput::Statements(vec![complex_artifact_let_statement(declaration)?]),
-            ),
-            VocabSyntaxNode::Declaration(_) => Err(DesugarError::new(
-                "nested output desugarer expected a compose declaration",
-            )),
-            _ => Err(DesugarError::new(
-                "nested output desugarer expected a declaration node",
-            )),
-        }
-    }
-}
-
-fn helper_binding(name: &str) -> HelperBinding {
-    HelperBinding {
-        key: name.to_string(),
-        exported_name: name.to_string(),
-    }
-}
-
-fn context_keyword(name: &str, parents: &[&str]) -> KeywordSpec {
-    KeywordSpec::new(name, KeywordSurfaceKind::BlockContextKeyword)
-        .with_placement(KeywordPlacement::in_block(parents.iter().copied()))
-}
-
-fn complex_artifact_let_statement(declaration: &VocabDeclaration) -> Result<IncanStatement, DesugarError> {
-    Ok(IncanStatement::Let {
-        name: "nested_artifact".to_string(),
-        mutable: false,
-        value: complex_artifact_call(declaration)?,
-    })
-}
-
-fn complex_artifact_call(declaration: &VocabDeclaration) -> Result<IncanExpr, DesugarError> {
-    let name = declaration
-        .head
-        .name
-        .clone()
-        .ok_or_else(|| DesugarError::new("compose declarations require a name"))?;
-    let mut title = name.clone();
-    let mut base = "/".to_string();
-    let mut actions = Vec::new();
-    let mut layouts = Vec::new();
-    let mut pages = Vec::new();
-    let mut projections = Vec::new();
-
-    for item in &declaration.body {
-        match item {
-            VocabBodyItem::Statement(statement) => apply_surface_statement(&mut title, &mut base, statement)?,
-            VocabBodyItem::Clause(clause) => match clause.keyword.as_str() {
-                "action" => actions.push(desugar_action(clause)?),
-                "layout" => layouts.push(desugar_layout(clause)?),
-                "page" => pages.push(desugar_page(clause)?),
-                "projection" => projections.push(desugar_projection(clause)?),
-                other => return Err(DesugarError::new(format!("unsupported compose clause `{other}`"))),
-            },
-            VocabBodyItem::Declaration(declaration) => {
-                return Err(DesugarError::new(format!(
-                    "unsupported nested declaration `{}`",
-                    declaration.keyword
-                )));
-            }
-            _ => return Err(DesugarError::new("unsupported compose body item")),
-        }
-    }
-
-    Ok(call(
-        "surface_with_governance",
-        vec![
-            string(&name),
-            string(&title),
-            string(&base),
-            list(actions),
-            list(layouts),
-            list(pages),
-            list(projections),
-        ],
-    ))
-}
-
-fn apply_surface_statement(title: &mut String, base: &mut String, statement: &IncanStatement) -> Result<(), DesugarError> {
-    match statement {
-        IncanStatement::Let { name, value, .. } | IncanStatement::Assign { target: name, value } => match name.as_str() {
-            "title" => *title = string_value(value, "compose title")?,
-            "base" => *base = string_value(value, "compose base")?,
-            other => return Err(DesugarError::new(format!("unsupported compose assignment `{other}`"))),
-        },
-        IncanStatement::Pass => {}
-        _ => return Err(DesugarError::new("compose body only supports assignments and nested clauses")),
-    }
-    Ok(())
-}
-
-fn desugar_action(clause: &VocabClause) -> Result<IncanExpr, DesugarError> {
-    let name = required_head_name(clause, "action")?;
-    let mut capability = name.clone();
-    let mut required_evidence = String::new();
-    match &clause.body {
-        VocabClauseBody::FieldSet(fields) => {
-            for field in fields {
-                apply_action_assignment(
-                    &mut capability,
-                    &mut required_evidence,
-                    &field.name,
-                    field_value(field, "action assignment")?,
-                )?;
-            }
-        }
-        _ => {
-            for item in clause_items(clause)? {
-                match item {
-                    VocabBodyItem::Statement(statement) => match statement {
-                        IncanStatement::Let { name, value, .. } | IncanStatement::Assign { target: name, value } => {
-                            apply_action_assignment(&mut capability, &mut required_evidence, name, value)?;
-                        }
-                        IncanStatement::Pass => {}
-                        _ => return Err(DesugarError::new("action body only supports assignments")),
-                    },
-                    VocabBodyItem::Clause(other) => return Err(DesugarError::new(format!("unsupported `{}` block inside action", other.keyword))),
-                    VocabBodyItem::Declaration(_) => return Err(DesugarError::new("action body only supports assignments")),
-                    _ => return Err(DesugarError::new("action body only supports assignments")),
-                }
-            }
-        }
-    }
-    Ok(call("action", vec![string(&name), string(&capability), string(&required_evidence)]))
-}
-
-fn apply_action_assignment(
-    capability: &mut String,
-    required_evidence: &mut String,
-    name: &str,
-    value: &IncanExpr,
-) -> Result<(), DesugarError> {
-    match name {
-        "capability" => *capability = string_value(value, "action capability")?,
-        "requires" | "required_evidence" => *required_evidence = string_value(value, "action required evidence")?,
-        other => return Err(DesugarError::new(format!("unsupported action assignment `{other}`"))),
-    }
-    Ok(())
-}
-
-fn desugar_layout(clause: &VocabClause) -> Result<IncanExpr, DesugarError> {
-    let name = required_head_name(clause, "layout")?;
-    let mut regions = Vec::new();
-    for item in clause_items(clause)? {
-        match item {
-            VocabBodyItem::Clause(region_clause) if region_clause.keyword == "region" => {
-                regions.push(string(&required_head_name(region_clause, "layout region")?));
-            }
-            VocabBodyItem::Statement(IncanStatement::Pass) => {}
-            VocabBodyItem::Clause(other) => return Err(DesugarError::new(format!("unsupported `{}` block inside layout", other.keyword))),
-            _ => return Err(DesugarError::new("layout body only supports region blocks")),
-        }
-    }
-    Ok(call("layout", vec![string(&name), list(regions)]))
-}
-
-fn desugar_page(clause: &VocabClause) -> Result<IncanExpr, DesugarError> {
-    let name = required_head_name(clause, "page")?;
-    let mut route = "/".to_string();
-    let mut title = name.clone();
-    let mut layout_name = "SimplePage".to_string();
-    let mut regions = Vec::new();
-    let mut interactions = Vec::new();
-    for item in clause_items(clause)? {
-        match item {
-            VocabBodyItem::Statement(statement) => match statement {
-                IncanStatement::Let { name, value, .. } | IncanStatement::Assign { target: name, value } => match name.as_str() {
-                    "route" => route = string_value(value, "page route")?,
-                    "title" => title = string_value(value, "page title")?,
-                    "layout" => layout_name = string_or_name_value(value, "page layout")?,
-                    other => return Err(DesugarError::new(format!("unsupported page assignment `{other}`"))),
-                },
-                IncanStatement::Pass => {}
-                _ => return Err(DesugarError::new("page body only supports assignments, regions, and interactions")),
-            },
-            VocabBodyItem::Clause(region_clause) if region_clause.keyword == "region" => {
-                regions.push(desugar_region(region_clause)?);
-            }
-            VocabBodyItem::Clause(interaction_clause) if interaction_clause.keyword == "interaction" => {
-                interactions.push(desugar_interaction(interaction_clause)?);
-            }
-            VocabBodyItem::Clause(other) => return Err(DesugarError::new(format!("unsupported `{}` block inside page", other.keyword))),
-            VocabBodyItem::Declaration(_) => return Err(DesugarError::new("page body does not support nested declarations")),
-            _ => return Err(DesugarError::new("page body only supports assignments, regions, and interactions")),
-        }
-    }
-    Ok(call(
-        "page_with_interactions",
-        vec![
-            string(&name),
-            string(&route),
-            string(&title),
-            string(&layout_name),
-            list(regions),
-            list(interactions),
-        ],
-    ))
-}
-
-fn desugar_region(clause: &VocabClause) -> Result<IncanExpr, DesugarError> {
-    let name = required_head_name(clause, "region")?;
-    let mut nodes = Vec::new();
-    for item in clause_items(clause)? {
-        match item {
-            VocabBodyItem::Clause(node_clause) if node_clause.keyword == "heading" => {
-                nodes.push(call("heading", vec![string(&required_head_string(node_clause, "heading")?)]));
-            }
-            VocabBodyItem::Clause(node_clause) if node_clause.keyword == "text" => {
-                nodes.push(call("text", vec![string(&required_head_string(node_clause, "text")?)]));
-            }
-            VocabBodyItem::Statement(IncanStatement::Pass) => {}
-            VocabBodyItem::Clause(other) => return Err(DesugarError::new(format!("unsupported `{}` block inside region", other.keyword))),
-            _ => return Err(DesugarError::new("region body only supports heading and text blocks")),
-        }
-    }
-    Ok(call("region", vec![string(&name), list(nodes)]))
-}
-
-fn desugar_interaction(clause: &VocabClause) -> Result<IncanExpr, DesugarError> {
-    let name = required_head_name(clause, "interaction")?;
-    let mut action = name.clone();
-    let mut constraints = Vec::new();
-    match &clause.body {
-        VocabClauseBody::FieldSet(fields) => {
-            for field in fields {
-                if field.name == "action" {
-                    action = string_or_name_value(field_value(field, "interaction action")?, "interaction action")?;
-                } else {
-                    return Err(DesugarError::new(format!("unsupported interaction assignment `{}`", field.name)));
-                }
-            }
-        }
-        _ => {
-            for item in clause_items(clause)? {
-                match item {
-                    VocabBodyItem::Statement(statement) => match statement {
-                        IncanStatement::Let { name, value, .. } | IncanStatement::Assign { target: name, value } => match name.as_str() {
-                            "action" => action = string_or_name_value(value, "interaction action")?,
-                            other => return Err(DesugarError::new(format!("unsupported interaction assignment `{other}`"))),
-                        },
-                        IncanStatement::Pass => {}
-                        _ => return Err(DesugarError::new("interaction body only supports assignments and require blocks")),
-                    },
-                    VocabBodyItem::Clause(require_clause) if require_clause.keyword == "require" => {
-                        constraints.push(desugar_required_input(&name, require_clause)?);
-                    }
-                    VocabBodyItem::Clause(other) => return Err(DesugarError::new(format!("unsupported `{}` block inside interaction", other.keyword))),
-                    VocabBodyItem::Declaration(_) => return Err(DesugarError::new("interaction body does not support nested declarations")),
-                    _ => return Err(DesugarError::new("interaction body only supports assignments and require blocks")),
-                }
-            }
-        }
-    }
-    Ok(call("interaction", vec![string(&name), string(&action), list(constraints)]))
-}
-
-fn desugar_required_input(interaction_name: &str, clause: &VocabClause) -> Result<IncanExpr, DesugarError> {
-    let mut field = required_input_field(clause)?;
-    let mut label = field.clone();
-    let mut min_length = "1".to_string();
-    let mut evidence_key = String::new();
-    match &clause.body {
-        VocabClauseBody::FieldSet(fields) => {
-            for field_spec in fields {
-                apply_required_input_assignment(
-                    &mut field,
-                    &mut label,
-                    &mut min_length,
-                    &mut evidence_key,
-                    &field_spec.name,
-                    field_value(field_spec, "require input assignment")?,
-                )?;
-            }
-        }
-        _ => {
-            for item in clause_items(clause)? {
-                match item {
-                    VocabBodyItem::Statement(statement) => match statement {
-                        IncanStatement::Let { name, value, .. } | IncanStatement::Assign { target: name, value } => {
-                            apply_required_input_assignment(
-                                &mut field,
-                                &mut label,
-                                &mut min_length,
-                                &mut evidence_key,
-                                name,
-                                value,
-                            )?;
-                        }
-                        IncanStatement::Pass => {}
-                        _ => return Err(DesugarError::new("require input body only supports assignments")),
-                    },
-                    _ => return Err(DesugarError::new("require input body only supports assignments")),
-                }
-            }
-        }
-    }
-    Ok(call(
-        "required_input",
-        vec![
-            string(interaction_name),
-            string(&field),
-            string(&label),
-            string(&min_length),
-            string(&evidence_key),
-        ],
-    ))
-}
-
-fn apply_required_input_assignment(
-    field: &mut String,
-    label: &mut String,
-    min_length: &mut String,
-    evidence_key: &mut String,
-    name: &str,
-    value: &IncanExpr,
-) -> Result<(), DesugarError> {
-    match name {
-        "field" => *field = string_or_name_value(value, "required input field")?,
-        "label" => *label = string_value(value, "required input label")?,
-        "min_length" => *min_length = int_or_string_value(value, "required input min_length")?,
-        "evidence" | "evidence_key" => *evidence_key = string_value(value, "required input evidence")?,
-        other => return Err(DesugarError::new(format!("unsupported require input assignment `{other}`"))),
-    }
-    Ok(())
-}
-
-fn desugar_projection(clause: &VocabClause) -> Result<IncanExpr, DesugarError> {
-    let name = required_head_name(clause, "projection")?;
-    let mut target = "static-web".to_string();
-    match &clause.body {
-        VocabClauseBody::FieldSet(fields) => {
-            for field in fields {
-                if field.name == "target" {
-                    target = string_value(field_value(field, "projection target")?, "projection target")?;
-                } else {
-                    return Err(DesugarError::new(format!("unsupported projection assignment `{}`", field.name)));
-                }
-            }
-        }
-        _ => {
-            for item in clause_items(clause)? {
-                match item {
-                    VocabBodyItem::Statement(statement) => match statement {
-                        IncanStatement::Let { name, value, .. } | IncanStatement::Assign { target: name, value } if name == "target" => {
-                            target = string_value(value, "projection target")?;
-                        }
-                        IncanStatement::Pass => {}
-                        _ => return Err(DesugarError::new("projection body only supports target assignment")),
-                    },
-                    _ => return Err(DesugarError::new("projection body only supports target assignment")),
-                }
-            }
-        }
-    }
-    Ok(call("projection", vec![string(&name), string(&target)]))
-}
-
-fn clause_items(clause: &VocabClause) -> Result<&[VocabBodyItem], DesugarError> {
-    match &clause.body {
-        VocabClauseBody::Empty => Ok(&[]),
-        VocabClauseBody::Items(items) => Ok(items.as_slice()),
-        _ => Err(DesugarError::new(format!("unsupported `{}` body shape", clause.keyword))),
-    }
-}
-
-fn required_head_name(clause: &VocabClause, label: &str) -> Result<String, DesugarError> {
-    let Some(value) = clause.head.first() else {
-        return Err(DesugarError::new(format!("{label} requires a name")));
-    };
-    string_or_name_value(value, label)
-}
-
-fn required_head_string(clause: &VocabClause, label: &str) -> Result<String, DesugarError> {
-    let Some(value) = clause.head.first() else {
-        return Err(DesugarError::new(format!("{label} requires text")));
-    };
-    string_value(value, label)
-}
-
-fn required_input_field(clause: &VocabClause) -> Result<String, DesugarError> {
-    if !clause.compound_tokens.is_empty() && clause.compound_tokens[0] == "input" {
-        if let Some(value) = clause.head.first() {
-            return string_or_name_value(value, "require input field");
-        }
-        return Ok(String::new());
-    }
-    if !clause.head.is_empty() {
-        let first = string_or_name_value(&clause.head[0], "require input marker")?;
-        if first == "input" {
-            if clause.head.len() >= 2 {
-                return string_or_name_value(&clause.head[1], "require input field");
-            }
-            return Ok(String::new());
-        }
-    }
-    Err(DesugarError::new("required-input constraints must use `require input`"))
-}
-
-fn string_value(expr: &IncanExpr, label: &str) -> Result<String, DesugarError> {
-    match expr {
-        IncanExpr::Str(value) => Ok(value.clone()),
-        _ => Err(DesugarError::new(format!("{label} must be a string literal"))),
-    }
-}
-
-fn string_or_name_value(expr: &IncanExpr, label: &str) -> Result<String, DesugarError> {
-    match expr {
-        IncanExpr::Str(value) | IncanExpr::Name(value) => Ok(value.clone()),
-        _ => Err(DesugarError::new(format!("{label} must be a name or string literal"))),
-    }
-}
-
-fn int_or_string_value(expr: &IncanExpr, label: &str) -> Result<String, DesugarError> {
-    match expr {
-        IncanExpr::Int(value) => Ok(value.to_string()),
-        IncanExpr::Str(value) => Ok(value.clone()),
-        _ => Err(DesugarError::new(format!("{label} must be an integer or string literal"))),
-    }
-}
-
-fn field_value<'a>(field: &'a VocabFieldSpec, label: &str) -> Result<&'a IncanExpr, DesugarError> {
-    field
-        .default_value
-        .as_ref()
-        .ok_or_else(|| DesugarError::new(format!("{label} `{}` requires a value", field.name)))
-}
-
-fn call(helper: &str, args: Vec<IncanExpr>) -> IncanExpr {
-    IncanExpr::Call {
-        callee: Box::new(IncanExpr::Helper(helper.to_string())),
-        args,
-    }
-}
-
-fn list(items: Vec<IncanExpr>) -> IncanExpr {
-    IncanExpr::List(items)
-}
-
-fn string(value: &str) -> IncanExpr {
-    IncanExpr::Str(value.to_string())
-}
-
-incan_vocab::export_wasm_desugarer!(NestedOutputDesugarer);
-"#,
-        )?;
         Ok(())
     }
 
@@ -12430,6 +12500,29 @@ def main() -> None:
             "expected helper-backed `screen` check to succeed.\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&screen_check.stdout),
             String::from_utf8_lossy(&screen_check.stderr)
+        );
+
+        let where_out_dir = tmp.path().join("where_out");
+        let where_build = run_build(&where_main, &where_out_dir)?;
+        assert!(
+            where_build.status.success(),
+            "expected helper-backed `where` build to succeed.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&where_build.stdout),
+            String::from_utf8_lossy(&where_build.stderr)
+        );
+        let screen_out_dir = tmp.path().join("screen_out");
+        let screen_build = run_build(&screen_main, &screen_out_dir)?;
+        assert!(
+            screen_build.status.success(),
+            "expected helper-backed `screen` build to succeed.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&screen_build.stdout),
+            String::from_utf8_lossy(&screen_build.stderr)
+        );
+        let where_generated = std::fs::read_to_string(where_out_dir.join("src/main.rs"))?;
+        let screen_generated = std::fs::read_to_string(screen_out_dir.join("src/main.rs"))?;
+        assert_eq!(
+            where_generated, screen_generated,
+            "equivalent helper-backed keywords should emit identical Rust"
         );
         Ok(())
     }
