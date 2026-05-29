@@ -1854,11 +1854,23 @@ impl TypeChecker {
             ResolvedType::Ref(_) | ResolvedType::RefMut(_) | ResolvedType::Function(_, _) | ResolvedType::SelfType => {
                 true
             }
-            ResolvedType::TypeVar(_) | ResolvedType::CallSiteInfer => false,
+            ResolvedType::TypeVar(name) => self.active_type_param_has_builtin_bound(name, TraitId::Clone),
+            ResolvedType::CallSiteInfer => false,
             // RFC 041: provenance is known, but Incan does not yet query Rust for `Copy`/`Clone`; do not assume.
             ResolvedType::RustPath(_) => false,
             ResolvedType::Unknown => true,
         }
+    }
+
+    fn active_type_param_has_builtin_bound(&self, type_param: &str, trait_id: TraitId) -> bool {
+        let expected = core_traits::as_str(trait_id);
+        self.current_type_param_bound_details.iter().rev().any(|frame| {
+            frame.get(type_param).is_some_and(|bounds| {
+                bounds
+                    .iter()
+                    .any(|bound| bound.name == expected || Self::type_bound_source_name(bound) == expected)
+            })
+        })
     }
 
     /// [`ResolvedType::SelfType`] in a trait method signature means the receiver type for this call site.
@@ -2485,7 +2497,7 @@ impl TypeChecker {
         index: &Spanned<Expr>,
         span: Span,
     ) -> ResolvedType {
-        let base_ty = self.check_expr(base);
+        let base_ty = self.check_type_receiver_expr(base);
         if let Some(ty) = self.resolve_type_index_expression(&base_ty, base) {
             return ty;
         }
@@ -2629,7 +2641,7 @@ impl TypeChecker {
         field: &str,
         span: Span,
     ) -> ResolvedType {
-        let base_ty = self.check_expr(base);
+        let base_ty = self.check_type_receiver_expr(base);
 
         // Imported modules use symbol-driven metadata resolution.
         if let Some((module_name, module_path)) = self.imported_module_for_expr(base) {
@@ -2681,6 +2693,9 @@ impl TypeChecker {
                 RustItemKind::Type(_) => {
                     if let Some(sig) = self.rust_associated_function_signature(path, field) {
                         return self.resolved_function_type_from_rust_sig_for_path(&sig, false, path);
+                    }
+                    if let Some(params) = self.rust_variant_callable_params(path, field) {
+                        return ResolvedType::Function(params, Box::new(ResolvedType::RustPath(path.to_string())));
                     }
                     if let RustItemKind::Type(info) = &meta.kind
                         && let Some(rust_field) = info.fields.iter().find(|f| f.name == field)
@@ -2941,7 +2956,7 @@ impl TypeChecker {
             return self.check_builtin_list_repeat_call(args, span);
         }
 
-        let base_ty = self.check_expr(base);
+        let base_ty = self.check_type_receiver_expr(base);
 
         // If the receiver type is Unknown, be permissive and do not error on methods.
         if matches!(base_ty, ResolvedType::Unknown) {
@@ -3021,6 +3036,24 @@ impl TypeChecker {
         }
 
         if let Some(path) = self.rust_canonical_path_for_receiver_type(&base_ty) {
+            if let Some(params) = self.rust_variant_callable_params(&path, method) {
+                if !type_args.is_empty() {
+                    self.errors
+                        .push(errors::explicit_call_site_type_args_not_supported(span));
+                }
+                let arg_types = self.check_call_arg_types_for_params(args, &params);
+                let mut type_bindings = std::collections::HashMap::new();
+                self.validate_callable_arg_bindings(
+                    format!("rust::{path}.{method}").as_str(),
+                    &params,
+                    args,
+                    &arg_types,
+                    &mut type_bindings,
+                    span,
+                );
+                self.type_info.record_call_site_callable_params_exact(span, &params);
+                return ResolvedType::RustPath(path);
+            }
             if let Some(ret) = Self::known_rust_path_method_return(path.as_str(), method) {
                 return ret;
             }

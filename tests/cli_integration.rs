@@ -1932,6 +1932,311 @@ def main() -> None:
 }
 
 #[test]
+fn run_type_parameter_reflection_calls_issue715() -> Result<(), Box<dyn std::error::Error>> {
+    let tmp = tempfile::tempdir()?;
+    let main_path = write_minimal_project(tmp.path(), "type_parameter_reflection_issue715", "")?;
+    let src_dir = main_path.parent().ok_or("main path had no parent")?;
+    fs::write(
+        src_dir.join("schema_helpers.incn"),
+        r#"pub def class_name_for[T]() -> str:
+    return T.__class_name__()
+
+
+pub def field_count_for[T]() -> int:
+    return len(T.__fields__())
+
+
+pub def print_schema[T]() -> None:
+    println(str(T.__class_name__()))
+    for info in T.__fields__():
+        println(f"{info.name}|{info.wire_name}|{info.type_name}|{info.has_default}")
+"#,
+    )?;
+    fs::write(
+        &main_path,
+        r#"from schema_helpers import class_name_for, field_count_for, print_schema
+
+
+model MySchema:
+    id [description="Stable id"]: int
+    status [alias="state"]: str = "new"
+
+
+class BareSchema:
+    value: int
+
+
+def local_field_count[T]() -> int:
+    return len(T.__fields__())
+
+
+def main() -> None:
+    println(class_name_for[MySchema]())
+    println(field_count_for[MySchema]())
+    println(local_field_count[MySchema]())
+    print_schema[MySchema]()
+    println(class_name_for[BareSchema]())
+    println(field_count_for[BareSchema]())
+"#,
+    )?;
+
+    let check_output = run_incan(
+        tmp.path(),
+        &["--check", main_path.to_str().ok_or("main path was not valid UTF-8")?],
+    )?;
+    assert_success(&check_output, "incan --check for type-parameter reflection issue715");
+
+    let run_output = run_incan(
+        tmp.path(),
+        &["run", main_path.to_str().ok_or("main path was not valid UTF-8")?],
+    )?;
+    assert_success(&run_output, "incan run for type-parameter reflection issue715");
+    let stdout = String::from_utf8_lossy(&run_output.stdout);
+    let lines = stdout.lines().collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        vec![
+            "MySchema",
+            "2",
+            "2",
+            "MySchema",
+            "id|id|int|false",
+            "status|state|str|true",
+            "BareSchema",
+            "1",
+        ],
+        "unexpected type-parameter reflection output:\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn run_decorated_type_parameter_reflection_calls_issue715() -> Result<(), Box<dyn std::error::Error>> {
+    let tmp = tempfile::tempdir()?;
+    let main_path = write_minimal_project(tmp.path(), "decorated_type_parameter_reflection_issue715", "")?;
+    let src_dir = main_path.parent().ok_or("main path had no parent")?;
+    fs::write(
+        src_dir.join("reflection_helpers.incn"),
+        r#"def requires_clone[T with Clone]() -> str:
+    return "clone"
+
+
+pub def reflected_schema_marker[T]() -> str:
+    return f"{T.__class_name__()}:{len(T.__fields__())}:{requires_clone[T]()}"
+"#,
+    )?;
+    fs::write(
+        &main_path,
+        r#"from reflection_helpers import reflected_schema_marker
+
+
+static decorated_names: list[str] = []
+
+
+def register[F]() -> ((F) -> F):
+    return (func) => remember[F](func)
+
+
+def remember[F](func: F) -> F:
+    decorated_names.append(func.__name__)
+    return func
+
+
+@register()
+def class_name_for[T]() -> str:
+    return str(T.__class_name__())
+
+
+@register()
+def field_count_for[T]() -> int:
+    return len(T.__fields__())
+
+
+def requires_clone[T with Clone]() -> str:
+    return "clone"
+
+
+@register()
+def clone_marker_for[T]() -> str:
+    return requires_clone[T]()
+
+
+@register()
+def imported_reflection_for[T]() -> str:
+    return reflected_schema_marker[T]()
+
+
+model MySchema:
+    id: int
+    status: str
+
+
+def main() -> None:
+    println(class_name_for[MySchema]())
+    println(field_count_for[MySchema]())
+    println(clone_marker_for[MySchema]())
+    println(imported_reflection_for[MySchema]())
+    println(imported_reflection_for[MySchema]())
+    println(decorated_names[0])
+    println(decorated_names[1])
+    println(decorated_names[2])
+    println(decorated_names[3])
+    println(len(decorated_names))
+"#,
+    )?;
+
+    let run_output = run_incan(
+        tmp.path(),
+        &["run", main_path.to_str().ok_or("main path was not valid UTF-8")?],
+    )?;
+    assert_success(
+        &run_output,
+        "incan run for decorated type-parameter reflection issue715",
+    );
+    let stdout = String::from_utf8_lossy(&run_output.stdout);
+    let lines = stdout.lines().collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        vec![
+            "MySchema",
+            "2",
+            "clone",
+            "MySchema:2:clone",
+            "MySchema:2:clone",
+            "class_name_for",
+            "field_count_for",
+            "clone_marker_for",
+            "imported_reflection_for",
+            "4",
+        ],
+        "unexpected decorated type-parameter reflection output:\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn check_bare_model_type_value_rejected_issue714() -> Result<(), Box<dyn std::error::Error>> {
+    let tmp = tempfile::tempdir()?;
+    let main_path = write_minimal_project(tmp.path(), "model_type_value_issue714", "")?;
+    fs::write(
+        &main_path,
+        r#"model MySchema:
+    id: int
+    status: str
+
+
+def accepts_any[T](value: T) -> str:
+    return str(value.__class_name__())
+
+
+def main() -> None:
+    println(accepts_any(MySchema))
+"#,
+    )?;
+
+    let check_output = run_incan(
+        tmp.path(),
+        &["--check", main_path.to_str().ok_or("main path was not valid UTF-8")?],
+    )?;
+    assert_failure(&check_output, "incan --check for bare model type value issue714");
+    let stderr = String::from_utf8_lossy(&check_output.stderr);
+    assert!(
+        stderr.contains("Cannot use type 'MySchema' as a value"),
+        "expected bare model type value diagnostic, got:\n{stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn build_inline_fstring_rust_str_argument_issue716() -> Result<(), Box<dyn std::error::Error>> {
+    let tmp = tempfile::tempdir()?;
+    let main_path = write_minimal_project(tmp.path(), "inline_fstring_rust_str_argument_issue716", "")?;
+    fs::write(
+        &main_path,
+        r#"from rust::incan_stdlib::errors import raise_value_error
+
+
+def fail_inline(value: str) -> int:
+    return raise_value_error(f"bad value `{value}`")
+
+
+def fail_local(value: str) -> int:
+    message = f"bad value `{value}`"
+    return raise_value_error(message)
+
+
+def main() -> None:
+    fail_inline("x")
+"#,
+    )?;
+
+    let build_output = run_incan(
+        tmp.path(),
+        &["build", main_path.to_str().ok_or("main path was not valid UTF-8")?],
+    )?;
+    assert_success(
+        &build_output,
+        "incan build for inline f-string Rust &str argument issue716",
+    );
+    Ok(())
+}
+
+#[test]
+fn build_inline_fstring_rust_string_variant_issue716() -> Result<(), Box<dyn std::error::Error>> {
+    let tmp = tempfile::tempdir()?;
+    let helper_dir = tmp.path().join("rust").join("tiny_error");
+    fs::create_dir_all(helper_dir.join("src"))?;
+    fs::write(
+        helper_dir.join("Cargo.toml"),
+        "[package]\nname = \"tiny_error\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )?;
+    fs::write(
+        helper_dir.join("src").join("lib.rs"),
+        r#"pub enum TinyError {
+    Execution(String),
+}
+
+pub fn consume(err: TinyError) -> i64 {
+    match err {
+        TinyError::Execution(message) => message.len() as i64,
+    }
+}
+"#,
+    )?;
+    let main_path = write_minimal_project(
+        tmp.path(),
+        "inline_fstring_rust_string_variant_issue716",
+        r#"
+[rust-dependencies]
+tiny_error = { path = "rust/tiny_error" }
+"#,
+    )?;
+    fs::write(
+        &main_path,
+        r#"from rust::tiny_error import TinyError, consume
+
+
+def make_error(value: str) -> int:
+    return consume(TinyError.Execution(f"bad value `{value}`"))
+
+
+def main() -> None:
+    println(str(make_error("x")))
+"#,
+    )?;
+
+    let build_output = run_incan(
+        tmp.path(),
+        &["build", main_path.to_str().ok_or("main path was not valid UTF-8")?],
+    )?;
+    assert_success(
+        &build_output,
+        "incan build for inline f-string Rust String enum variant issue716",
+    );
+    Ok(())
+}
+
+#[test]
 fn build_public_alias_of_imported_item_reexports_original_path_issue617() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
     let main_path = write_minimal_project(tmp.path(), "public_alias_import_reexport", "")?;

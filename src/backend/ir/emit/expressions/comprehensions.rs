@@ -706,6 +706,8 @@ impl<'a> IrEmitter<'a> {
                 FormatPart::Literal(_) => false,
                 FormatPart::Expr { expr, .. } => Self::expr_contains_try(expr),
             }),
+            IrExprKind::RegisterCallableName { callable, .. } => Self::expr_contains_try(callable),
+            IrExprKind::CacheGenericDecoratedFunction { value, .. } => Self::expr_contains_try(value),
             IrExprKind::Unit
             | IrExprKind::None
             | IrExprKind::Bool(_)
@@ -719,6 +721,7 @@ impl<'a> IrEmitter<'a> {
             | IrExprKind::StaticRead { .. }
             | IrExprKind::StaticBinding { .. }
             | IrExprKind::AssociatedFunction { .. }
+            | IrExprKind::FunctionItem { .. }
             | IrExprKind::Literal(_)
             | IrExprKind::FieldsList(_)
             | IrExprKind::SerdeToJson

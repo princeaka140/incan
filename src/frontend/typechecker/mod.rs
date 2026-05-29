@@ -161,6 +161,8 @@ pub struct TypeChecker {
     pub(crate) await_operand_span: Option<(usize, usize)>,
     /// Nesting depth for expressions being checked as call arguments.
     pub(crate) call_argument_depth: usize,
+    /// Expression spans where type-like identifiers are valid namespace/type owners.
+    pub(crate) type_receiver_spans: Vec<(usize, usize)>,
     /// Stack of active loop contexts, innermost last.
     pub(crate) loop_stack: Vec<LoopContext>,
     /// Active trait @requires context for default method bodies.
@@ -298,6 +300,7 @@ impl TypeChecker {
             in_async_body: false,
             await_operand_span: None,
             call_argument_depth: 0,
+            type_receiver_spans: Vec::new(),
             loop_stack: Vec::new(),
             current_trait_requires: None,
             current_trait_properties: None,
@@ -946,6 +949,26 @@ impl TypeChecker {
             RustTypeShape::TypeParam(name) => ResolvedType::TypeVar(name.clone()),
             RustTypeShape::Unknown => ResolvedType::Unknown,
         }
+    }
+
+    /// Return callable-parameter metadata for one rust-inspect-backed enum variant constructor.
+    ///
+    /// Rust enum variants are callable constructors at the source surface, but they are not ordinary inherent
+    /// functions. Carrying their payload shapes through the same callable metadata path keeps backend argument
+    /// ownership planning target-driven instead of guessing from the source expression shape.
+    pub(crate) fn rust_variant_callable_params(&self, rust_path: &str, variant: &str) -> Option<Vec<CallableParam>> {
+        let metadata = self.rust_item_metadata_for_path(rust_path)?;
+        let RustItemKind::Type(info) = &metadata.kind else {
+            return None;
+        };
+        let variant = info.variants.iter().find(|candidate| candidate.name == variant)?;
+        Some(
+            variant
+                .fields
+                .iter()
+                .map(|field| CallableParam::positional(self.resolved_type_from_rust_shape(field)))
+                .collect(),
+        )
     }
 
     /// Resolve a Rust-origin method signature from cached metadata.

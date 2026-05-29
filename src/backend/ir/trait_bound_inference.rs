@@ -1488,10 +1488,29 @@ fn collect_backend_clone_bounds_in_expr(
                 }
             }
         }
+        IrExprKind::RegisterCallableName { callable, .. } => {
+            collect_backend_clone_bounds_in_expr(
+                callable,
+                type_param_names,
+                self_clone_params,
+                clone_context,
+                clone_params,
+            );
+        }
+        IrExprKind::CacheGenericDecoratedFunction { value, .. } => {
+            collect_backend_clone_bounds_in_expr(
+                value,
+                type_param_names,
+                self_clone_params,
+                clone_context,
+                clone_params,
+            );
+        }
         IrExprKind::Var { .. }
         | IrExprKind::StaticRead { .. }
         | IrExprKind::StaticBinding { .. }
         | IrExprKind::AssociatedFunction { .. }
+        | IrExprKind::FunctionItem { .. }
         | IrExprKind::Unit
         | IrExprKind::None
         | IrExprKind::Bool(_)
@@ -1825,6 +1844,14 @@ fn reflection_magic_trait_bound(method: &str) -> Option<&'static str> {
     }
 }
 
+fn type_reflection_magic_trait_bound(method: &str) -> Option<&'static str> {
+    match magic_methods::from_str(method) {
+        Some(magic_methods::MagicMethodId::ClassName) => Some(tb::INCAN_TYPE_CLASS_NAME),
+        Some(magic_methods::MagicMethodId::Fields) => Some(tb::INCAN_TYPE_FIELD_METADATA),
+        _ => None,
+    }
+}
+
 /// Scan an expression for trait-bound-relevant operations on type parameters.
 fn scan_expr_for_bounds(
     expr: &IrExpr,
@@ -1876,13 +1903,30 @@ fn scan_expr_for_bounds(
         IrExprKind::MethodCall {
             receiver, method, args, ..
         } => {
+            let receiver_is_type_name = matches!(
+                receiver.kind,
+                IrExprKind::Var {
+                    ref_kind: VarRefKind::TypeName,
+                    ..
+                }
+            );
             if let Some(tp_name) = expr_type_param_name(receiver, type_params, params) {
-                if method == "clone" {
+                if method == "clone" && !receiver_is_type_name {
                     add_bound(bounds_map, &tp_name, IrTraitBound::simple(tb::CLONE));
                 }
-                if let Some(bound) = reflection_magic_trait_bound(method) {
+                let reflection_bound = if receiver_is_type_name {
+                    type_reflection_magic_trait_bound(method)
+                } else {
+                    reflection_magic_trait_bound(method)
+                };
+                if let Some(bound) = reflection_bound {
                     add_bound(bounds_map, &tp_name, IrTraitBound::simple(bound));
                 }
+            } else if receiver_is_type_name
+                && let Some(tp_name) = type_name_expr_type_param_name(receiver, type_params)
+                && let Some(bound) = type_reflection_magic_trait_bound(method)
+            {
+                add_bound(bounds_map, &tp_name, IrTraitBound::simple(bound));
             } else if method == "clone"
                 && matches!(receiver.ty, IrType::Unknown)
                 && matches!(&receiver.kind, IrExprKind::Var { .. } | IrExprKind::Field { .. })
@@ -2115,6 +2159,13 @@ fn scan_expr_for_bounds(
             scan_expr_for_bounds(expr, type_params, params, bounds_map);
         }
 
+        IrExprKind::RegisterCallableName { callable, .. } => {
+            scan_expr_for_bounds(callable, type_params, params, bounds_map);
+        }
+        IrExprKind::CacheGenericDecoratedFunction { value, .. } => {
+            scan_expr_for_bounds(value, type_params, params, bounds_map);
+        }
+
         // ---- Range: recurse ----
         IrExprKind::Range { start, end, .. } => {
             if let Some(s) = start {
@@ -2130,6 +2181,7 @@ fn scan_expr_for_bounds(
         | IrExprKind::StaticRead { .. }
         | IrExprKind::StaticBinding { .. }
         | IrExprKind::AssociatedFunction { .. }
+        | IrExprKind::FunctionItem { .. }
         | IrExprKind::Unit
         | IrExprKind::None
         | IrExprKind::Bool(_)
@@ -2185,6 +2237,18 @@ fn expr_type_param_name(
     }
 
     None
+}
+
+fn type_name_expr_type_param_name(expr: &IrExpr, type_params: &HashSet<&str>) -> Option<String> {
+    let IrExprKind::Var {
+        name,
+        ref_kind: VarRefKind::TypeName,
+        ..
+    } = &expr.kind
+    else {
+        return None;
+    };
+    type_params.contains(name.as_str()).then(|| name.clone())
 }
 
 fn type_param_name_from_ir_type(ty: &IrType, type_params: &HashSet<&str>) -> Option<String> {
@@ -2667,6 +2731,21 @@ fn collect_calls_in_expr(
                 recurse_expr(&arg.expr, result);
             }
         }
+        IrExprKind::FunctionItem { name, type_args } => {
+            if let Some(callee_key) = resolve_called_generic_key(name, None, function_bounds) {
+                let mut mapping = HashMap::new();
+                if let Some(callee_type_params) = function_bounds.get(callee_key.as_str()) {
+                    for (callee_tp, caller_ty) in callee_type_params.iter().zip(type_args.iter()) {
+                        if let Some(caller_tp) = type_param_name_from_ir_type(caller_ty, type_params) {
+                            mapping.insert(callee_tp.name.clone(), caller_tp);
+                        }
+                    }
+                }
+                if !mapping.is_empty() {
+                    result.push((callee_key, mapping));
+                }
+            }
+        }
         IrExprKind::BinOp { left, right, .. } => {
             recurse_expr(left, result);
             recurse_expr(right, result);
@@ -2684,6 +2763,58 @@ fn collect_calls_in_expr(
             recurse_expr(receiver, result);
             for arg in args {
                 recurse_expr(&arg.expr, result);
+            }
+        }
+        IrExprKind::BuiltinCall { args, .. } | IrExprKind::Tuple(args) | IrExprKind::Set(args) => {
+            for arg in args {
+                recurse_expr(arg, result);
+            }
+        }
+        IrExprKind::Field { object, .. } => {
+            recurse_expr(object, result);
+        }
+        IrExprKind::Index { object, index } => {
+            recurse_expr(object, result);
+            recurse_expr(index, result);
+        }
+        IrExprKind::Slice {
+            target,
+            start,
+            end,
+            step,
+        } => {
+            recurse_expr(target, result);
+            if let Some(start) = start {
+                recurse_expr(start, result);
+            }
+            if let Some(end) = end {
+                recurse_expr(end, result);
+            }
+            if let Some(step) = step {
+                recurse_expr(step, result);
+            }
+        }
+        IrExprKind::List(items) => {
+            for item in items {
+                match item {
+                    IrListEntry::Element(value) | IrListEntry::Spread(value) => recurse_expr(value, result),
+                }
+            }
+        }
+        IrExprKind::Dict(entries) => {
+            for entry in entries {
+                match entry {
+                    IrDictEntry::Pair(key, value) => {
+                        recurse_expr(key, result);
+                        recurse_expr(value, result);
+                    }
+                    IrDictEntry::Spread(value) => recurse_expr(value, result),
+                }
+            }
+        }
+        IrExprKind::Struct { fields, .. } => {
+            for (_, value) in fields {
+                recurse_expr(value, result);
             }
         }
         IrExprKind::Format { parts } => {
@@ -2717,6 +2848,50 @@ fn collect_calls_in_expr(
                 recurse_stmt(stmt, result);
             }
         }
+        IrExprKind::ListComp {
+            element,
+            iterable,
+            filter,
+            ..
+        } => {
+            recurse_expr(element, result);
+            recurse_expr(iterable, result);
+            if let Some(filter) = filter {
+                recurse_expr(filter, result);
+            }
+        }
+        IrExprKind::DictComp {
+            key,
+            value,
+            iterable,
+            filter,
+            ..
+        } => {
+            recurse_expr(key, result);
+            recurse_expr(value, result);
+            recurse_expr(iterable, result);
+            if let Some(filter) = filter {
+                recurse_expr(filter, result);
+            }
+        }
+        IrExprKind::Generator { element, clauses } => {
+            recurse_expr(element, result);
+            for clause in clauses {
+                match clause {
+                    IrGeneratorClause::For { iterable, .. } => recurse_expr(iterable, result),
+                    IrGeneratorClause::If(filter) => recurse_expr(filter, result),
+                }
+            }
+        }
+        IrExprKind::Match { scrutinee, arms } => {
+            recurse_expr(scrutinee, result);
+            for arm in arms {
+                recurse_expr(&arm.body, result);
+                if let Some(guard) = &arm.guard {
+                    recurse_expr(guard, result);
+                }
+            }
+        }
         IrExprKind::Closure { body, .. } => {
             recurse_expr(body, result);
         }
@@ -2726,8 +2901,19 @@ fn collect_calls_in_expr(
                 recurse_expr(&arm.body, result);
             }
         }
-        IrExprKind::InteropCoerce { expr, .. } => {
+        IrExprKind::Await(expr) | IrExprKind::Try(expr) => {
             recurse_expr(expr, result);
+        }
+        IrExprKind::Cast { expr, .. }
+        | IrExprKind::NumericResize { expr, .. }
+        | IrExprKind::InteropCoerce { expr, .. } => {
+            recurse_expr(expr, result);
+        }
+        IrExprKind::RegisterCallableName { callable, .. } => {
+            recurse_expr(callable, result);
+        }
+        IrExprKind::CacheGenericDecoratedFunction { value, .. } => {
+            recurse_expr(value, result);
         }
         // Other expression kinds are not recursed into for transitive inference.
         // The primary call pattern (direct function calls) is covered above.
