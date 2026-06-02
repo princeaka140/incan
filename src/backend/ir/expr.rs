@@ -565,8 +565,18 @@ pub enum UnaryOp {
 #[derive(Debug, Clone)]
 pub struct MatchArm {
     pub pattern: Pattern,
+    pub bindings: Vec<MatchArmBinding>,
     pub guard: Option<IrExpr>,
     pub body: IrExpr,
+}
+
+/// Compiler-inserted binding materialized before a match-arm body runs.
+#[derive(Debug, Clone)]
+pub struct MatchArmBinding {
+    pub name: String,
+    pub ty: IrType,
+    pub value: IrExpr,
+    pub guard_value: Option<IrExpr>,
 }
 
 /// Pattern for match expressions

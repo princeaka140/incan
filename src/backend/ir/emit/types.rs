@@ -7,9 +7,9 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 use super::super::decl::Visibility;
-use super::super::expr::{IrExprKind, Pattern};
+use super::super::expr::{IrExprKind, MatchArm, Pattern};
 use super::super::types::IrType;
-use super::IrEmitter;
+use super::{EmitError, IrEmitter};
 use incan_core::lang::surface::types::{self as surface_types, SurfaceTypeId};
 use incan_core::lang::types::collections::{self, CollectionTypeId};
 use incan_core::lang::types::numerics;
@@ -22,6 +22,7 @@ impl<'a> IrEmitter<'a> {
 
     /// Emit the generated Rust type path for an anonymous ordinary union with an optional explicit module qualifier.
     pub(super) fn emit_union_type_path_with_qualifier(&self, ty: &IrType, qualifier: Option<&[String]>) -> TokenStream {
+        let ty = self.resolve_type_aliases_for_emit(ty);
         let union_name = ty
             .union_type_name()
             .unwrap_or_else(|| super::super::types::IR_UNION_TYPE_NAME.to_string());
@@ -442,5 +443,73 @@ impl<'a> IrEmitter<'a> {
         }
 
         (self.emit_pattern(pattern), None)
+    }
+
+    /// Emit compiler-introduced match-arm bindings.
+    fn emit_match_arm_binding_lets(&self, arm: &MatchArm, for_guard: bool) -> Result<Vec<TokenStream>, EmitError> {
+        let mut bindings = Vec::new();
+        for binding in &arm.bindings {
+            let value_expr = if for_guard {
+                let guard_uses_binding = arm
+                    .guard
+                    .as_ref()
+                    .is_some_and(|guard| super::super::scanners::expr_uses_binding_name(guard, &binding.name));
+                if !guard_uses_binding {
+                    continue;
+                }
+                binding.guard_value.as_ref().unwrap_or(&binding.value)
+            } else {
+                &binding.value
+            };
+            let name = Self::rust_ident(&binding.name);
+            let ty = self.emit_type(&binding.ty);
+            let value = self.emit_expr(value_expr)?;
+            bindings.push(quote! { let #name: #ty = #value; });
+        }
+        Ok(bindings)
+    }
+
+    /// Emit a match arm guard, including compiler-introduced bindings required by narrowed pattern lowering.
+    pub(super) fn emit_match_arm_guard(
+        &self,
+        arm: &MatchArm,
+        pattern_guard: Option<TokenStream>,
+    ) -> Result<Option<TokenStream>, EmitError> {
+        let arm_guard = arm.guard.as_ref().map(|guard| self.emit_expr(guard)).transpose()?;
+        let guard = match (pattern_guard, arm_guard) {
+            (Some(pattern_guard), Some(arm_guard)) => Some(quote! { (#pattern_guard) && (#arm_guard) }),
+            (Some(pattern_guard), None) => Some(pattern_guard),
+            (None, Some(arm_guard)) => Some(arm_guard),
+            (None, None) => None,
+        };
+        let Some(guard) = guard else {
+            return Ok(None);
+        };
+        if arm.bindings.is_empty() || arm.guard.is_none() {
+            return Ok(Some(guard));
+        }
+        let bindings = self.emit_match_arm_binding_lets(arm, true)?;
+        if bindings.is_empty() {
+            return Ok(Some(guard));
+        }
+        Ok(Some(quote! {{
+            #(#bindings)*
+            #guard
+        }}))
+    }
+
+    /// Emit a match arm body, including compiler-introduced bindings required by narrowed pattern lowering.
+    pub(super) fn emit_match_arm_body(&self, arm: &MatchArm) -> Result<TokenStream, EmitError> {
+        let body = self.emit_expr(&arm.body)?;
+        if arm.bindings.is_empty() {
+            return Ok(body);
+        }
+
+        let bindings = self.emit_match_arm_binding_lets(arm, false)?;
+
+        Ok(quote! {{
+            #(#bindings)*
+            #body
+        }})
     }
 }

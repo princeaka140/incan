@@ -2983,6 +2983,79 @@ def describe(value: MaybeText) -> str:
 }
 
 #[test]
+fn test_nested_union_aliases_flatten_for_match_narrowing() -> Result<(), String> {
+    let source = r#"
+model A:
+  value: str
+
+model B:
+  value: str
+
+type Base = Union[A, B]
+type Input = Union[Base, int]
+
+def from_alias(value: Input) -> Base:
+  match value:
+    Base(expr) =>
+      return expr
+    int(number) =>
+      return A(value=str(number))
+
+def keep_base(value: Base) -> bool:
+  return true
+
+def from_guarded_alias(value: Input) -> Base:
+  match value:
+    case Base(expr) if keep_base(expr):
+      return expr
+    case Base(expr):
+      return expr
+    case int(number):
+      return A(value=str(number))
+
+def from_fallback(value: Input) -> Base:
+  match value:
+    int(number) =>
+      return A(value=str(number))
+    other =>
+      return other
+"#;
+    check_str(source).map_err(|errs| format!("{errs:?}"))
+}
+
+#[test]
+fn test_guarded_union_alias_patterns_do_not_satisfy_exhaustiveness() {
+    let source = r#"
+model A:
+  value: str
+
+model B:
+  value: str
+
+type Base = Union[A, B]
+type Input = Union[Base, int]
+
+def keep_base(value: Base) -> bool:
+  return true
+
+def guarded_only(value: Input) -> Base:
+  match value:
+    case Base(expr) if keep_base(expr):
+      return expr
+    case int(number):
+      return A(value=str(number))
+"#;
+    let errors = check_str_err(source, "guarded union alias patterns should not prove coverage");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.to_lowercase().contains("non-exhaustive")),
+        "expected non-exhaustive union match diagnostic, got: {:?}",
+        errors.iter().map(|error| &error.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn test_union_match_requires_exhaustive_type_patterns() {
     let source = r#"
 def normalize(value: int | str) -> str:

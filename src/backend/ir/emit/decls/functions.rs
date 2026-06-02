@@ -70,6 +70,12 @@ impl<'a> IrEmitter<'a> {
             IrStmtKind::Match { scrutinee, arms } => {
                 Self::rewrite_borrowed_param_types_in_expr(scrutinee, borrowed);
                 for arm in arms {
+                    for binding in &mut arm.bindings {
+                        Self::rewrite_borrowed_param_types_in_expr(&mut binding.value, borrowed);
+                        if let Some(guard_value) = &mut binding.guard_value {
+                            Self::rewrite_borrowed_param_types_in_expr(guard_value, borrowed);
+                        }
+                    }
                     if let Some(guard) = &mut arm.guard {
                         Self::rewrite_borrowed_param_types_in_expr(guard, borrowed);
                     }
@@ -244,6 +250,12 @@ impl<'a> IrEmitter<'a> {
             IrExprKind::Match { scrutinee, arms } => {
                 Self::rewrite_borrowed_param_types_in_expr(scrutinee, borrowed);
                 for arm in arms {
+                    for binding in &mut arm.bindings {
+                        Self::rewrite_borrowed_param_types_in_expr(&mut binding.value, borrowed);
+                        if let Some(guard_value) = &mut binding.guard_value {
+                            Self::rewrite_borrowed_param_types_in_expr(guard_value, borrowed);
+                        }
+                    }
                     if let Some(guard) = &mut arm.guard {
                         Self::rewrite_borrowed_param_types_in_expr(guard, borrowed);
                     }
@@ -1264,6 +1276,13 @@ impl<'a> IrEmitter<'a> {
         let mut arm_shadowed = shadowed_names.clone();
         Self::collect_pattern_used_names(&arm.pattern, param_names, &arm_shadowed, used_names);
         Self::shadow_pattern_bindings(&arm.pattern, &mut arm_shadowed);
+        for binding in &arm.bindings {
+            Self::collect_expr_used_names(&binding.value, param_names, &arm_shadowed, used_names);
+            if let Some(guard_value) = &binding.guard_value {
+                Self::collect_expr_used_names(guard_value, param_names, &arm_shadowed, used_names);
+            }
+            arm_shadowed.insert(binding.name.clone());
+        }
         if let Some(guard) = &arm.guard {
             Self::collect_expr_used_names(guard, param_names, &arm_shadowed, used_names);
         }

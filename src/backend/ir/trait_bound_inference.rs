@@ -743,6 +743,24 @@ fn collect_backend_clone_bounds_in_stmt(
                 clone_params,
             );
             for arm in arms {
+                for binding in &arm.bindings {
+                    collect_backend_clone_bounds_in_expr(
+                        &binding.value,
+                        type_param_names,
+                        self_clone_params,
+                        clone_context,
+                        clone_params,
+                    );
+                    if let Some(guard_value) = &binding.guard_value {
+                        collect_backend_clone_bounds_in_expr(
+                            guard_value,
+                            type_param_names,
+                            self_clone_params,
+                            clone_context,
+                            clone_params,
+                        );
+                    }
+                }
                 if let IrExprKind::Block { stmts, .. } = &arm.body.kind {
                     for stmt in stmts {
                         collect_backend_clone_bounds_in_stmt(
@@ -1342,6 +1360,24 @@ fn collect_backend_clone_bounds_in_expr(
                 clone_params,
             );
             for arm in arms {
+                for binding in &arm.bindings {
+                    collect_backend_clone_bounds_in_expr(
+                        &binding.value,
+                        type_param_names,
+                        self_clone_params,
+                        clone_context,
+                        clone_params,
+                    );
+                    if let Some(guard_value) = &binding.guard_value {
+                        collect_backend_clone_bounds_in_expr(
+                            guard_value,
+                            type_param_names,
+                            self_clone_params,
+                            clone_context,
+                            clone_params,
+                        );
+                    }
+                }
                 collect_backend_clone_bounds_in_expr(
                     &arm.body,
                     type_param_names,
@@ -1830,6 +1866,12 @@ fn scan_stmt_for_bounds(
         IrStmtKind::Match { scrutinee, arms } => {
             scan_expr_for_bounds(scrutinee, type_params, params, bounds_map);
             for arm in arms {
+                for binding in &arm.bindings {
+                    scan_expr_for_bounds(&binding.value, type_params, params, bounds_map);
+                    if let Some(guard_value) = &binding.guard_value {
+                        scan_expr_for_bounds(guard_value, type_params, params, bounds_map);
+                    }
+                }
                 scan_expr_for_bounds(&arm.body, type_params, params, bounds_map);
                 if let Some(guard) = &arm.guard {
                     scan_expr_for_bounds(guard, type_params, params, bounds_map);
@@ -2065,6 +2107,12 @@ fn scan_expr_for_bounds(
         IrExprKind::Match { scrutinee, arms } => {
             scan_expr_for_bounds(scrutinee, type_params, params, bounds_map);
             for arm in arms {
+                for binding in &arm.bindings {
+                    scan_expr_for_bounds(&binding.value, type_params, params, bounds_map);
+                    if let Some(guard_value) = &binding.guard_value {
+                        scan_expr_for_bounds(guard_value, type_params, params, bounds_map);
+                    }
+                }
                 scan_expr_for_bounds(&arm.body, type_params, params, bounds_map);
                 if let Some(guard) = &arm.guard {
                     scan_expr_for_bounds(guard, type_params, params, bounds_map);
@@ -2664,6 +2712,12 @@ fn collect_calls_in_stmt(
         IrStmtKind::Match { scrutinee, arms } => {
             recurse_expr(scrutinee, result);
             for arm in arms {
+                for binding in &arm.bindings {
+                    recurse_expr(&binding.value, result);
+                    if let Some(guard_value) = &binding.guard_value {
+                        recurse_expr(guard_value, result);
+                    }
+                }
                 recurse_expr(&arm.body, result);
                 if let Some(guard) = &arm.guard {
                     recurse_expr(guard, result);
@@ -2900,6 +2954,12 @@ fn collect_calls_in_expr(
         IrExprKind::Match { scrutinee, arms } => {
             recurse_expr(scrutinee, result);
             for arm in arms {
+                for binding in &arm.bindings {
+                    recurse_expr(&binding.value, result);
+                    if let Some(guard_value) = &binding.guard_value {
+                        recurse_expr(guard_value, result);
+                    }
+                }
                 recurse_expr(&arm.body, result);
                 if let Some(guard) = &arm.guard {
                     recurse_expr(guard, result);
