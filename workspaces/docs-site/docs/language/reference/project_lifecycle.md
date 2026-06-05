@@ -116,12 +116,12 @@ Both `incan new` and `incan init` accept metadata flags:
 [project]
 name = "greeter"
 version = "0.1.0"
-requires-incan = ">=0.3,<0.4"
+requires-incan = ">=0.4,<0.5"
 ```
 
 If the active compiler is outside the range, `incan run` in project mode, `incan build`, `incan test`, `incan lock`, and `incan env run` fail early with a diagnostic that names the active compiler version and the contributing constraint layers. Single-file and inline commands without a discovered `incan.toml` remain manifest-free and do not infer a requirement.
 
-Development compilers identify themselves with prerelease versions such as `0.3.0-dev.49`. For lifecycle compatibility, that development build is treated as part of the `0.3` line, so a requirement such as `>=0.3,<0.4` admits it.
+Development compilers identify themselves with prerelease versions such as `0.4.0-dev.0`. For lifecycle compatibility, that development build is treated as part of the `0.4` line, so a requirement such as `>=0.4,<0.5` admits it.
 
 ## `[project.scripts]`
 
@@ -221,7 +221,7 @@ test = ["incan", "test", "tests/"]
 
 [tool.incan.envs.ci]
 extends = ["unit"]
-requires-incan = ">=0.3,<0.4"
+requires-incan = ">=0.4,<0.5"
 
 [tool.incan.envs.ci.scripts]
 test = ["incan", "test", "--locked", "tests/"]

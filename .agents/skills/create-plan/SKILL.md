@@ -22,6 +22,7 @@ Produce a **single markdown plan** (paste into Plan mode or a `.plan.md` file):
 - **Concrete file paths** as markdown links to real paths in that repo.
 - **Documentation** subsection when the change is user-visible (see below).
 - **Code docs / rustdocs** subsection when the change introduces or reshapes public/shared APIs, compiler snapshot bridges, or subtle boundary helpers.
+- **Acceptance contract** subsection for milestone, RFC-wide, release, or compiler-boundary work.
 - **Gate** subsection with **exact commands** from this skill’s [Verification](#verification) section, adapted to the repo.
 - **Success criteria** checklist.
 - Optional **mermaid** only when a small diagram clarifies a pipeline or data flow.
@@ -41,6 +42,21 @@ Before selecting files to edit, identify the local pattern that should govern th
 - Verification path: the narrow red test plus any broader proof needed to cover downstream stages or build modes.
 
 Plans should name these items explicitly. If there is no close precedent, say so and explain which boundary document or implementation shape is being used instead.
+
+## Acceptance contract
+
+For milestone, RFC-wide, release, or compiler-boundary work, define the acceptance contract before coding. This is not a release-branch checklist; it is the up-front contract that tells implementers which tests, downstream checks, and docs are needed before the work can be called done.
+
+Include:
+
+- the direct/local behavior under test;
+- each boundary that can observe the same behavior: import, reexport/facade, package consumer, dependency-owned type, test batch, vocab/desugarer, formatter, generated Rust, or Rust metadata;
+- downstream acceptance lanes such as InQL when the changed surface is exercised there;
+- performance/progress expectations when touching prewarm, metadata, test runner, CI, or cache behavior;
+- docs, rustdocs, generated references, release notes, and RFC lifecycle work;
+- boundaries explicitly not applicable, with the reason.
+
+For small local fixes, state `acceptance contract: local only` only when the behavior cannot cross any of those boundaries. If a bug crossed a boundary, local-only coverage is not enough.
 
 ## Capability intake for Incan work
 

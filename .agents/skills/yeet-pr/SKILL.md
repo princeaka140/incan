@@ -45,6 +45,7 @@ If either skill is missing, stop and say which standard is unavailable instead o
 5. **Verify after the final history shape**
    - If checks already ran before a rebase/merge, rerun at least focused checks after the rebase/merge.
    - Prefer the repo's documented gate when feasible. For Incan, use `make pre-commit` unless the user asked for a narrower publish.
+   - If an acceptance contract was defined by `start-work`, `create-plan`, `ralph-loop`, an issue, or an RFC, verify and record which items were covered, skipped as not applicable, or still residual. Do not discover a new contract at publish time; report whether the earlier contract was honored.
    - If a check fails from sandbox or credential limitations, rerun with the required approval path or report the blocker clearly.
 
 6. **Use the PR-description standard**
@@ -92,4 +93,5 @@ End with:
 - PR URL
 - Base branch
 - Verification commands and results
+- Acceptance contract coverage when one exists
 - Any residual risks, dirty files, or auth/tooling fallbacks

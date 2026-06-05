@@ -117,7 +117,21 @@ If the task clearly decomposes into independent slices and the user explicitly w
 
 Do not improvise ad hoc multi-agent coordination inside this skill. This skill is for task setup, not swarm orchestration.
 
-### Step 6: Check for related RFCs
+### Step 6: Draft the initial acceptance contract
+
+If the issue, RFC, or task touches milestone scope, release scope, compiler boundaries, package imports, vocab, formatter, test runner, generated Rust, Rust metadata, or downstream-facing behavior, draft the initial acceptance contract before proposing next steps.
+
+The contract should name:
+
+- direct/local behavior that must work,
+- import, reexport/facade, package-consumer, dependency-owned type, test-batch, vocab, formatter, generated-Rust, or Rust-metadata boundaries that can observe the behavior,
+- downstream acceptance lanes such as InQL when relevant,
+- docs/generated-reference/rustdoc/release-note gates,
+- performance or progress-output expectations when relevant.
+
+For simple local tasks, say `acceptance contract: local only` and why no boundary lane applies.
+
+### Step 7: Check for related RFCs
 
 If the task references an RFC:
 
@@ -125,7 +139,7 @@ If the task references an RFC:
 - Check its status (Draft / Planned / In Progress / Done)
 - If the RFC has a Progress Checklist, summarize what's done and what remains
 
-### Step 7: Report to the user
+### Step 8: Report to the user
 
 Provide a concise summary:
 
@@ -136,6 +150,7 @@ Provide a concise summary:
 **Issue**: #<NNN> — <title>
 **RFC**: RFC <NNN> — <title> (status: <status>)
 **Relevant learnings**: <list or "none">
+**Acceptance contract**: <boundary/downstream/doc/perf gates, or "local only" with reason>
 
 ### Context
 <1-3 sentence summary of what the task involves>

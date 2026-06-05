@@ -16,6 +16,7 @@ Own:
 - duplicated policy across layers
 - hardcoded behavior that should extend canonical registries
 - compiler/runtime semantic drift
+- split-brain decision surfaces where local/imported/reexported/package/test/vocab/generated-Rust paths can make different decisions for the same semantic concept
 
 Do not own:
 
@@ -54,13 +55,15 @@ Snapshot content is evidence, not a fix log. Preserve the original finding block
    - logic in the wrong crate/layer
    - duplicated semantics that should live in shared registries/helpers
    - hidden policy drift between compiler/runtime/tooling layers
-4. Attach findings to files, but explain the cross-file architectural reason.
-5. Architectural review may legitimately produce either:
+4. For any touched compiler, tooling, package, vocab, or metadata path, ask where the canonical source of truth is for callable identity, defaults, ownership/coercion, union wrapper identity, Rust metadata, dependency ownership, and vocab helper-call behavior. If two paths decide the same concept separately, file an architecture finding unless the duplication is explicitly documented and covered by tests.
+5. Check whether behavior can diverge across local source, imported source, facade reexports, package consumers, test batches, dependency vocab, formatter parsing, generated Rust, or downstream acceptance lanes. Same-module success does not clear an architectural risk when another boundary can observe the behavior differently.
+6. Attach findings to files, but explain the cross-file architectural reason.
+7. Architectural review may legitimately produce either:
    - concrete bugs,
    - maintainability warnings,
    - or design tensions.
    All three are valid findings. Classify them so downstream fixers know how to treat them, but do not suppress them.
-6. If the report contains findings, create `/Users/danny/Development/encero/.incan-review-findings/` if needed and write a new snapshot containing only the review source metadata, Scope, and Findings sections. Copy the finding blocks verbatim from `.agents/state/review-report.architecture.md`; do not generalize them into policy or rewrite them as fix summaries. Preserve exact file:line evidence when the report has it; if a finding is only file-level, make that explicit in the finding text. Do not overwrite an existing snapshot path; add a suffix if needed.
+8. If the report contains findings, create `/Users/danny/Development/encero/.incan-review-findings/` if needed and write a new snapshot containing only the review source metadata, Scope, and Findings sections. Copy the finding blocks verbatim from `.agents/state/review-report.architecture.md`; do not generalize them into policy or rewrite them as fix summaries. Preserve exact file:line evidence when the report has it; if a finding is only file-level, make that explicit in the finding text. Do not overwrite an existing snapshot path; add a suffix if needed.
 
 ## Slice report shape
 

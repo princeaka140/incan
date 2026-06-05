@@ -16,6 +16,7 @@ Keep `orchestrate-parallel-work` generic. Use this skill as the opinionated wrap
 - Treat user-facing docs and versioning as part of implementation, not optional closeout polish.
 - Optimize for end-to-end correctness, not maximal concurrency.
 - Use clean worktrees for real implementation slices.
+- For milestone, RFC-wide, or compiler-boundary work, define the acceptance contract before implementation starts. The contract should name required boundary parity coverage, downstream acceptance lanes, docs/generated-reference gates, performance/progress gates, and any criteria that must be satisfied before an RC or publish step.
 - For language or stdlib work that is meant to be implemented in Incan, dogfood Incan rather than creating a thin `.incn` facade over a custom Rust backend. Direct `from rust::` imports of existing crates/primitives are acceptable when the `.incn` module still owns the behavior; bespoke `incan_stdlib::feature` Rust modules that hide the feature logic are not acceptable unless the maintainer explicitly asks for that backend boundary.
 - Do not let workers assume Incan cannot express something. Before choosing Rust/backend fallback or narrowing a design, workers must inspect current `.incn` precedents, parser/typechecker/codegen tests, or run a small probe and record the specific capability evidence.
 - Every implementation must land in a fresh worktree rooted under `/Users/danny/Development/encero/tmp` so VS Code picks it up; do not implement in `/tmp` or in the main repo checkout.
@@ -147,6 +148,17 @@ Before spawning workers, identify:
 - the source-of-truth version file(s) for the repo
 - whether the task is on a `-dev.N` line and therefore needs a version bump
 - the authored user-facing docs that must be updated if the change is user-visible
+
+For milestone, RFC-wide, or compiler-boundary work, also write an `## Acceptance Contract` section into `.agents/state/ralph-loop/overview.md` before implementation starts. Include:
+
+- the local/direct behavior that must work,
+- import, reexport/facade, package-consumer, test-batch, dependency, vocab, or generated-Rust boundaries that can observe the behavior,
+- downstream acceptance lanes such as InQL when the surface is exercised there,
+- performance or progress-output expectations when the change touches prewarm, test runner, metadata, or CI paths,
+- docs, rustdocs, generated-reference, release-note, or RFC lifecycle gates,
+- explicit non-applicable boundaries, with a short reason.
+
+Do not defer this acceptance contract to release-branch closeout. The release branch should verify the contract, not discover it.
 
 Do not treat RFC edits or release notes alone as sufficient user documentation.
 
