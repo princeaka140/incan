@@ -266,6 +266,37 @@ fn sdk_release_assets_are_prepared_by_central_manifest_script() -> Result<(), Bo
 }
 
 #[test]
+fn sdk_release_assets_can_be_prepared_for_single_host_smoke_without_homebrew() -> Result<(), Box<dyn std::error::Error>>
+{
+    let tmp = tempfile::tempdir()?;
+    let dist = tmp.path().join("sdk");
+    let (incan, incan_lsp) = write_fixture_sdk_commands(tmp.path())?;
+
+    package_fixture_archive(&dist, "aarch64-apple-darwin", &incan, &incan_lsp)?;
+
+    let output = Command::new("python3")
+        .arg(sdk_prepare_assets_script())
+        .arg(&dist)
+        .args(["--generated-at", "2026-06-06T00:00:00Z"])
+        .arg("--skip-homebrew")
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "single-host SDK asset preparation failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let manifest: serde_json::Value = serde_json::from_str(&fs::read_to_string(dist.join("manifest.json"))?)?;
+    assert!(manifest["hosts"]["aarch64-apple-darwin"].is_object());
+    assert!(dist.join("install.sh").exists());
+    assert!(dist.join("sdk-manifest.schema.v1.json").exists());
+    assert!(!dist.join("incan.rb").exists());
+    Ok(())
+}
+
+#[test]
 fn package_prepare_scripts_stage_versions_and_shared_installer() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
     let dist = tmp.path().join("sdk");
@@ -306,6 +337,24 @@ fn package_prepare_scripts_stage_versions_and_shared_installer() -> Result<(), B
     assert!(
         dist.join("_pip-package/src/incan_sdk/vendor/install-incan-sdk.sh")
             .exists()
+    );
+
+    fs::write(dist.join("sdk-version.txt"), "0.4.0-rc0\n")?;
+    let pip_output = Command::new("python3")
+        .arg(pip_prepare_package_script())
+        .arg(&dist)
+        .arg("--skip-build")
+        .output()?;
+    assert!(
+        pip_output.status.success(),
+        "pip rc package preparation failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&pip_output.stdout),
+        String::from_utf8_lossy(&pip_output.stderr)
+    );
+    assert!(fs::read_to_string(dist.join("_pip-package/pyproject.toml"))?.contains(r#"version = "0.4.0rc0""#));
+    assert!(
+        fs::read_to_string(dist.join("_pip-package/src/incan_sdk/__init__.py"))?
+            .contains(r#"__version__ = "0.4.0rc0""#)
     );
     Ok(())
 }

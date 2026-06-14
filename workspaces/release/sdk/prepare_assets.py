@@ -79,30 +79,36 @@ def write_manifest(dist_dir: Path, generated_at: str | None = None) -> Path:
     return manifest_path
 
 
-def prepare_assets(dist_dir: Path, generated_at: str | None = None) -> None:
+def prepare_assets(dist_dir: Path, generated_at: str | None = None, render_homebrew: bool = True) -> None:
     root = repo_root()
     dist_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = write_manifest(dist_dir, generated_at=generated_at)
 
     shutil.copy2(root / "workspaces/release/install-incan-sdk.sh", dist_dir / "install.sh")
     shutil.copy2(root / "workspaces/release/sdk/manifest.schema.v1.json", dist_dir / "sdk-manifest.schema.v1.json")
-    subprocess.run(
-        [
-            sys.executable,
-            str(root / "workspaces/release/homebrew/render_formula.py"),
-            str(manifest_path),
-            str(dist_dir / "incan.rb"),
-        ],
-        check=True,
-    )
+    if render_homebrew:
+        subprocess.run(
+            [
+                sys.executable,
+                str(root / "workspaces/release/homebrew/render_formula.py"),
+                str(manifest_path),
+                str(dist_dir / "incan.rb"),
+            ],
+            check=True,
+        )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("dist_dir", type=Path)
     parser.add_argument("--generated-at", help="Deterministic timestamp override for tests")
+    parser.add_argument(
+        "--skip-homebrew",
+        action="store_true",
+        help="Prepare manifest/install assets without rendering the multi-target Homebrew formula",
+    )
     args = parser.parse_args()
-    prepare_assets(args.dist_dir, generated_at=args.generated_at)
+    prepare_assets(args.dist_dir, generated_at=args.generated_at, render_homebrew=not args.skip_homebrew)
 
 
 if __name__ == "__main__":

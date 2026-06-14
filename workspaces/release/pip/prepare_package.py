@@ -16,7 +16,8 @@ def repo_root() -> Path:
 
 
 def pep440_version(version: str) -> str:
-    return version.replace("-dev.", ".dev")
+    normalized = version.replace("-dev.", ".dev")
+    return re.sub(r"-(a|b|rc)(\d+)$", r"\1\2", normalized)
 
 
 def replace_line(path: Path, pattern: str, replacement: str) -> None:
