@@ -1,8 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 
 use sha2::{Digest, Sha256};
+
+static PREPARE_ASSETS_LOCK: Mutex<()> = Mutex::new(());
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -12,16 +15,12 @@ fn installer_script() -> PathBuf {
     repo_root().join("workspaces/release/install-incan-sdk.sh")
 }
 
-fn homebrew_formula_renderer() -> PathBuf {
-    repo_root().join("workspaces/release/homebrew/render_formula.py")
-}
-
 fn sdk_package_archive_script() -> PathBuf {
     repo_root().join("workspaces/release/sdk/package_archive.sh")
 }
 
 fn sdk_prepare_assets_script() -> PathBuf {
-    repo_root().join("workspaces/release/sdk/prepare_assets.py")
+    repo_root().join("workspaces/release/sdk/prepare_assets.incn")
 }
 
 fn npm_prepare_package_script() -> PathBuf {
@@ -44,6 +43,45 @@ fn sha256_hex(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
     let bytes = fs::read(path)?;
     let digest = Sha256::digest(&bytes);
     Ok(format!("{digest:x}"))
+}
+
+fn incan_binary() -> PathBuf {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_incan") {
+        return PathBuf::from(path);
+    }
+    if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
+        let path = PathBuf::from(target_dir).join("debug").join("incan");
+        if path.exists() {
+            return path;
+        }
+    }
+    repo_root().join("target").join("debug").join("incan")
+}
+
+fn prepare_sdk_assets(
+    dist: &Path,
+    generated_at: &str,
+    skip_homebrew: bool,
+) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+    let _guard = PREPARE_ASSETS_LOCK.lock().map_err(|_| "prepare assets lock poisoned")?;
+    let mut command = Command::new(incan_binary());
+    command
+        .args(["run"])
+        .arg(sdk_prepare_assets_script())
+        .current_dir(repo_root())
+        .env("CARGO_NET_OFFLINE", "true")
+        .env("INCAN_NO_BANNER", "1")
+        .env("INCAN_REPO_ROOT", repo_root())
+        .env("INCAN_SDK_DIST_DIR", dist)
+        .env("INCAN_SDK_GENERATED_AT", generated_at)
+        .env(
+            "INCAN_GENERATED_CARGO_TARGET_DIR",
+            repo_root().join("target/incan_generated_shared_target"),
+        );
+    if skip_homebrew {
+        command.env("INCAN_SDK_SKIP_HOMEBREW", "1");
+    }
+    Ok(command.output()?)
 }
 
 fn write_fixture_archive(root: &Path) -> Result<(PathBuf, String), Box<dyn std::error::Error>> {
@@ -236,11 +274,7 @@ fn sdk_release_assets_are_prepared_by_central_manifest_script() -> Result<(), Bo
         package_fixture_archive(&dist, target, &incan, &incan_lsp)?;
     }
 
-    let output = Command::new("python3")
-        .arg(sdk_prepare_assets_script())
-        .arg(&dist)
-        .args(["--generated-at", "2026-06-06T00:00:00Z"])
-        .output()?;
+    let output = prepare_sdk_assets(&dist, "2026-06-06T00:00:00Z", false)?;
 
     assert!(
         output.status.success(),
@@ -274,12 +308,7 @@ fn sdk_release_assets_can_be_prepared_for_single_host_smoke_without_homebrew() -
 
     package_fixture_archive(&dist, "aarch64-apple-darwin", &incan, &incan_lsp)?;
 
-    let output = Command::new("python3")
-        .arg(sdk_prepare_assets_script())
-        .arg(&dist)
-        .args(["--generated-at", "2026-06-06T00:00:00Z"])
-        .arg("--skip-homebrew")
-        .output()?;
+    let output = prepare_sdk_assets(&dist, "2026-06-06T00:00:00Z", true)?;
 
     assert!(
         output.status.success(),
@@ -421,15 +450,18 @@ fn sdk_installer_verifies_checksum_and_links_commands() -> Result<(), Box<dyn st
 #[test]
 fn homebrew_formula_is_rendered_from_the_sdk_manifest() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
-    let (archive, checksum) = write_fixture_archive(tmp.path())?;
-    let manifest = write_manifest(tmp.path(), &archive, &checksum)?;
-    let formula = tmp.path().join("incan.rb");
+    let dist = tmp.path().join("sdk");
+    let (incan, incan_lsp) = write_fixture_sdk_commands(tmp.path())?;
 
-    let output = Command::new("python3")
-        .arg(homebrew_formula_renderer())
-        .arg(&manifest)
-        .arg(&formula)
-        .output()?;
+    for target in [
+        "x86_64-unknown-linux-gnu",
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+    ] {
+        package_fixture_archive(&dist, target, &incan, &incan_lsp)?;
+    }
+
+    let output = prepare_sdk_assets(&dist, "2026-06-06T00:00:00Z", false)?;
 
     assert!(
         output.status.success(),
@@ -437,9 +469,14 @@ fn homebrew_formula_is_rendered_from_the_sdk_manifest() -> Result<(), Box<dyn st
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let formula = fs::read_to_string(formula)?;
-    assert!(formula.contains(r#"version "0.4.0-test""#));
-    assert!(formula.contains(&format!(r#"url "file://{}""#, archive.display())));
+    let checksum = fs::read_to_string(dist.join("incan-v0.4.0-rc0-x86_64-unknown-linux-gnu.tar.gz.sha256"))?
+        .trim()
+        .to_string();
+    let formula = fs::read_to_string(dist.join("incan.rb"))?;
+    assert!(formula.contains(r#"version "0.4.0-rc0""#));
+    assert!(formula.contains(
+        r#"url "https://github.com/dannys-code-corner/incan/releases/download/v0.4.0-rc0/incan-v0.4.0-rc0-x86_64-unknown-linux-gnu.tar.gz""#
+    ));
     assert!(formula.contains(&format!(r#"sha256 "{checksum}""#)));
     assert!(formula.contains(r#"bin.install "bin/incan""#));
     assert!(formula.contains(r#"bin.install "bin/incan-lsp""#));

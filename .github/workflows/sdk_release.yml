@@ -60,8 +60,29 @@ jobs:
           pattern: incan-sdk-*
           path: dist/sdk
           merge-multiple: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: incan-sdk-publish
+          cache-workspace-crates: "true"
+      - name: Bootstrap packaged Incan
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/sdk-bootstrap
+          tar -xzf dist/sdk/incan-*-x86_64-unknown-linux-gnu.tar.gz -C dist/sdk-bootstrap
+          dist/sdk-bootstrap/bin/incan --version
       - name: Write release manifest
-        run: python3 workspaces/release/sdk/prepare_assets.py dist/sdk
+        shell: bash
+        env:
+          INCAN_REPO_ROOT: ${{ github.workspace }}
+          INCAN_SDK_DIST_DIR: dist/sdk
+        run: |
+          set -euo pipefail
+          export INCAN_SDK_GENERATED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          dist/sdk-bootstrap/bin/incan run workspaces/release/sdk/prepare_assets.incn
       - name: Package npm installer
         run: node workspaces/release/npm/prepare_package.js dist/sdk
       - name: Package Python installer
