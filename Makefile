@@ -417,6 +417,40 @@ vscode-package:
 	@cd workspaces/ide/vscode && npx @vscode/vsce package
 	@echo "\033[32m✓ Extension packaged\033[0m"
 
+.PHONY: sdk-release-build  ## tool - Build SDK release binaries (compiler + LSP)
+sdk-release-build:
+	@echo "\033[1mBuilding SDK release binaries...\033[0m"
+	@cargo build --locked --release --features lsp --bin incan --bin incan-lsp
+	@echo "\033[32m✓ SDK release binaries built\033[0m"
+
+.PHONY: sdk-release-package  ## tool - Package local SDK archive (SDK_DIST=/private/tmp/incan-sdk-local-test)
+sdk-release-package: sdk-release-build
+	@SDK_DIST="$${SDK_DIST:-/private/tmp/incan-sdk-local-test}" bash workspaces/release/sdk/local_smoke.sh package
+
+.PHONY: sdk-release-assets  ## tool - Write local SDK manifest/install assets
+sdk-release-assets:
+	@SDK_DIST="$${SDK_DIST:-/private/tmp/incan-sdk-local-test}" bash workspaces/release/sdk/local_smoke.sh assets
+
+.PHONY: sdk-release-smoke-direct  ## tool - Smoke local SDK installer directly
+sdk-release-smoke-direct:
+	@SDK_DIST="$${SDK_DIST:-/private/tmp/incan-sdk-local-test}" bash workspaces/release/sdk/local_smoke.sh direct
+
+.PHONY: sdk-release-smoke-npm  ## tool - Smoke npm thin installer from local SDK assets
+sdk-release-smoke-npm:
+	@SDK_DIST="$${SDK_DIST:-/private/tmp/incan-sdk-local-test}" bash workspaces/release/sdk/local_smoke.sh npm
+
+.PHONY: sdk-release-smoke-pip  ## tool - Smoke pip thin installer from local SDK assets
+sdk-release-smoke-pip:
+	@SDK_DIST="$${SDK_DIST:-/private/tmp/incan-sdk-local-test}" bash workspaces/release/sdk/local_smoke.sh pip
+
+.PHONY: sdk-release-smoke-homebrew  ## tool - Render and syntax-check local Homebrew formula
+sdk-release-smoke-homebrew:
+	@SDK_DIST="$${SDK_DIST:-/private/tmp/incan-sdk-local-test}" bash workspaces/release/sdk/local_smoke.sh homebrew
+
+.PHONY: sdk-release-smoke  ## tool - Full local SDK release smoke (direct + npm + pip + Homebrew syntax)
+sdk-release-smoke: sdk-release-build
+	@SDK_DIST="$${SDK_DIST:-/private/tmp/incan-sdk-local-test}" bash workspaces/release/sdk/local_smoke.sh all
+
 .PHONY: watch  ## tool - Watch for changes and rebuild (requires cargo-watch)
 watch:
 	@echo "\033[1mWatching for changes...\033[0m"
