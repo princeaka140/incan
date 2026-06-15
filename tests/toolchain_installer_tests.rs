@@ -12,15 +12,15 @@ fn repo_root() -> PathBuf {
 }
 
 fn installer_script() -> PathBuf {
-    repo_root().join("workspaces/release/install-incan-sdk.sh")
+    repo_root().join("workspaces/release/install-incan.sh")
 }
 
-fn sdk_package_archive_script() -> PathBuf {
-    repo_root().join("workspaces/release/sdk/package_archive.sh")
+fn toolchain_package_archive_script() -> PathBuf {
+    repo_root().join("workspaces/release/toolchain/package_archive.sh")
 }
 
-fn sdk_prepare_assets_script() -> PathBuf {
-    repo_root().join("workspaces/release/sdk/prepare_assets.incn")
+fn toolchain_prepare_assets_script() -> PathBuf {
+    repo_root().join("workspaces/release/toolchain/prepare_assets.incn")
 }
 
 fn npm_prepare_package_script() -> PathBuf {
@@ -28,7 +28,7 @@ fn npm_prepare_package_script() -> PathBuf {
 }
 
 fn npm_installer_wrapper() -> PathBuf {
-    repo_root().join("workspaces/release/npm/bin/install-incan-sdk.js")
+    repo_root().join("workspaces/release/npm/bin/install-incan.js")
 }
 
 fn pip_prepare_package_script() -> PathBuf {
@@ -36,7 +36,7 @@ fn pip_prepare_package_script() -> PathBuf {
 }
 
 fn pip_installer_wrapper() -> PathBuf {
-    repo_root().join("workspaces/release/pip/src/incan_sdk/cli.py")
+    repo_root().join("workspaces/release/pip/src/incan_toolchain/cli.py")
 }
 
 fn sha256_hex(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
@@ -58,7 +58,7 @@ fn incan_binary() -> PathBuf {
     repo_root().join("target").join("debug").join("incan")
 }
 
-fn prepare_sdk_assets(
+fn prepare_toolchain_assets(
     dist: &Path,
     generated_at: &str,
     skip_homebrew: bool,
@@ -67,19 +67,19 @@ fn prepare_sdk_assets(
     let mut command = Command::new(incan_binary());
     command
         .args(["run"])
-        .arg(sdk_prepare_assets_script())
+        .arg(toolchain_prepare_assets_script())
         .current_dir(repo_root())
         .env("CARGO_NET_OFFLINE", "true")
         .env("INCAN_NO_BANNER", "1")
         .env("INCAN_REPO_ROOT", repo_root())
-        .env("INCAN_SDK_DIST_DIR", dist)
-        .env("INCAN_SDK_GENERATED_AT", generated_at)
+        .env("INCAN_TOOLCHAIN_DIST_DIR", dist)
+        .env("INCAN_TOOLCHAIN_GENERATED_AT", generated_at)
         .env(
             "INCAN_GENERATED_CARGO_TARGET_DIR",
             repo_root().join("target/incan_generated_shared_target"),
         );
     if skip_homebrew {
-        command.env("INCAN_SDK_SKIP_HOMEBREW", "1");
+        command.env("INCAN_TOOLCHAIN_SKIP_HOMEBREW", "1");
     }
     Ok(command.output()?)
 }
@@ -124,7 +124,7 @@ fn write_fixture_command(path: &Path, name: &str) -> Result<(), Box<dyn std::err
     make_executable(path)
 }
 
-fn write_fixture_sdk_commands(root: &Path) -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
+fn write_fixture_toolchain_commands(root: &Path) -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
     let bin = root.join("commands");
     fs::create_dir_all(&bin)?;
     let incan = bin.join("incan");
@@ -141,7 +141,7 @@ fn package_fixture_archive(
     incan_lsp: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let output = Command::new("bash")
-        .arg(sdk_package_archive_script())
+        .arg(toolchain_package_archive_script())
         .arg(target)
         .args(["--out-dir", root.to_str().ok_or("output path is not UTF-8")?])
         .env("INCAN_BIN", incan)
@@ -151,7 +151,7 @@ fn package_fixture_archive(
 
     assert!(
         output.status.success(),
-        "SDK archive packaging failed\nstdout:\n{}\nstderr:\n{}",
+        "toolchain archive packaging failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -172,7 +172,7 @@ fn write_manifest(root: &Path, archive: &Path, checksum: &str) -> Result<PathBuf
         format!(
             r#"{{
   "schema_version": 1,
-  "sdk_version": "0.4.0-test",
+  "toolchain_version": "0.4.0-test",
   "release": "v0.4.0-test",
   "channel": "dev",
   "rust_toolchain": {{
@@ -224,24 +224,24 @@ fn write_manifest(root: &Path, archive: &Path, checksum: &str) -> Result<PathBuf
     Ok(manifest)
 }
 
-fn assert_sdk_install(incan_home: &Path, bin_dir: &Path) {
-    assert!(incan_home.join("sdks/0.4.0-test/bin/incan").exists());
-    assert!(incan_home.join("sdks/0.4.0-test/bin/incan-lsp").exists());
+fn assert_toolchain_install(incan_home: &Path, bin_dir: &Path) {
+    assert!(incan_home.join("toolchains/0.4.0-test/bin/incan").exists());
+    assert!(incan_home.join("toolchains/0.4.0-test/bin/incan-lsp").exists());
     assert!(incan_home.join("current").exists());
     assert!(bin_dir.join("incan").exists());
     assert!(bin_dir.join("incan-lsp").exists());
 }
 
 #[test]
-fn sdk_archive_packager_writes_archive_checksum_and_release_metadata() -> Result<(), Box<dyn std::error::Error>> {
+fn toolchain_archive_packager_writes_archive_checksum_and_release_metadata() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
-    let out_dir = tmp.path().join("sdk");
-    let (incan, incan_lsp) = write_fixture_sdk_commands(tmp.path())?;
+    let out_dir = tmp.path().join("toolchain");
+    let (incan, incan_lsp) = write_fixture_toolchain_commands(tmp.path())?;
 
     package_fixture_archive(&out_dir, "x86_64-unknown-linux-gnu", &incan, &incan_lsp)?;
 
-    let version = fs::read_to_string(out_dir.join("sdk-version.txt"))?;
-    let release = fs::read_to_string(out_dir.join("sdk-release.txt"))?;
+    let version = fs::read_to_string(out_dir.join("toolchain-version.txt"))?;
+    let release = fs::read_to_string(out_dir.join("toolchain-release.txt"))?;
     assert!(!version.trim().is_empty());
     assert_eq!(release.trim(), format!("v{}", version.trim()));
 
@@ -261,10 +261,10 @@ fn sdk_archive_packager_writes_archive_checksum_and_release_metadata() -> Result
 }
 
 #[test]
-fn sdk_release_assets_are_prepared_by_central_manifest_script() -> Result<(), Box<dyn std::error::Error>> {
+fn toolchain_release_assets_are_prepared_by_central_manifest_script() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
-    let dist = tmp.path().join("sdk");
-    let (incan, incan_lsp) = write_fixture_sdk_commands(tmp.path())?;
+    let dist = tmp.path().join("toolchain");
+    let (incan, incan_lsp) = write_fixture_toolchain_commands(tmp.path())?;
 
     for target in [
         "x86_64-unknown-linux-gnu",
@@ -274,11 +274,11 @@ fn sdk_release_assets_are_prepared_by_central_manifest_script() -> Result<(), Bo
         package_fixture_archive(&dist, target, &incan, &incan_lsp)?;
     }
 
-    let output = prepare_sdk_assets(&dist, "2026-06-06T00:00:00Z", false)?;
+    let output = prepare_toolchain_assets(&dist, "2026-06-06T00:00:00Z", false)?;
 
     assert!(
         output.status.success(),
-        "SDK asset preparation failed\nstdout:\n{}\nstderr:\n{}",
+        "toolchain asset preparation failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -294,25 +294,25 @@ fn sdk_release_assets_are_prepared_by_central_manifest_script() -> Result<(), Bo
             .contains("/releases/download/")
     );
     assert!(dist.join("install.sh").exists());
-    assert!(dist.join("sdk-manifest.schema.v1.json").exists());
+    assert!(dist.join("toolchain-manifest.schema.v1.json").exists());
     assert!(fs::read_to_string(dist.join("incan.rb"))?.contains(r#"bin.install "bin/incan""#));
     Ok(())
 }
 
 #[test]
-fn sdk_release_assets_can_be_prepared_for_single_host_smoke_without_homebrew() -> Result<(), Box<dyn std::error::Error>>
-{
+fn toolchain_release_assets_can_be_prepared_for_single_host_smoke_without_homebrew()
+-> Result<(), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
-    let dist = tmp.path().join("sdk");
-    let (incan, incan_lsp) = write_fixture_sdk_commands(tmp.path())?;
+    let dist = tmp.path().join("toolchain");
+    let (incan, incan_lsp) = write_fixture_toolchain_commands(tmp.path())?;
 
     package_fixture_archive(&dist, "aarch64-apple-darwin", &incan, &incan_lsp)?;
 
-    let output = prepare_sdk_assets(&dist, "2026-06-06T00:00:00Z", true)?;
+    let output = prepare_toolchain_assets(&dist, "2026-06-06T00:00:00Z", true)?;
 
     assert!(
         output.status.success(),
-        "single-host SDK asset preparation failed\nstdout:\n{}\nstderr:\n{}",
+        "single-host toolchain asset preparation failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -320,7 +320,7 @@ fn sdk_release_assets_can_be_prepared_for_single_host_smoke_without_homebrew() -
     let manifest: serde_json::Value = serde_json::from_str(&fs::read_to_string(dist.join("manifest.json"))?)?;
     assert!(manifest["hosts"]["aarch64-apple-darwin"].is_object());
     assert!(dist.join("install.sh").exists());
-    assert!(dist.join("sdk-manifest.schema.v1.json").exists());
+    assert!(dist.join("toolchain-manifest.schema.v1.json").exists());
     assert!(!dist.join("incan.rb").exists());
     Ok(())
 }
@@ -328,9 +328,9 @@ fn sdk_release_assets_can_be_prepared_for_single_host_smoke_without_homebrew() -
 #[test]
 fn package_prepare_scripts_stage_versions_and_shared_installer() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
-    let dist = tmp.path().join("sdk");
+    let dist = tmp.path().join("toolchain");
     fs::create_dir_all(&dist)?;
-    fs::write(dist.join("sdk-version.txt"), "0.4.0-dev.6\n")?;
+    fs::write(dist.join("toolchain-version.txt"), "0.4.0-dev.6\n")?;
 
     let npm_output = Command::new("node")
         .arg(npm_prepare_package_script())
@@ -345,7 +345,7 @@ fn package_prepare_scripts_stage_versions_and_shared_installer() -> Result<(), B
     );
     let npm_package = fs::read_to_string(dist.join("_npm-package/package.json"))?;
     assert!(npm_package.contains(r#""version": "0.4.0-dev.6""#));
-    assert!(dist.join("_npm-package/vendor/install-incan-sdk.sh").exists());
+    assert!(dist.join("_npm-package/vendor/install-incan.sh").exists());
 
     let pip_output = Command::new("python3")
         .arg(pip_prepare_package_script())
@@ -360,15 +360,15 @@ fn package_prepare_scripts_stage_versions_and_shared_installer() -> Result<(), B
     );
     assert!(fs::read_to_string(dist.join("_pip-package/pyproject.toml"))?.contains(r#"version = "0.4.0.dev6""#));
     assert!(
-        fs::read_to_string(dist.join("_pip-package/src/incan_sdk/__init__.py"))?
+        fs::read_to_string(dist.join("_pip-package/src/incan_toolchain/__init__.py"))?
             .contains(r#"__version__ = "0.4.0.dev6""#)
     );
     assert!(
-        dist.join("_pip-package/src/incan_sdk/vendor/install-incan-sdk.sh")
+        dist.join("_pip-package/src/incan_toolchain/vendor/install-incan.sh")
             .exists()
     );
 
-    fs::write(dist.join("sdk-version.txt"), "0.4.0-rc0\n")?;
+    fs::write(dist.join("toolchain-version.txt"), "0.4.0-rc0\n")?;
     let pip_output = Command::new("python3")
         .arg(pip_prepare_package_script())
         .arg(&dist)
@@ -382,14 +382,14 @@ fn package_prepare_scripts_stage_versions_and_shared_installer() -> Result<(), B
     );
     assert!(fs::read_to_string(dist.join("_pip-package/pyproject.toml"))?.contains(r#"version = "0.4.0rc0""#));
     assert!(
-        fs::read_to_string(dist.join("_pip-package/src/incan_sdk/__init__.py"))?
+        fs::read_to_string(dist.join("_pip-package/src/incan_toolchain/__init__.py"))?
             .contains(r#"__version__ = "0.4.0rc0""#)
     );
     Ok(())
 }
 
 #[test]
-fn sdk_installer_dry_run_selects_manifest_target_without_writing() -> Result<(), Box<dyn std::error::Error>> {
+fn toolchain_installer_dry_run_selects_manifest_target_without_writing() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
     let (archive, checksum) = write_fixture_archive(tmp.path())?;
     let manifest = write_manifest(tmp.path(), &archive, &checksum)?;
@@ -412,7 +412,7 @@ fn sdk_installer_dry_run_selects_manifest_target_without_writing() -> Result<(),
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Incan SDK 0.4.0-test"));
+    assert!(stdout.contains("Incan toolchain 0.4.0-test"));
     assert!(stdout.contains("target:     x86_64-unknown-linux-gnu"));
     assert!(stdout.contains("Dry run only"));
     assert!(!incan_home.exists(), "dry-run must not create INCAN_HOME");
@@ -421,7 +421,7 @@ fn sdk_installer_dry_run_selects_manifest_target_without_writing() -> Result<(),
 }
 
 #[test]
-fn sdk_installer_verifies_checksum_and_links_commands() -> Result<(), Box<dyn std::error::Error>> {
+fn toolchain_installer_verifies_checksum_and_links_commands() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
     let (archive, checksum) = write_fixture_archive(tmp.path())?;
     let manifest = write_manifest(tmp.path(), &archive, &checksum)?;
@@ -443,15 +443,15 @@ fn sdk_installer_verifies_checksum_and_links_commands() -> Result<(), Box<dyn st
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_sdk_install(&incan_home, &bin_dir);
+    assert_toolchain_install(&incan_home, &bin_dir);
     Ok(())
 }
 
 #[test]
-fn homebrew_formula_is_rendered_from_the_sdk_manifest() -> Result<(), Box<dyn std::error::Error>> {
+fn homebrew_formula_is_rendered_from_the_toolchain_manifest() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
-    let dist = tmp.path().join("sdk");
-    let (incan, incan_lsp) = write_fixture_sdk_commands(tmp.path())?;
+    let dist = tmp.path().join("toolchain");
+    let (incan, incan_lsp) = write_fixture_toolchain_commands(tmp.path())?;
 
     for target in [
         "x86_64-unknown-linux-gnu",
@@ -461,7 +461,7 @@ fn homebrew_formula_is_rendered_from_the_sdk_manifest() -> Result<(), Box<dyn st
         package_fixture_archive(&dist, target, &incan, &incan_lsp)?;
     }
 
-    let output = prepare_sdk_assets(&dist, "2026-06-06T00:00:00Z", false)?;
+    let output = prepare_toolchain_assets(&dist, "2026-06-06T00:00:00Z", false)?;
 
     assert!(
         output.status.success(),
@@ -484,7 +484,7 @@ fn homebrew_formula_is_rendered_from_the_sdk_manifest() -> Result<(), Box<dyn st
 }
 
 #[test]
-fn npm_installer_wrapper_delegates_to_shared_sdk_installer() -> Result<(), Box<dyn std::error::Error>> {
+fn npm_installer_wrapper_delegates_to_shared_toolchain_installer() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
     let (archive, checksum) = write_fixture_archive(tmp.path())?;
     let manifest = write_manifest(tmp.path(), &archive, &checksum)?;
@@ -506,12 +506,12 @@ fn npm_installer_wrapper_delegates_to_shared_sdk_installer() -> Result<(), Box<d
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_sdk_install(&incan_home, &bin_dir);
+    assert_toolchain_install(&incan_home, &bin_dir);
     Ok(())
 }
 
 #[test]
-fn pip_installer_wrapper_delegates_to_shared_sdk_installer() -> Result<(), Box<dyn std::error::Error>> {
+fn pip_installer_wrapper_delegates_to_shared_toolchain_installer() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
     let (archive, checksum) = write_fixture_archive(tmp.path())?;
     let manifest = write_manifest(tmp.path(), &archive, &checksum)?;
@@ -534,6 +534,6 @@ fn pip_installer_wrapper_delegates_to_shared_sdk_installer() -> Result<(), Box<d
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_sdk_install(&incan_home, &bin_dir);
+    assert_toolchain_install(&incan_home, &bin_dir);
     Ok(())
 }

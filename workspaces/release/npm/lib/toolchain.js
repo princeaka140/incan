@@ -8,8 +8,8 @@ function packageRoot() {
   return path.resolve(__dirname, "..");
 }
 
-function sdkHome() {
-  return process.env.INCAN_NPM_SDK_HOME || path.join(packageRoot(), ".incan", "home");
+function toolchainHome() {
+  return process.env.INCAN_NPM_TOOLCHAIN_HOME || path.join(packageRoot(), ".incan", "home");
 }
 
 function binDir() {
@@ -18,15 +18,15 @@ function binDir() {
 
 function installerScript() {
   const candidates = [
-    path.join(packageRoot(), "vendor", "install-incan-sdk.sh"),
-    path.resolve(packageRoot(), "..", "install-incan-sdk.sh"),
+    path.join(packageRoot(), "vendor", "install-incan.sh"),
+    path.resolve(packageRoot(), "..", "install-incan.sh"),
   ];
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) {
       return candidate;
     }
   }
-  throw new Error("could not find bundled install-incan-sdk.sh");
+  throw new Error("could not find bundled install-incan.sh");
 }
 
 function hasValueOption(args, name) {
@@ -36,7 +36,7 @@ function hasValueOption(args, name) {
 function installerArgs(args) {
   const next = args.filter((arg) => arg !== "--package-install");
   if (!hasValueOption(next, "--incan-home")) {
-    next.push("--incan-home", sdkHome());
+    next.push("--incan-home", toolchainHome());
   }
   if (!hasValueOption(next, "--bin-dir")) {
     next.push("--bin-dir", binDir());

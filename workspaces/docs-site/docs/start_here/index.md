@@ -9,7 +9,7 @@ If you’re new to Incan, start here.
 
 Choose by goal:
 
-- **Try it now**: [Getting Started](../tooling/tutorials/getting_started.md) (SDK install, starter project, run, test, release build)
+- **Try it now**: [Getting Started](../tooling/tutorials/getting_started.md) (toolchain install, starter project, run, test, release build)
     - If anything fails: [Troubleshooting](../tooling/how-to/troubleshooting.md)
 - **Learn the basics**: [The Incan Book (Basics)](../language/tutorials/book/index.md)
 - **Look something up**: [Language reference (generated)](../language/reference/language.md) + [CLI reference](../tooling/reference/cli_reference.md)

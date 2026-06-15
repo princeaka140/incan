@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Package the Incan SDK commands for one host target.
+Package the Incan toolchain commands for one host target.
 
 Usage:
   package_archive.sh <target> [--out-dir <dir>]
@@ -11,7 +11,7 @@ Usage:
 Environment:
   INCAN_BIN      Path to the built incan binary (default: target/release/incan)
   INCAN_LSP_BIN  Path to the built incan-lsp binary (default: target/release/incan-lsp)
-  SDK_RELEASE    Release name override (default: tag name or v<workspace version>)
+  TOOLCHAIN_RELEASE    Release name override (default: tag name or v<workspace version>)
 USAGE
 }
 
@@ -63,8 +63,8 @@ workspace_version() {
 version="$(workspace_version)"
 [ -n "$version" ] || fail "could not read workspace package version from Cargo.toml"
 
-if [ -n "${SDK_RELEASE:-}" ]; then
-  release="$SDK_RELEASE"
+if [ -n "${TOOLCHAIN_RELEASE:-}" ]; then
+  release="$TOOLCHAIN_RELEASE"
 elif [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then
   release="${GITHUB_REF_NAME}"
 else
@@ -87,7 +87,7 @@ cp "$incan_lsp_bin" "$package_dir/bin/incan-lsp"
 
 tar -C "$package_dir" -czf "$archive" .
 shasum -a 256 "$archive" | awk '{print $1}' > "${archive}.sha256"
-printf '%s\n' "$version" > "$out_dir/sdk-version.txt"
-printf '%s\n' "$release" > "$out_dir/sdk-release.txt"
+printf '%s\n' "$version" > "$out_dir/toolchain-version.txt"
+printf '%s\n' "$release" > "$out_dir/toolchain-release.txt"
 
 printf 'Packaged %s\n' "$archive"

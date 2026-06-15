@@ -3,7 +3,7 @@ from rust::std::process import exit
 from std.fs import Path
 from std.json import JsonValue
 
-const RUST_POLICY: str = "The SDK ships Incan binaries and expects generated Rust builds to use the user's installed stable Rust toolchain plus the wasm32-wasip1 target for vocab companions."
+const RUST_POLICY: str = "The toolchain ships Incan binaries and expects generated Rust builds to use the user's installed stable Rust toolchain plus the wasm32-wasip1 target for vocab companions."
 
 
 model HostAsset:
@@ -73,7 +73,7 @@ def collect_assets(dist_dir: str, release: str) -> Result[list[HostAsset], str]:
         archive_paths.append(path.0)
     archive_paths = sorted_strings(archive_paths)
     if len(archive_paths) == 0:
-        return Err(f"no SDK archives found in {dist_dir}")
+        return Err(f"no toolchain archives found in {dist_dir}")
 
     mut assets: list[HostAsset] = []
     for archive_path in archive_paths:
@@ -112,7 +112,7 @@ def hosts_json(assets: list[HostAsset]) -> JsonValue:
 
 def manifest_json(version: str, release: str, generated_at: str, assets: list[HostAsset]) -> JsonValue:
     return JsonValue.object(
-        {"schema_version": JsonValue.int(1), "sdk_version": JsonValue.str(version), "release": JsonValue.str(release), "channel": JsonValue.str(
+        {"schema_version": JsonValue.int(1), "toolchain_version": JsonValue.str(version), "release": JsonValue.str(release), "channel": JsonValue.str(
             "stable",
         ), "generated_at": JsonValue.str(generated_at), "manifest_url": JsonValue.str(
             f"https://github.com/dannys-code-corner/incan/releases/download/{release}/manifest.json",
@@ -172,20 +172,20 @@ def render_formula(version: str, assets: list[HostAsset]) -> Result[str, str]:
 
 def prepare_assets() -> Result[None, str]:
     repo_root = env_or("INCAN_REPO_ROOT", ".")
-    dist_dir = env_or("INCAN_SDK_DIST_DIR", "dist/sdk")
-    generated_at = env_or("INCAN_SDK_GENERATED_AT", "unspecified")
-    skip_homebrew = env_flag("INCAN_SDK_SKIP_HOMEBREW")
+    dist_dir = env_or("INCAN_TOOLCHAIN_DIST_DIR", "dist/toolchain")
+    generated_at = env_or("INCAN_TOOLCHAIN_GENERATED_AT", "unspecified")
+    skip_homebrew = env_flag("INCAN_TOOLCHAIN_SKIP_HOMEBREW")
 
     Path(dist_dir).mkdir(parents=true, exist_ok=true).map_err((err) => err.message())?
-    version = read_first_line(f"{dist_dir}/sdk-version.txt")?
-    release = read_first_line(f"{dist_dir}/sdk-release.txt")?
+    version = read_first_line(f"{dist_dir}/toolchain-version.txt")?
+    release = read_first_line(f"{dist_dir}/toolchain-release.txt")?
     assets = collect_assets(dist_dir, release)?
 
     manifest = manifest_json(version, release, generated_at, assets)
     manifest_text = manifest.to_pretty_json().map_err((err) => err.message())?
     write_text(f"{dist_dir}/manifest.json", manifest_text + "\n")?
-    copy_text(f"{repo_root}/workspaces/release/install-incan-sdk.sh", f"{dist_dir}/install.sh")?
-    copy_text(f"{repo_root}/workspaces/release/sdk/manifest.schema.v1.json", f"{dist_dir}/sdk-manifest.schema.v1.json")?
+    copy_text(f"{repo_root}/workspaces/release/install-incan.sh", f"{dist_dir}/install.sh")?
+    copy_text(f"{repo_root}/workspaces/release/toolchain/manifest.schema.v1.json", f"{dist_dir}/toolchain-manifest.schema.v1.json")?
 
     if not skip_homebrew:
         formula = render_formula(version, assets)?

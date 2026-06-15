@@ -4,7 +4,7 @@ Incan is a statically typed language for writing clear, high-level application c
 
 ## Getting started
 
-Install the latest SDK release, create a starter project, run it, test it, and produce a release build:
+Install the latest toolchain release, create a starter project, run it, test it, and produce a release build:
 
 ```bash
 curl -fsSL https://github.com/dannys-code-corner/incan/releases/latest/download/install.sh | sh
@@ -16,15 +16,15 @@ incan test
 incan build --release
 ```
 
-You can also install through package-manager adapters that use the same release manifest and verified SDK archives:
+You can also install through package-manager adapters that use the same release manifest and verified toolchain archives:
 
 ```bash
 brew install https://github.com/dannys-code-corner/incan/releases/latest/download/incan.rb
-npm install -g incan-sdk
-pipx install incan-sdk
+npm install -g incan
+pipx install incan
 ```
 
-If you are contributing to the compiler itself, clone this repository and use `make install` instead of the SDK installer.
+If you are contributing to the compiler itself, clone this repository and use `make install` instead of the toolchain installer.
 
 ## Positioning
 

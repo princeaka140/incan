@@ -4,7 +4,7 @@ Incan is the typed compiler substrate for the Encero stack. It is not the whole 
 
 ```mermaid
 flowchart TD
-    Incan["Incan compiler and SDK"]
+    Incan["Incan compiler and toolchain"]
     InQL["InQL query and analytics DSL"]
     Pallay["Pallay application layer"]
     Omerus["Omerus operational tooling"]

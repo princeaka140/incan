@@ -1,16 +1,16 @@
 # Install and run Incan
 
-This page documents the public 0.4 install path. Use the SDK installer when you want to try Incan as a user. Use the source-build path only when you are contributing to the compiler or testing an unreleased branch.
+This page documents the public 0.4 install path. Use the toolchain installer when you want to try Incan as a user. Use the source-build path only when you are contributing to the compiler or testing an unreleased branch.
 
 ## Supported hosts
 
-The 0.4 SDK installer ships archives for macOS arm64, macOS x86_64, and Linux x86_64. Native Windows and Linux arm64 are not part of the initial SDK installer; use WSL2 or a source build for those hosts for now. Generated Rust projects still use the local Rust toolchain, so install Rust with `rustup` before running projects that build binaries.
+The 0.4 toolchain installer ships archives for macOS arm64, macOS x86_64, and Linux x86_64. Native Windows and Linux arm64 are not part of the initial toolchain installer; use WSL2 or a source build for those hosts for now. Generated Rust projects still use the local Rust toolchain, so install Rust with `rustup` before running projects that build binaries.
 
-The SDK manifest also records the Rust backend policy for the release, including the `wasm32-wasip1` target used by packages that ship vocabulary companions.
+The toolchain manifest also records the Rust backend policy for the release, including the `wasm32-wasip1` target used by packages that ship vocabulary companions.
 
-## Install the SDK
+## Install the toolchain
 
-The canonical 0.4 artifact source is the GitHub Release. The release publishes `install.sh`, `manifest.json`, checksums, and platform SDK archives; Homebrew, npm, and pip are thin adapters over that same manifest rather than separate compiler builds.
+The canonical 0.4 artifact source is the GitHub Release. The release publishes `install.sh`, `manifest.json`, checksums, and platform toolchain archives; Homebrew, npm, and pip are thin adapters over that same manifest rather than separate compiler builds.
 
 The direct installer path is:
 
@@ -32,17 +32,17 @@ incan --version
 incan-lsp --version
 ```
 
-Package-manager installs use the same SDK archive contract:
+Package-manager installs use the same toolchain archive contract:
 
 ```bash
 brew install https://github.com/dannys-code-corner/incan/releases/latest/download/incan.rb
-npm install -g incan-sdk
-pipx install incan-sdk
+npm install -g incan
+pipx install incan
 ```
 
-Use Homebrew when you want native macOS or Linux command management. Use npm when you want the SDK command shims available through Node-based tooling, editors, or CI images. Use `pipx` for Python-oriented environments; plain `pip install --user incan-sdk` also works, but `pipx` keeps the command package isolated from project environments.
+Use Homebrew when you want native macOS or Linux command management. Use npm when you want the toolchain command shims available through Node-based tooling, editors, or CI images. Use `pipx` for Python-oriented environments; plain `pip install --user incan` also works, but `pipx` keeps the command package isolated from project environments.
 
-The npm and pip packages install the SDK into a package-local cache on first install or first command use, then delegate to the real `incan` and `incan-lsp` binaries from the verified SDK archive. Set `INCAN_SDK_MANIFEST` to pin a manifest, or use the direct `install.sh --manifest <URL|PATH>` path when you need fully explicit release control.
+The npm and pip packages install the toolchain into a package-local cache on first install or first command use, then delegate to the real `incan` and `incan-lsp` binaries from the verified toolchain archive. Set `INCAN_TOOLCHAIN_MANIFEST` to pin a manifest, or use the direct `install.sh --manifest <URL|PATH>` path when you need fully explicit release control.
 
 ## Create a starter project
 
@@ -69,4 +69,4 @@ make install
 incan run examples/simple/hello.incn
 ```
 
-The source-build path links the compiler from the checkout and is useful for development. It is not the public first-contact path for evaluating an SDK release.
+The source-build path links the compiler from the checkout and is useful for development. It is not the public first-contact path for evaluating a toolchain release.

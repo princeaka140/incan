@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "sdk_version": "0.4.0",
+  "toolchain_version": "0.4.0",
   "release": "v0.4.0",
   "channel": "stable",
   "generated_at": "2026-06-06T00:00:00Z",
@@ -9,7 +9,7 @@
     "channel": "stable",
     "min_rust": "1.92",
     "targets": ["wasm32-wasip1"],
-    "policy": "The SDK ships Incan binaries and expects generated Rust builds to use the user's installed stable Rust toolchain plus the wasm32-wasip1 target for vocab companions."
+    "policy": "The toolchain ships Incan binaries and expects generated Rust builds to use the user's installed stable Rust toolchain plus the wasm32-wasip1 target for vocab companions."
   },
   "commands": ["incan", "incan-lsp"],
   "hosts": {

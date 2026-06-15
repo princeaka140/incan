@@ -1,10 +1,10 @@
 # Troubleshooting
 
-This page collects common setup and first-run fixes for the installed SDK path. Contributor-only source-build notes are called out separately.
+This page collects common setup and first-run fixes for the installed toolchain path. Contributor-only source-build notes are called out separately.
 
-## `incan: command not found` after SDK install
+## `incan: command not found` after toolchain install
 
-The SDK installer links `incan` and `incan-lsp` into `INCAN_BIN_DIR`, defaulting to `~/.local/bin`. Make sure that directory is on your `PATH`:
+The toolchain installer links `incan` and `incan-lsp` into `INCAN_BIN_DIR`, defaulting to `~/.local/bin`. Make sure that directory is on your `PATH`:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
@@ -50,7 +50,7 @@ After changing paths or reinstalling, reload the editor window so it starts a ne
 
 ## Contributor source builds
 
-If you are working from a compiler checkout, use repository `make` targets instead of the SDK installer:
+If you are working from a compiler checkout, use repository `make` targets instead of the toolchain installer:
 
 ```bash
 cd /path/to/incan

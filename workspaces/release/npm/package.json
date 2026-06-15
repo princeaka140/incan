@@ -1,7 +1,7 @@
 {
-  "name": "incan-sdk",
+  "name": "incan",
   "version": "0.4.0-rc0",
-  "description": "Thin installer package for the Incan SDK",
+  "description": "Thin installer package for the Incan toolchain",
   "license": "Apache-2.0",
   "homepage": "https://github.com/dannys-code-corner/incan",
   "repository": {
@@ -11,10 +11,10 @@
   "bin": {
     "incan": "bin/incan.js",
     "incan-lsp": "bin/incan-lsp.js",
-    "install-incan-sdk": "bin/install-incan-sdk.js"
+    "install-incan": "bin/install-incan.js"
   },
   "scripts": {
-    "postinstall": "node bin/install-incan-sdk.js --package-install"
+    "postinstall": "node bin/install-incan.js --package-install"
   },
   "files": [
     "bin",

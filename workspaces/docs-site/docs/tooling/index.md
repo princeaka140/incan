@@ -2,7 +2,7 @@
 
 This section covers the Incan tooling experience:
 
-- SDK install and project creation
+- toolchain install and project creation
 - CLI (`check`, `build`, `run`, `fmt`, `test`, `inspect`, and `tools`)
 - editor setup and LSP
 
@@ -23,7 +23,7 @@ If you’re not sure where you fit, start at [Start here](../start_here/index.md
 
 Single source of truth pages under Tooling:
 
-- [Install and run](how-to/install_and_run.md) (SDK-first)
+- [Install and run](how-to/install_and_run.md) (toolchain-first)
 - [CLI reference](reference/cli_reference.md) (commands/flags/env vars)
 - [Codegraph inspection](reference/codegraph_inspection.md) (compiler-backed source-structure JSONL)
 

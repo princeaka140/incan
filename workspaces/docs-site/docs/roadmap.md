@@ -70,7 +70,7 @@ These issues define the minimum coherent 0.4 release surface:
 - [#567](https://github.com/dannys-code-corner/incan/issues/567): generated Rust inspection tooling and quality gates.
 - [#666](https://github.com/dannys-code-corner/incan/issues/666): RFC 102 semantic inspection umbrella, used to keep the inspection surfaces coherent.
 - [#778](https://github.com/dannys-code-corner/incan/issues/778): RFC 106 first slice for compiler-backed codegraph JSONL export.
-- [#428](https://github.com/dannys-code-corner/incan/issues/428): canonical SDK installer and release manifest.
+- [#428](https://github.com/dannys-code-corner/incan/issues/428): canonical toolchain installer and release manifest.
 - [#553](https://github.com/dannys-code-corner/incan/issues/553): zero-clone starter project flow.
 - [#551](https://github.com/dannys-code-corner/incan/issues/551): first-contact quickstart and positioning docs.
 
@@ -146,7 +146,7 @@ The 0.7 milestone is the broader feature reopening lane after the backend replac
 Examples of deferred lanes:
 
 - incan.pub and package registry/product identity.
-- InQL and Pallay SDK dogfood.
+- InQL and Pallay toolchain dogfood.
 - source-local feature metadata.
 - Python interop research.
 - checked API docs generation.

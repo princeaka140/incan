@@ -2,7 +2,7 @@
 set -euo pipefail
 
 default_manifest_url="https://github.com/dannys-code-corner/incan/releases/latest/download/manifest.json"
-manifest_ref="${INCAN_SDK_MANIFEST:-$default_manifest_url}"
+manifest_ref="${INCAN_TOOLCHAIN_MANIFEST:-$default_manifest_url}"
 incan_home="${INCAN_HOME:-$HOME/.incan}"
 bin_dir="${INCAN_BIN_DIR:-$HOME/.local/bin}"
 target_override=""
@@ -11,16 +11,16 @@ dry_run="false"
 
 usage() {
   cat <<'USAGE'
-Install the Incan SDK from a versioned release manifest.
+Install the Incan toolchain from a versioned release manifest.
 
 Usage:
-  install-incan-sdk.sh [options]
+  install-incan.sh [options]
 
 Options:
   --manifest <URL|PATH>   Release manifest to use (default: GitHub Releases latest manifest)
   --target <TRIPLE>       Host target override for tests or cross-install staging
   --archive <PATH>        Use an already-downloaded archive while still verifying the manifest checksum
-  --incan-home <PATH>     SDK install root (default: $INCAN_HOME or ~/.incan)
+  --incan-home <PATH>     toolchain install root (default: $INCAN_HOME or ~/.incan)
   --bin-dir <PATH>        Directory where command symlinks are created (default: $INCAN_BIN_DIR or ~/.local/bin)
   --dry-run               Resolve manifest and target without downloading, extracting, or writing files
   -h, --help              Show this help
@@ -28,7 +28,7 @@ USAGE
 }
 
 fail() {
-  printf 'install-incan-sdk: %s\n' "$*" >&2
+  printf 'install-incan: %s\n' "$*" >&2
   exit 1
 }
 
@@ -85,8 +85,8 @@ detect_target() {
     Darwin:arm64|Darwin:aarch64) printf '%s\n' "aarch64-apple-darwin" ;;
     Darwin:x86_64) printf '%s\n' "x86_64-apple-darwin" ;;
     Linux:x86_64|Linux:amd64) printf '%s\n' "x86_64-unknown-linux-gnu" ;;
-    Linux:arm64|Linux:aarch64) fail "Linux arm64 SDK archives are not shipped in 0.4; use a source build or x86_64 Linux host for now" ;;
-    MINGW*|MSYS*|CYGWIN*|Windows_NT:*) fail "native Windows is not supported by the 0.4 SDK installer; use WSL2 for now" ;;
+    Linux:arm64|Linux:aarch64) fail "Linux arm64 toolchain archives are not shipped in 0.4; use a source build or x86_64 Linux host for now" ;;
+    MINGW*|MSYS*|CYGWIN*|Windows_NT:*) fail "native Windows is not supported by the 0.4 toolchain installer; use WSL2 for now" ;;
     *) fail "unsupported host: ${os} ${arch}" ;;
   esac
 }
@@ -226,10 +226,10 @@ manifest_file="${tmp_dir}/manifest.json"
 copy_or_download "$manifest_ref" "$manifest_file"
 
 schema_version="$(json_top_value "$manifest_file" "schema_version")"
-[ "$schema_version" = "1" ] || fail "unsupported SDK manifest schema_version: ${schema_version:-missing}"
+[ "$schema_version" = "1" ] || fail "unsupported toolchain manifest schema_version: ${schema_version:-missing}"
 
-sdk_version="$(json_top_value "$manifest_file" "sdk_version")"
-[ -n "$sdk_version" ] || fail "manifest is missing sdk_version"
+toolchain_version="$(json_top_value "$manifest_file" "toolchain_version")"
+[ -n "$toolchain_version" ] || fail "manifest is missing toolchain_version"
 
 archive_url="$(json_host_value "$manifest_file" "$target" "archive_url")"
 archive_sha256="$(json_host_value "$manifest_file" "$target" "archive_sha256")"
@@ -241,7 +241,7 @@ if [ -z "$archive_url" ] || [ -z "$archive_sha256" ]; then
 fi
 [ "${archive_format:-tar.gz}" = "tar.gz" ] || fail "unsupported archive format for ${target}: ${archive_format}"
 
-printf 'Incan SDK %s\n' "$sdk_version"
+printf 'Incan toolchain %s\n' "$toolchain_version"
 printf '  target:     %s\n' "$target"
 printf '  archive:    %s\n' "$archive_url"
 printf '  incan home: %s\n' "$incan_home"
@@ -253,7 +253,7 @@ if [ "$dry_run" = "true" ]; then
 fi
 
 require_command tar
-archive_file="${archive_override:-${tmp_dir}/sdk.tar.gz}"
+archive_file="${archive_override:-${tmp_dir}/toolchain.tar.gz}"
 if [ -n "$archive_override" ]; then
   [ -f "$archive_override" ] || fail "archive override does not exist: $archive_override"
 else
@@ -263,11 +263,11 @@ fi
 actual_sha256="$(sha256_file "$archive_file")"
 [ "$actual_sha256" = "$archive_sha256" ] || fail "checksum mismatch for ${archive_file}: expected ${archive_sha256}, got ${actual_sha256}"
 
-sdk_dir="${incan_home}/sdks/${sdk_version}"
-if [ -e "$sdk_dir" ]; then
-  fail "SDK directory already exists: ${sdk_dir}"
+toolchain_dir="${incan_home}/toolchains/${toolchain_version}"
+if [ -e "$toolchain_dir" ]; then
+  fail "toolchain directory already exists: ${toolchain_dir}"
 fi
-extract_dir="${tmp_dir}/sdk"
+extract_dir="${tmp_dir}/toolchain"
 mkdir -p "$extract_dir"
 tar -xzf "$archive_file" -C "$extract_dir"
 
@@ -281,14 +281,14 @@ done <<COMMANDS
 $(json_commands "$manifest_file")
 COMMANDS
 
-mkdir -p "$(dirname "$sdk_dir")" "$bin_dir"
-mv "$extract_dir" "$sdk_dir"
+mkdir -p "$(dirname "$toolchain_dir")" "$bin_dir"
+mv "$extract_dir" "$toolchain_dir"
 
 while IFS= read -r command_name; do
   [ -n "$command_name" ] || continue
   command_path="$(json_command_path "$manifest_file" "$target" "$command_name")"
   [ -n "$command_path" ] || command_path="bin/${command_name}"
-  source_path="${sdk_dir}/${command_path}"
+  source_path="${toolchain_dir}/${command_path}"
   chmod +x "$source_path"
   link_path="${bin_dir}/${command_name}"
   if [ -e "$link_path" ] && [ ! -L "$link_path" ]; then
@@ -302,8 +302,8 @@ COMMANDS
 
 current_link="${incan_home}/current"
 if [ -e "$current_link" ] && [ ! -L "$current_link" ]; then
-  fail "refusing to replace non-symlink current SDK path: ${current_link}"
+  fail "refusing to replace non-symlink current toolchain path: ${current_link}"
 fi
-ln -sfn "$sdk_dir" "$current_link"
+ln -sfn "$toolchain_dir" "$current_link"
 
-printf 'Installed Incan SDK %s into %s\n' "$sdk_version" "$sdk_dir"
+printf 'Installed Incan toolchain %s into %s\n' "$toolchain_version" "$toolchain_dir"
