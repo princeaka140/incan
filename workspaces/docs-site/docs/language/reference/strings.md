@@ -196,7 +196,7 @@ def process_binary(data: bytes) -> bytes:
 ```
 
 !!! note "Coming from Python?"
-    Python’s `bytes` is immutable. Incan’s `bytes` currently compiles to Rust `Vec<u8>`, which is mutable.
+    Python’s `bytes` is immutable. Incan’s `bytes` currently lowers to Rust `Vec<u8>`, which is mutable.
 
 ### When to use `bytes` vs `str`
 

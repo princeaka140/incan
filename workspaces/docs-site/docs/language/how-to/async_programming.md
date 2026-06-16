@@ -1,14 +1,14 @@
 # Async Programming in Incan
 
-Incan provides full async/await support powered by the Tokio runtime. This guide covers all async features available in Incan.
+Incan supports async/await through the current Tokio-backed runtime path. This guide covers the current `std.async` surface available in Incan.
 
 !!! important "Async is import-activated"
     `async` and `await` are **soft keywords**: they become reserved keywords only after importing `std.async` (for example `import std.async` or `from std.async.time import sleep`).
 
 !!! note "Coming from Python?"
-    Incan's async model mirrors Python's `asyncio` — you'll find `async def`, `await`, task spawning, and timeouts all work the same way.
+    Incan keeps the familiar `async def` and `await` authoring shape, but it is not an `asyncio` compatibility layer. Task spawning, timeouts, cancellation, and runtime behavior follow Incan's `std.async` contracts and the current Tokio-backed runtime path.
 
-    The key difference is under the hood: Incan compiles to Rust and uses Tokio, giving you the familiar Python syntax with Rust-level async performance.
+    The key difference is under the hood: the current beta builds through Rust and uses Tokio, giving you familiar Python-shaped syntax with a native async runtime.
 
 ## Quick Start
 

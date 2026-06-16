@@ -2,7 +2,7 @@
 
 RustPython, Codon, Nuitka, and Cython are valuable projects. They are also the wrong category for Incan.
 
-Those tools preserve, accelerate, compile, or extend Python. Incan is for new typed application code with Python-like ergonomics and Rust-native output. If the goal is to keep existing Python code and packages, use the Python tool.
+Those tools preserve, accelerate, compile, or extend Python. Incan is for new typed application code with Python-like ergonomics, native artifacts, and Rust ecosystem boundaries. If the goal is to keep existing Python code and packages, use the Python tool.
 
 ## The comparison
 
@@ -12,7 +12,7 @@ Those tools preserve, accelerate, compile, or extend Python. Incan is for new ty
 | Codon | High-performance Python-like native compilation | You want Python performance and compatibility-oriented acceleration. |
 | Nuitka | Compatible Python-to-executable compilation | You want to ship an existing Python app as an executable. |
 | Cython | Python/C extension and performance bridge | You need CPython ecosystem integration or C/C++ extension work. |
-| Incan | New typed app code that compiles to Rust | You want Python-like authoring but do not need Python compatibility. |
+| Incan | New typed app code with native artifacts and Rust boundaries | You want Python-like authoring but do not need Python compatibility. |
 
 ## Why not just build a better Python runtime?
 
@@ -23,7 +23,7 @@ Incan optimizes for a different future:
 - code is new rather than inherited;
 - static contracts are part of the language, not a sidecar;
 - errors and mutability are explicit;
-- the deployment target is Rust-native output;
+- the deployment target is native artifacts rather than a Python runtime process;
 - AI-generated code has a smaller, more auditable surface.
 
 That makes Incan higher-risk than compatibility tools. It also makes the upside different. The point is not to run old Python faster. The point is to make new application code easier to trust and ship.
