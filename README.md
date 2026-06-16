@@ -20,7 +20,7 @@ You can also install through package-manager adapters that use the same release 
 
 ```bash
 brew install https://github.com/dannys-code-corner/incan/releases/latest/download/incan.rb
-npm install -g incan
+npm install -g @incan/toolchain
 pipx install incan
 ```
 

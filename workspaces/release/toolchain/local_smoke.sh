@@ -124,7 +124,7 @@ smoke_npm() {
     INCAN_NPM_BIN_DIR="${npm_home}/bin" \
     npm_config_cache="${dist_dir}/npm-cache" \
     npm_config_logs_dir="${dist_dir}/npm-logs" \
-    npm install -g "${dist_dir}/incan-$(toolchain_version).tgz" --prefix "$npm_home" --ignore-scripts
+    npm install -g "${dist_dir}/incan-toolchain-$(toolchain_version).tgz" --prefix "$npm_home" --ignore-scripts
   INCAN_TOOLCHAIN_MANIFEST="${dist_dir}/manifest.json" \
     INCAN_NPM_TOOLCHAIN_HOME="${npm_home}/toolchain-home" \
     INCAN_NPM_BIN_DIR="${npm_home}/bin" \

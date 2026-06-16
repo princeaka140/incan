@@ -116,7 +116,7 @@ jobs:
             dist/toolchain/toolchain-manifest.schema.v1.json
             dist/toolchain/install.sh
             dist/toolchain/incan.rb
-            dist/toolchain/incan-*.tgz
+            dist/toolchain/incan-toolchain-*.tgz
             dist/toolchain/incan-*.whl
             dist/toolchain/incan-[0-9]*.tar.gz
       - uses: actions/upload-artifact@v6
@@ -127,7 +127,7 @@ jobs:
             dist/toolchain/toolchain-manifest.schema.v1.json
             dist/toolchain/install.sh
             dist/toolchain/incan.rb
-            dist/toolchain/incan-*.tgz
+            dist/toolchain/incan-toolchain-*.tgz
             dist/toolchain/incan-*.whl
             dist/toolchain/incan-[0-9]*.tar.gz
           if-no-files-found: error
@@ -151,7 +151,7 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: Publish npm installer package
         shell: bash
-        run: npm publish dist/toolchain/incan-*.tgz --access public --provenance
+        run: npm publish dist/toolchain/incan-toolchain-*.tgz --access public --provenance
 
   publish-pypi:
     name: Publish Python installer package

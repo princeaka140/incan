@@ -1,5 +1,5 @@
 {
-  "name": "incan",
+  "name": "@incan/toolchain",
   "version": "0.4.0-rc0",
   "description": "Thin installer package for the Incan toolchain",
   "license": "Apache-2.0",

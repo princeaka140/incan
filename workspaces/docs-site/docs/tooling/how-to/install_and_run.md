@@ -36,7 +36,7 @@ Package-manager installs use the same toolchain archive contract:
 
 ```bash
 brew install https://github.com/dannys-code-corner/incan/releases/latest/download/incan.rb
-npm install -g incan
+npm install -g @incan/toolchain
 pipx install incan
 ```
 
