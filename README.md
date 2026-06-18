@@ -2,18 +2,16 @@
 
 Incan is a statically typed language for writing clear, high-level application code that compiles to native Rust. It aims to feel lightweight and expressive while keeping the things that matter in large codebases explicit: types, errors, and mutability.
 
+Incan 0.4 is the tooling, inspection, installer, and first-contact release: the language remains beta, but the stack is much easier to install, try, inspect, and diagnose without cloning the compiler repository first.
+
 ## Getting started
 
-Install the latest toolchain release, create a starter project, run it, test it, and produce a release build:
+Install the latest toolchain release:
 
 ```bash
 curl -fsSL https://github.com/dannys-code-corner/incan/releases/latest/download/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
-incan new hello --yes
-cd hello
-incan run
-incan test
-incan build --release
+incan --version
 ```
 
 You can also install through package-manager adapters that use the same release manifest and verified toolchain archives:
@@ -24,7 +22,43 @@ npm install -g @incan/toolchain
 pipx install incan
 ```
 
+Create a starter project, run it, test it, and produce a release build:
+
+```bash
+incan new hello --yes
+cd hello
+incan run
+incan test
+incan build --release
+```
+
+The installer links `incan` and `incan-lsp` into `~/.local/bin` by default. The Homebrew, npm, and pipx packages are thin adapters over the same toolchain archives, not separate compiler builds. See [Install and run Incan](workspaces/docs-site/docs/tooling/how-to/install_and_run.md) for supported hosts, dry-run installation, manifest pinning, and source-build fallback instructions.
+
 If you are contributing to the compiler itself, clone this repository and use `make install` instead of the toolchain installer.
+
+## What 0.4 adds
+
+0.4 is about making Incan tryable and inspectable rather than reopening the language surface. The main additions are:
+
+- **Toolchain installation** through GitHub release artifacts, checksum-verified archives, `install.sh`, Homebrew, npm, and pipx adapters.
+- **Starter project flow** through `incan new`, `incan run`, `incan test`, and `incan build --release`.
+- **Stable diagnostics** through `incan check --format json` and `incan explain <CODE>`.
+- **Build reports** through `incan build --report json`, including compiler version, project identity, generated paths, artifact paths, dependency summaries, Cargo policy flags, timings, and notes.
+- **Generated Rust inspection** through `incan inspect rust --format json`, which reports the current Rust-backed compiler output without treating generated Rust as a stable ABI.
+- **Codegraph export** through `incan inspect codegraph --format jsonl`, with compiler-backed files, modules, declarations, imports, exports, references, calls, diagnostics, spans, provenance, and degraded-state records.
+- **Boundary parity hardening** across local, imported, re-exported, package, test-batch, generated-Rust, and vocab/tooling paths.
+
+Read the full [0.4 release notes](workspaces/docs-site/docs/release_notes/0_4.md) and the [CLI reference](workspaces/docs-site/docs/tooling/reference/cli_reference.md) for the detailed command contracts.
+
+Quick inspection examples:
+
+```bash
+incan check src/main.incn --format json
+incan explain INCAN-T0001
+incan build --report json
+incan inspect rust src/main.incn --format json
+incan inspect codegraph src --format jsonl
+```
 
 ## Positioning
 
@@ -99,6 +133,7 @@ Start here:
 - Start here: `workspaces/docs-site/docs/start_here/index.md`
 - Language: `workspaces/docs-site/docs/language/index.md`
 - Tooling: `workspaces/docs-site/docs/tooling/index.md`
+- Release notes: `workspaces/docs-site/docs/release_notes/0_4.md`
 
 Build/serve locally:
 
