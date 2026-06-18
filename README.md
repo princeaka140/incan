@@ -2,7 +2,7 @@
 
 Incan is a statically typed language for writing clear, high-level application code that compiles to native Rust. It aims to feel lightweight and expressive while keeping the things that matter in large codebases explicit: types, errors, and mutability.
 
-Incan 0.4 is the tooling, inspection, installer, and first-contact release: the language remains beta, but the stack is much easier to install, try, inspect, and diagnose without cloning the compiler repository first.
+The current toolchain is designed to be easy to install, try, inspect, and diagnose without cloning the compiler repository first.
 
 ## Getting started
 
@@ -36,9 +36,9 @@ The installer links `incan` and `incan-lsp` into `~/.local/bin` by default. The 
 
 If you are contributing to the compiler itself, clone this repository and use `make install` instead of the toolchain installer.
 
-## What 0.4 adds
+## Tooling and inspection
 
-0.4 is about making Incan tryable and inspectable rather than reopening the language surface. The main additions are:
+The current toolchain includes these public surfaces for installation, first contact, diagnostics, and inspection:
 
 - **Toolchain installation** through GitHub release artifacts, checksum-verified archives, `install.sh`, Homebrew, npm, and pipx adapters.
 - **Starter project flow** through `incan new`, `incan run`, `incan test`, and `incan build --release`.
@@ -48,9 +48,9 @@ If you are contributing to the compiler itself, clone this repository and use `m
 - **Codegraph export** through `incan inspect codegraph --format jsonl`, with compiler-backed files, modules, declarations, imports, exports, references, calls, diagnostics, spans, provenance, and degraded-state records.
 - **Boundary parity hardening** across local, imported, re-exported, package, test-batch, generated-Rust, and vocab/tooling paths.
 
-Read the full [0.4 release notes](workspaces/docs-site/docs/release_notes/0_4.md) and the [CLI reference](workspaces/docs-site/docs/tooling/reference/cli_reference.md) for the detailed command contracts.
+Read the [CLI reference](workspaces/docs-site/docs/tooling/reference/cli_reference.md) for detailed command contracts, or the [0.4 release notes](workspaces/docs-site/docs/release_notes/0_4.md) for release-specific change history.
 
-Quick inspection examples:
+These examples show the inspection commands most useful when evaluating a project:
 
 ```bash
 incan check src/main.incn --format json
