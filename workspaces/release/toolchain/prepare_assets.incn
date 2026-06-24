@@ -25,7 +25,7 @@ def env_flag(name: str) -> bool:
 
 
 def read_first_line(path: str) -> Result[str, str]:
-    text = Path(path).read_text("utf-8", "strict").map_err((err) => err.message())?
+    text = Path(path).read_text("utf-8", "strict").map_err((err) => f"read {path}: {err.message()}")?
     lines = text.split("\n")
     if len(lines) == 0:
         return Err(f"{path} is empty")
@@ -33,11 +33,11 @@ def read_first_line(path: str) -> Result[str, str]:
 
 
 def write_text(path: str, text: str) -> Result[None, str]:
-    return Path(path).write_text(text, "utf-8", "strict", None).map_err((err) => err.message())
+    return Path(path).write_text(text, "utf-8", "strict", None).map_err((err) => f"write {path}: {err.message()}")
 
 
 def copy_text(source: str, target: str) -> Result[None, str]:
-    text = Path(source).read_text("utf-8", "strict").map_err((err) => err.message())?
+    text = Path(source).read_text("utf-8", "strict").map_err((err) => f"read {source}: {err.message()}")?
     return write_text(target, text)
 
 
@@ -112,9 +112,9 @@ def hosts_json(assets: list[HostAsset]) -> JsonValue:
 
 def manifest_json(version: str, release: str, generated_at: str, assets: list[HostAsset]) -> JsonValue:
     return JsonValue.object(
-        {"schema_version": JsonValue.int(1), "toolchain_version": JsonValue.str(version), "release": JsonValue.str(release), "channel": JsonValue.str(
-            "stable",
-        ), "generated_at": JsonValue.str(generated_at), "manifest_url": JsonValue.str(
+        {"schema_version": JsonValue.int(1), "toolchain_version": JsonValue.str(version), "release": JsonValue.str(
+            release,
+        ), "channel": JsonValue.str("stable"), "generated_at": JsonValue.str(generated_at), "manifest_url": JsonValue.str(
             f"https://github.com/encero-systems/incan/releases/download/{release}/manifest.json",
         ), "rust_toolchain": JsonValue.object(
             {"channel": JsonValue.str("stable"), "min_rust": JsonValue.str("1.92"), "targets": JsonValue.array(
@@ -185,7 +185,10 @@ def prepare_assets() -> Result[None, str]:
     manifest_text = manifest.to_pretty_json().map_err((err) => err.message())?
     write_text(f"{dist_dir}/manifest.json", manifest_text + "\n")?
     copy_text(f"{repo_root}/workspaces/release/install-incan.sh", f"{dist_dir}/install.sh")?
-    copy_text(f"{repo_root}/workspaces/release/toolchain/manifest.schema.v1.json", f"{dist_dir}/toolchain-manifest.schema.v1.json")?
+    copy_text(
+        f"{repo_root}/workspaces/release/toolchain/manifest.schema.v1.json",
+        f"{dist_dir}/toolchain-manifest.schema.v1.json",
+    )?
 
     if not skip_homebrew:
         formula = render_formula(version, assets)?

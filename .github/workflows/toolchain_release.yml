@@ -82,7 +82,7 @@ jobs:
         shell: bash
         env:
           INCAN_REPO_ROOT: ${{ github.workspace }}
-          INCAN_TOOLCHAIN_DIST_DIR: dist/toolchain
+          INCAN_TOOLCHAIN_DIST_DIR: ${{ github.workspace }}/dist/toolchain
         run: |
           set -euo pipefail
           export INCAN_TOOLCHAIN_GENERATED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
@@ -98,7 +98,7 @@ jobs:
       - name: Smoke generated toolchain installers
         shell: bash
         env:
-          TOOLCHAIN_DIST: dist/toolchain
+          TOOLCHAIN_DIST: ${{ github.workspace }}/dist/toolchain
           TOOLCHAIN_HOST_TARGET: x86_64-unknown-linux-gnu
           TOOLCHAIN_INCAN_BIN: dist/toolchain-bootstrap/bin/incan
         run: |

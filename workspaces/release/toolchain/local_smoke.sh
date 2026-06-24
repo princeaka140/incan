@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-dist_dir="${TOOLCHAIN_DIST:-/private/tmp/incan-local-test}"
 generated_at="${TOOLCHAIN_GENERATED_AT:-2026-06-06T00:00:00Z}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+dist_dir="${TOOLCHAIN_DIST:-/private/tmp/incan-local-test}"
+case "$dist_dir" in
+  /*) ;;
+  *) dist_dir="${root}/${dist_dir}" ;;
+esac
 incan_run_bin="${TOOLCHAIN_INCAN_BIN:-${root}/target/release/incan}"
 
 usage() {
