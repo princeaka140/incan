@@ -38,7 +38,7 @@ incan test
 incan build --release
 ```
 
-The installer links `incan` and `incan-lsp` into `~/.local/bin` by default. The Homebrew, npm, and pipx packages are thin adapters over the same toolchain archives, not separate compiler builds. Cargo installation compiles from source and is mainly for Rust users who prefer that workflow. See [Install and run Incan](workspaces/docs-site/docs/tooling/how-to/install_and_run.md) for supported hosts, dry-run installation, manifest pinning, Cargo installation, and source-build fallback instructions.
+The direct installer links `incan` and `incan-lsp` into `~/.local/bin` by default and provisions the Rust backend through `rustup` when needed, including the `wasm32-wasip1` target used by packages with vocab companions. The npm and pipx packages delegate to that same installer and verified toolchain archive contract. Homebrew installs the prebuilt Incan commands through the generated formula, but Homebrew does not quietly run rustup into your home directory; make sure Rust and `wasm32-wasip1` are available when using the Homebrew path. Cargo installation compiles from source and is mainly for Rust users who prefer that workflow. See [Install and run Incan](workspaces/docs-site/docs/tooling/how-to/install_and_run.md) for supported hosts, dry-run installation, manifest pinning, Cargo installation, and source-build fallback instructions.
 
 If you are contributing to the compiler itself, clone this repository and use `make install` instead of the toolchain installer.
 

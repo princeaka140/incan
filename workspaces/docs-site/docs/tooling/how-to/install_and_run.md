@@ -4,9 +4,9 @@ This page documents the public 0.4 install path. Use the toolchain installer whe
 
 ## Supported hosts
 
-The 0.4 toolchain installer ships archives for macOS arm64, macOS x86_64, and Linux x86_64. Native Windows and Linux arm64 are not part of the initial toolchain installer; use WSL2 or a source build for those hosts for now. Generated Rust projects still use the local Rust toolchain, so install Rust with `rustup` before running projects that build binaries.
+The 0.4 toolchain installer ships archives for macOS arm64, macOS x86_64, and Linux x86_64. Native Windows and Linux arm64 are not part of the initial toolchain installer; use WSL2 or a source build for those hosts for now. Generated Rust projects use Cargo under the hood, so the direct installer provisions stable Rust through `rustup` when needed and ensures the `wasm32-wasip1` target is installed for packages that ship vocabulary companions.
 
-The toolchain manifest also records the Rust backend policy for the release, including the `wasm32-wasip1` target used by packages that ship vocabulary companions.
+The toolchain manifest records the Rust backend policy for the release, including the Rust channel and extra targets the installer must make available.
 
 ## Install the toolchain
 
@@ -24,7 +24,7 @@ For a dry run that resolves the manifest and target without writing files:
 curl -fsSL https://github.com/encero-systems/incan/releases/latest/download/install.sh | sh -s -- --dry-run
 ```
 
-The installer reads the release manifest, selects the archive for your host target, verifies the archive checksum, installs into `INCAN_HOME` (default `~/.incan`), and links `incan` plus `incan-lsp` into `INCAN_BIN_DIR` (default `~/.local/bin`). Make sure the bin directory is on `PATH`.
+The installer reads the release manifest, selects the archive for your host target, provisions the Rust backend unless you pass `--skip-rust`, verifies the archive checksum, installs into `INCAN_HOME` (default `~/.incan`), and links `incan` plus `incan-lsp` into `INCAN_BIN_DIR` (default `~/.local/bin`). Make sure the bin directory is on `PATH`.
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
@@ -40,9 +40,9 @@ npm install -g @incan/toolchain
 pipx install incan
 ```
 
-Use Homebrew when you want native macOS or Linux command management. Use npm when you want the toolchain command shims available through Node-based tooling, editors, or CI images. Use `pipx` for Python-oriented environments; plain `pip install --user incan` also works, but `pipx` keeps the command package isolated from project environments.
+Use Homebrew when you want native macOS or Linux command management and already have Rust managed separately. Use npm when you want the toolchain command shims available through Node-based tooling, editors, or CI images. Use `pipx` for Python-oriented environments; plain `pip install --user incan` also works, but `pipx` keeps the command package isolated from project environments.
 
-The npm and pip packages install the toolchain into a package-local cache on first install or first command use, then delegate to the real `incan` and `incan-lsp` binaries from the verified toolchain archive. Set `INCAN_TOOLCHAIN_MANIFEST` to pin a manifest, or use the direct `install.sh --manifest <URL|PATH>` path when you need fully explicit release control.
+The npm and pip packages install the toolchain into a package-local cache on first install or first command use, then delegate to the real `incan` and `incan-lsp` binaries from the verified toolchain archive. They route through the same installer, so they also provision Rust unless you pass `--skip-rust` through `install-incan` or set `INCAN_SKIP_RUST_INSTALL=1`. Set `INCAN_TOOLCHAIN_MANIFEST` to pin a manifest, or use the direct `install.sh --manifest <URL|PATH>` path when you need fully explicit release control.
 
 Rust users can also install from Git through Cargo, which compiles the release source instead of downloading a prebuilt toolchain archive:
 

@@ -9,7 +9,7 @@
     "channel": "stable",
     "min_rust": "1.92",
     "targets": ["wasm32-wasip1"],
-    "policy": "The toolchain ships Incan binaries and expects generated Rust builds to use the user's installed stable Rust toolchain plus the wasm32-wasip1 target for vocab companions."
+    "policy": "The toolchain installer provisions stable Rust through rustup when needed and ensures the wasm32-wasip1 target for packages that ship vocab companions."
   },
   "commands": ["incan", "incan-lsp"],
   "hosts": {

@@ -66,6 +66,19 @@ make release
 ./target/release/incan --version
 ```
 
+## Rust backend provisioning fails
+
+The direct installer, npm adapter, and pipx adapter provision stable Rust through `rustup` when `rustup`, `cargo`, or `rustc` are missing, then run `rustup target add wasm32-wasip1`. If the install fails on a fresh machine, check whether your network can reach the rustup bootstrap script and Rust distribution servers:
+
+```bash
+command -v rustup || true
+command -v cargo || true
+command -v rustc || true
+rustup target list --installed 2>/dev/null || true
+```
+
+Use `INCAN_SKIP_RUST_INSTALL=1` or `install.sh --skip-rust` only when your environment manages Rust separately. In that mode, make sure `cargo`, `rustc`, and `wasm32-wasip1` are already available before running `incan run`, `incan test`, `incan build`, or package checks that load vocab companions.
+
 ## Builds are slow the first time
 
 The first `incan build`, `incan test`, or generated project run may compile Rust dependencies and can take a few minutes. Later runs should reuse Cargo artifacts unless dependency inputs, profile, target directory, or lock data changed.

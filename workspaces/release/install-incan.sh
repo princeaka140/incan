@@ -5,6 +5,8 @@ default_manifest_url="https://github.com/encero-systems/incan/releases/latest/do
 manifest_ref="${INCAN_TOOLCHAIN_MANIFEST:-$default_manifest_url}"
 incan_home="${INCAN_HOME:-$HOME/.incan}"
 bin_dir="${INCAN_BIN_DIR:-$HOME/.local/bin}"
+skip_rust_install="${INCAN_SKIP_RUST_INSTALL:-false}"
+rustup_init_ref="${INCAN_RUSTUP_INIT:-https://sh.rustup.rs}"
 target_override=""
 archive_override=""
 dry_run="false"
@@ -22,6 +24,7 @@ Options:
   --archive <PATH>        Use an already-downloaded archive while still verifying the manifest checksum
   --incan-home <PATH>     toolchain install root (default: $INCAN_HOME or ~/.incan)
   --bin-dir <PATH>        Directory where command symlinks are created (default: $INCAN_BIN_DIR or ~/.local/bin)
+  --skip-rust             Do not install or update the Rust backend toolchain
   --dry-run               Resolve manifest and target without downloading, extracting, or writing files
   -h, --help              Show this help
 USAGE
@@ -30,6 +33,17 @@ USAGE
 fail() {
   printf 'install-incan: %s\n' "$*" >&2
   exit 1
+}
+
+truthy() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+has_command() {
+  command -v "$1" >/dev/null 2>&1
 }
 
 while [ "$#" -gt 0 ]; do
@@ -59,6 +73,10 @@ while [ "$#" -gt 0 ]; do
       bin_dir="$2"
       shift 2
       ;;
+    --skip-rust)
+      skip_rust_install="true"
+      shift
+      ;;
     --dry-run)
       dry_run="true"
       shift
@@ -74,7 +92,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 require_command() {
-  command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+  has_command "$1" || fail "required command not found: $1"
 }
 
 detect_target() {
@@ -208,6 +226,46 @@ PY
   fi
 }
 
+json_rust_toolchain_value() {
+  local file="$1"
+  local field="$2"
+  if command -v jq >/dev/null 2>&1; then
+    jq -r --arg field "$field" '.rust_toolchain[$field] // empty' "$file"
+  else
+    require_command python3
+    python3 - "$file" "$field" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+value = payload.get("rust_toolchain", {}).get(sys.argv[2], "")
+if isinstance(value, (dict, list)):
+    print(json.dumps(value, separators=(",", ":")))
+else:
+    print(value)
+PY
+  fi
+}
+
+json_rust_targets() {
+  local file="$1"
+  if command -v jq >/dev/null 2>&1; then
+    jq -r '.rust_toolchain.targets[]?' "$file"
+  else
+    require_command python3
+    python3 - "$file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+for target in payload.get("rust_toolchain", {}).get("targets", []):
+    print(target)
+PY
+  fi
+}
+
 sha256_file() {
   local file="$1"
   if command -v sha256sum >/dev/null 2>&1; then
@@ -217,6 +275,61 @@ sha256_file() {
   else
     fail "required command not found: sha256sum or shasum"
   fi
+}
+
+install_rustup() {
+  local channel="$1"
+  printf 'Installing Rust backend with rustup (%s)...\n' "$channel"
+  case "$rustup_init_ref" in
+    http://*|https://*)
+      require_command curl
+      curl --proto '=https' --tlsv1.2 -sSf "$rustup_init_ref" | sh -s -- -y --profile minimal --default-toolchain "$channel"
+      ;;
+    file://*)
+      sh "${rustup_init_ref#file://}" -y --profile minimal --default-toolchain "$channel"
+      ;;
+    *)
+      sh "$rustup_init_ref" -y --profile minimal --default-toolchain "$channel"
+      ;;
+  esac
+  export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+}
+
+ensure_rust_backend() {
+  local manifest_file="$1"
+  local channel
+  channel="$(json_rust_toolchain_value "$manifest_file" "channel")"
+  [ -n "$channel" ] || channel="stable"
+
+  if truthy "$skip_rust_install"; then
+    printf 'Rust backend provisioning skipped.\n'
+    return 0
+  fi
+
+  if ! has_command rustup; then
+    install_rustup "$channel"
+  fi
+  has_command rustup || fail "rustup was not available after Rust backend installation"
+
+  if ! has_command cargo || ! has_command rustc; then
+    printf 'Installing Rust toolchain %s...\n' "$channel"
+    rustup toolchain install "$channel" --profile minimal
+    rustup default "$channel"
+    export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+  fi
+  has_command cargo || fail "cargo was not available after Rust backend installation"
+  has_command rustc || fail "rustc was not available after Rust backend installation"
+
+  printf 'Rust backend:\n'
+  printf '  rustc: %s\n' "$(rustc --version)"
+  printf '  cargo: %s\n' "$(cargo --version)"
+  while IFS= read -r rust_target; do
+    [ -n "$rust_target" ] || continue
+    printf '  target: %s\n' "$rust_target"
+    rustup target add "$rust_target"
+  done <<RUST_TARGETS
+$(json_rust_targets "$manifest_file")
+RUST_TARGETS
 }
 
 target="${target_override:-$(detect_target)}"
@@ -252,6 +365,7 @@ if [ "$dry_run" = "true" ]; then
   exit 0
 fi
 
+ensure_rust_backend "$manifest_file"
 require_command tar
 archive_file="${archive_override:-${tmp_dir}/toolchain.tar.gz}"
 if [ -n "$archive_override" ]; then

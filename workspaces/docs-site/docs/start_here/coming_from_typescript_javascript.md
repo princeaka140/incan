@@ -4,7 +4,7 @@ This page is a routing guide for TypeScript and JavaScript developers evaluating
 
 ## Install first
 
-If you already use Node-based tooling, install the npm adapter. It installs command shims and resolves the same verified Incan toolchain archive used by the direct installer:
+If you already use Node-based tooling, install the npm adapter. It installs command shims, resolves the same verified Incan toolchain archive used by the direct installer, and provisions the Rust backend when needed:
 
 ```bash
 npm install -g @incan/toolchain

@@ -124,6 +124,11 @@ fn write_fixture_command(path: &Path, name: &str) -> Result<(), Box<dyn std::err
     make_executable(path)
 }
 
+fn write_executable(path: &Path, contents: &str) -> Result<(), Box<dyn std::error::Error>> {
+    fs::write(path, contents)?;
+    make_executable(path)
+}
+
 fn write_fixture_toolchain_commands(root: &Path) -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
     let bin = root.join("commands");
     fs::create_dir_all(&bin)?;
@@ -288,6 +293,13 @@ fn toolchain_release_assets_are_prepared_by_central_manifest_script() -> Result<
     assert_eq!(manifest["generated_at"], "2026-06-06T00:00:00Z");
     assert_eq!(manifest["rust_toolchain"]["targets"][0], "wasm32-wasip1");
     assert!(
+        manifest["rust_toolchain"]["policy"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("provisions stable Rust through rustup"),
+        "manifest should document installer-managed Rust provisioning"
+    );
+    assert!(
         manifest["hosts"]["x86_64-unknown-linux-gnu"]["archive_url"]
             .as_str()
             .unwrap_or_default()
@@ -435,6 +447,7 @@ fn toolchain_installer_verifies_checksum_and_links_commands() -> Result<(), Box<
         .args(["--archive", archive.to_str().ok_or("archive path is not UTF-8")?])
         .args(["--incan-home", incan_home.to_str().ok_or("home path is not UTF-8")?])
         .args(["--bin-dir", bin_dir.to_str().ok_or("bin path is not UTF-8")?])
+        .env("INCAN_SKIP_RUST_INSTALL", "1")
         .output()?;
 
     assert!(
@@ -442,6 +455,125 @@ fn toolchain_installer_verifies_checksum_and_links_commands() -> Result<(), Box<
         "installer failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+    assert_toolchain_install(&incan_home, &bin_dir);
+    Ok(())
+}
+
+#[test]
+fn toolchain_installer_provisions_rust_backend_targets() -> Result<(), Box<dyn std::error::Error>> {
+    let tmp = tempfile::tempdir()?;
+    let (archive, checksum) = write_fixture_archive(tmp.path())?;
+    let manifest = write_manifest(tmp.path(), &archive, &checksum)?;
+    let incan_home = tmp.path().join("home");
+    let bin_dir = tmp.path().join("bin");
+    let fake_bin = tmp.path().join("fake-bin");
+    fs::create_dir_all(&fake_bin)?;
+    let rustup_log = tmp.path().join("rustup.log");
+
+    write_executable(
+        &fake_bin.join("rustup"),
+        "#!/usr/bin/env sh\nprintf '%s\\n' \"$*\" >> \"$RUSTUP_LOG\"\n",
+    )?;
+    write_executable(
+        &fake_bin.join("cargo"),
+        "#!/usr/bin/env sh\nprintf 'cargo 1.96.0 fixture\\n'\n",
+    )?;
+    write_executable(
+        &fake_bin.join("rustc"),
+        "#!/usr/bin/env sh\nprintf 'rustc 1.96.0 fixture\\n'\n",
+    )?;
+
+    let current_path = std::env::var("PATH")?;
+    let output = Command::new("bash")
+        .arg(installer_script())
+        .args(["--manifest", manifest.to_str().ok_or("manifest path is not UTF-8")?])
+        .args(["--target", "x86_64-unknown-linux-gnu"])
+        .args(["--archive", archive.to_str().ok_or("archive path is not UTF-8")?])
+        .args(["--incan-home", incan_home.to_str().ok_or("home path is not UTF-8")?])
+        .args(["--bin-dir", bin_dir.to_str().ok_or("bin path is not UTF-8")?])
+        .env("PATH", format!("{}:{current_path}", fake_bin.display()))
+        .env("RUSTUP_LOG", &rustup_log)
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "installer failed with fake Rust backend\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Rust backend:"));
+    assert!(stdout.contains("target: wasm32-wasip1"));
+    let rustup_log = fs::read_to_string(rustup_log)?;
+    assert!(
+        rustup_log.lines().any(|line| line == "target add wasm32-wasip1"),
+        "expected installer to add manifest Rust target, got:\n{rustup_log}"
+    );
+    assert_toolchain_install(&incan_home, &bin_dir);
+    Ok(())
+}
+
+#[test]
+fn toolchain_installer_bootstraps_rustup_when_missing() -> Result<(), Box<dyn std::error::Error>> {
+    let tmp = tempfile::tempdir()?;
+    let (archive, checksum) = write_fixture_archive(tmp.path())?;
+    let manifest = write_manifest(tmp.path(), &archive, &checksum)?;
+    let incan_home = tmp.path().join("home");
+    let bin_dir = tmp.path().join("bin");
+    let fake_home = tmp.path().join("fake-home");
+    fs::create_dir_all(&fake_home)?;
+    let rustup_log = tmp.path().join("rustup-bootstrap.log");
+    let rustup_init = tmp.path().join("rustup-init.sh");
+
+    write_executable(
+        &rustup_init,
+        r#"#!/usr/bin/env sh
+set -eu
+mkdir -p "$HOME/.cargo/bin"
+cat > "$HOME/.cargo/bin/rustup" <<'RUSTUP'
+#!/usr/bin/env sh
+printf '%s\n' "$*" >> "$RUSTUP_LOG"
+RUSTUP
+cat > "$HOME/.cargo/bin/cargo" <<'CARGO'
+#!/usr/bin/env sh
+printf 'cargo 1.96.0 fixture\n'
+CARGO
+cat > "$HOME/.cargo/bin/rustc" <<'RUSTC'
+#!/usr/bin/env sh
+printf 'rustc 1.96.0 fixture\n'
+RUSTC
+chmod +x "$HOME/.cargo/bin/rustup" "$HOME/.cargo/bin/cargo" "$HOME/.cargo/bin/rustc"
+"#,
+    )?;
+
+    let output = Command::new("bash")
+        .arg(installer_script())
+        .args(["--manifest", manifest.to_str().ok_or("manifest path is not UTF-8")?])
+        .args(["--target", "x86_64-unknown-linux-gnu"])
+        .args(["--archive", archive.to_str().ok_or("archive path is not UTF-8")?])
+        .args(["--incan-home", incan_home.to_str().ok_or("home path is not UTF-8")?])
+        .args(["--bin-dir", bin_dir.to_str().ok_or("bin path is not UTF-8")?])
+        .env("HOME", &fake_home)
+        .env("CARGO_HOME", fake_home.join(".cargo"))
+        .env("INCAN_RUSTUP_INIT", &rustup_init)
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env("RUSTUP_LOG", &rustup_log)
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "installer failed to bootstrap fake Rust backend\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Installing Rust backend with rustup (stable)"));
+    assert!(stdout.contains("Rust backend:"));
+    let rustup_log = fs::read_to_string(rustup_log)?;
+    assert!(
+        rustup_log.lines().any(|line| line == "target add wasm32-wasip1"),
+        "expected bootstrapped rustup to add manifest Rust target, got:\n{rustup_log}"
     );
     assert_toolchain_install(&incan_home, &bin_dir);
     Ok(())
@@ -474,6 +606,7 @@ fn homebrew_formula_is_rendered_from_the_toolchain_manifest() -> Result<(), Box<
         .to_string();
     let formula = fs::read_to_string(dist.join("incan.rb"))?;
     assert!(formula.contains(r#"version "0.4.0-rc1""#));
+    assert!(formula.contains("Homebrew installs only the prebuilt Incan commands"));
     assert!(formula.contains(
         r#"url "https://github.com/encero-systems/incan/releases/download/v0.4.0-rc1/incan-v0.4.0-rc1-x86_64-unknown-linux-gnu.tar.gz""#
     ));
@@ -498,6 +631,7 @@ fn npm_installer_wrapper_delegates_to_shared_toolchain_installer() -> Result<(),
         .args(["--archive", archive.to_str().ok_or("archive path is not UTF-8")?])
         .args(["--incan-home", incan_home.to_str().ok_or("home path is not UTF-8")?])
         .args(["--bin-dir", bin_dir.to_str().ok_or("bin path is not UTF-8")?])
+        .env("INCAN_SKIP_RUST_INSTALL", "1")
         .output()?;
 
     assert!(
@@ -526,6 +660,7 @@ fn pip_installer_wrapper_delegates_to_shared_toolchain_installer() -> Result<(),
         .args(["--archive", archive.to_str().ok_or("archive path is not UTF-8")?])
         .args(["--incan-home", incan_home.to_str().ok_or("home path is not UTF-8")?])
         .args(["--bin-dir", bin_dir.to_str().ok_or("bin path is not UTF-8")?])
+        .env("INCAN_SKIP_RUST_INSTALL", "1")
         .output()?;
 
     assert!(

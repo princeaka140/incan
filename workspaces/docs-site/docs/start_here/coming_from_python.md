@@ -4,7 +4,7 @@ This page routes Python developers who are evaluating Incan for application code
 
 ## Install first
 
-If you use Python tooling day to day, `pipx` is the cleanest package-manager entrypoint because it keeps the command package isolated from project environments while still installing the verified Incan toolchain archive:
+If you use Python tooling day to day, `pipx` is the cleanest package-manager entrypoint because it keeps the command package isolated from project environments while still installing the verified Incan toolchain archive. The installer also provisions the Rust backend when needed, so a fresh machine can move straight from install to `incan run`:
 
 ```bash
 pipx install incan

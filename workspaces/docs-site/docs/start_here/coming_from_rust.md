@@ -12,7 +12,7 @@ incan --version
 incan-lsp --version
 ```
 
-If you want the faster binary toolchain path instead, use the release installer:
+If you want the faster binary toolchain path instead, use the release installer. This path can also bootstrap the stable Rust backend through `rustup` on a fresh machine:
 
 ```bash
 curl -fsSL https://github.com/encero-systems/incan/releases/latest/download/install.sh | sh
