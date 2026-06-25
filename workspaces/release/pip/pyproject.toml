@@ -24,7 +24,7 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/encero-systems/incan"
+Homepage = "https://incan.io"
 Repository = "https://github.com/encero-systems/incan"
 
 [project.scripts]

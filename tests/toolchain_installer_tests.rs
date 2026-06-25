@@ -361,6 +361,9 @@ fn package_prepare_scripts_stage_versions_and_shared_installer() -> Result<(), B
     );
     let npm_package = fs::read_to_string(dist.join("_npm-package/package.json"))?;
     assert!(npm_package.contains(r#""version": "0.4.0-dev.6""#));
+    assert!(npm_package.contains(r#""homepage": "https://incan.io""#));
+    assert!(npm_package.contains(r#""README.md""#));
+    assert!(fs::read_to_string(dist.join("_npm-package/README.md"))?.contains("https://incan.io"));
     assert!(dist.join("_npm-package/vendor/install-incan.sh").exists());
 
     let pip_output = Command::new("python3")
@@ -374,7 +377,10 @@ fn package_prepare_scripts_stage_versions_and_shared_installer() -> Result<(), B
         String::from_utf8_lossy(&pip_output.stdout),
         String::from_utf8_lossy(&pip_output.stderr)
     );
-    assert!(fs::read_to_string(dist.join("_pip-package/pyproject.toml"))?.contains(r#"version = "0.4.0.dev6""#));
+    let pip_project = fs::read_to_string(dist.join("_pip-package/pyproject.toml"))?;
+    assert!(pip_project.contains(r#"version = "0.4.0.dev6""#));
+    assert!(pip_project.contains(r#"Homepage = "https://incan.io""#));
+    assert!(fs::read_to_string(dist.join("_pip-package/README.md"))?.contains("https://incan.io"));
     assert!(
         fs::read_to_string(dist.join("_pip-package/src/incan_toolchain/__init__.py"))?
             .contains(r#"__version__ = "0.4.0.dev6""#)
