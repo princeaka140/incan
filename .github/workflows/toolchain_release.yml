@@ -161,7 +161,13 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: Publish npm installer package
         shell: bash
-        run: npm publish dist/toolchain/incan-toolchain-*.tgz --access public --provenance
+        run: |
+          set -euo pipefail
+          npm_tag="latest"
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            npm_tag="rc"
+          fi
+          npm publish dist/toolchain/incan-toolchain-*.tgz --access public --provenance --tag "$npm_tag"
 
   publish-pypi:
     name: Publish Python installer package
