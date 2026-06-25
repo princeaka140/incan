@@ -1072,7 +1072,7 @@ mod validate_rust_function_call_tests {
             is_unsafe: false,
         };
 
-        let _ = checker.validate_rust_method_call("rust::regex::Regex.is_match", &sig, &[], &[], false, span);
+        let _ = checker.validate_rust_method_call("rust::regex::Regex.is_match", &sig, &[], &[], &[], false, span);
 
         assert!(
             checker.errors.iter().any(
@@ -1106,7 +1106,7 @@ mod validate_rust_function_call_tests {
         let args = [CallArg::Positional(arg_expr)];
         let arg_types = [ResolvedType::Int];
 
-        let _ = checker.validate_rust_method_call("rust::regex::Regex.is_match", &sig, &args, &arg_types, false, span);
+        let _ = checker.validate_rust_method_call("rust::regex::Regex.is_match", &sig, &[], &args, &arg_types, false, span);
 
         assert!(
             checker
@@ -1144,6 +1144,7 @@ mod validate_rust_function_call_tests {
         let _ = checker.validate_rust_method_call(
             "rust::std::collections::HashMap.get",
             &sig,
+            &[],
             &args,
             &arg_types,
             true,
@@ -1188,6 +1189,7 @@ mod validate_rust_function_call_tests {
         let _ = checker.validate_rust_method_call(
             "rust::std::collections::HashMap.get",
             &sig,
+            &[],
             &args,
             &arg_types,
             true,
@@ -1540,6 +1542,7 @@ mod validate_rust_function_call_tests {
         let _ = checker.validate_rust_method_call(
             "rust::demo::FileDescriptorSet.decode",
             &sig,
+            &[],
             &args,
             &arg_types,
             false,
@@ -1583,6 +1586,7 @@ mod validate_rust_function_call_tests {
         let _ = checker.validate_rust_method_call(
             "rust::demo::FileDescriptorSet.decode",
             &sig,
+            &[],
             &args,
             &arg_types,
             false,
@@ -1657,6 +1661,7 @@ mod validate_rust_function_call_tests {
         let _ = checker.validate_rust_method_call(
             "rust::demo::EmailService.set_email",
             &sig,
+            &[],
             &args,
             &arg_types,
             false,
