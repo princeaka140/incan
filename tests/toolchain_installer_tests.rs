@@ -23,6 +23,10 @@ fn toolchain_prepare_assets_script() -> PathBuf {
     repo_root().join("workspaces/release/toolchain/prepare_assets.incn")
 }
 
+fn toolchain_local_smoke_script() -> PathBuf {
+    repo_root().join("workspaces/release/toolchain/local_smoke.sh")
+}
+
 fn npm_prepare_package_script() -> PathBuf {
     repo_root().join("workspaces/release/npm/prepare_package.js")
 }
@@ -613,6 +617,78 @@ fn homebrew_formula_is_rendered_from_the_toolchain_manifest() -> Result<(), Box<
     assert!(formula.contains(&format!(r#"sha256 "{checksum}""#)));
     assert!(formula.contains(r#"bin.install "bin/incan""#));
     assert!(formula.contains(r#"bin.install "bin/incan-lsp""#));
+    Ok(())
+}
+
+#[test]
+fn homebrew_smoke_preserves_existing_platform_archives() -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = PREPARE_ASSETS_LOCK.lock().map_err(|_| "prepare assets lock poisoned")?;
+    let tmp = tempfile::tempdir()?;
+    let dist = tmp.path().join("toolchain");
+    let fake_bin = tmp.path().join("fake-bin");
+    fs::create_dir_all(&fake_bin)?;
+    write_executable(
+        &fake_bin.join("ruby"),
+        "#!/usr/bin/env sh\nif [ \"$1\" = \"-c\" ]; then exit 0; fi\nexit 0\n",
+    )?;
+    let (incan, incan_lsp) = write_fixture_toolchain_commands(tmp.path())?;
+    let targets = [
+        "x86_64-unknown-linux-gnu",
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+    ];
+
+    for target in targets {
+        package_fixture_archive(&dist, target, &incan, &incan_lsp)?;
+    }
+
+    let release = fs::read_to_string(dist.join("toolchain-release.txt"))?
+        .trim()
+        .to_string();
+    let before = targets
+        .iter()
+        .map(|target| {
+            let archive = dist.join(format!("incan-{release}-{target}.tar.gz"));
+            let checksum = sha256_sidecar_path(&archive);
+            Ok((
+                target.to_string(),
+                sha256_hex(&archive)?,
+                fs::read_to_string(&checksum)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+
+    let path = format!("{}:{}", fake_bin.display(), std::env::var("PATH").unwrap_or_default());
+    let output = Command::new("bash")
+        .arg(toolchain_local_smoke_script())
+        .arg("homebrew")
+        .current_dir(repo_root())
+        .env("PATH", path)
+        .env("CARGO_NET_OFFLINE", "true")
+        .env("INCAN_NO_BANNER", "1")
+        .env("TOOLCHAIN_DIST", &dist)
+        .env("TOOLCHAIN_GENERATED_AT", "2026-06-06T00:00:00Z")
+        .env("TOOLCHAIN_HOST_TARGET", "x86_64-unknown-linux-gnu")
+        .env("TOOLCHAIN_INCAN_BIN", incan_binary())
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "homebrew smoke failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    for (target, archive_hash, checksum_contents) in before {
+        let archive = dist.join(format!("incan-{release}-{target}.tar.gz"));
+        let checksum = sha256_sidecar_path(&archive);
+        assert_eq!(sha256_hex(&archive)?, archive_hash, "archive changed for {target}");
+        assert_eq!(
+            fs::read_to_string(&checksum)?,
+            checksum_contents,
+            "checksum sidecar changed for {target}"
+        );
+    }
     Ok(())
 }
 

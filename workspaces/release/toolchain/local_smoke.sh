@@ -195,8 +195,16 @@ smoke_homebrew() {
     if [ "$target" = "$host_target" ]; then
       continue
     fi
-    cp "$archive" "${dist_dir}/incan-${release}-${target}.tar.gz"
-    cp "$checksum" "${dist_dir}/incan-${release}-${target}.tar.gz.sha256"
+    local target_archive target_checksum
+    target_archive="${dist_dir}/incan-${release}-${target}.tar.gz"
+    target_checksum="${target_archive}.sha256"
+    if [ -f "$target_archive" ] || [ -f "$target_checksum" ]; then
+      [ -f "$target_archive" ] || fail "missing target archive while checksum exists: ${target_archive}"
+      [ -f "$target_checksum" ] || fail "missing target archive checksum: ${target_checksum}"
+      continue
+    fi
+    cp "$archive" "$target_archive"
+    cp "$checksum" "$target_checksum"
   done
   INCAN_REPO_ROOT="$root" \
     INCAN_TOOLCHAIN_DIST_DIR="$dist_dir" \
