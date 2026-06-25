@@ -1106,7 +1106,8 @@ mod validate_rust_function_call_tests {
         let args = [CallArg::Positional(arg_expr)];
         let arg_types = [ResolvedType::Int];
 
-        let _ = checker.validate_rust_method_call("rust::regex::Regex.is_match", &sig, &[], &args, &arg_types, false, span);
+        let _ =
+            checker.validate_rust_method_call("rust::regex::Regex.is_match", &sig, &[], &args, &arg_types, false, span);
 
         assert!(
             checker
