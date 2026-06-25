@@ -14,8 +14,7 @@ use crate::frontend::typechecker::helpers::{
 };
 use crate::frontend::typechecker::type_info::{RustMethodTraitImportUse, RustTraitImportInfo};
 use incan_core::interop::{
-    RustCollectionFamily, RustFieldInfo, RustFunctionSig, RustItemKind, RustParam, RustTraitAssoc,
-    metadata_free_method_signature,
+    RustCollectionFamily, RustFieldInfo, RustFunctionSig, RustItemKind, metadata_free_method_signature,
 };
 use incan_core::lang::magic_methods;
 use incan_core::lang::surface::collection_helpers::{self, BuiltinCollectionHelperId};
@@ -56,6 +55,7 @@ struct RustTraitMethodCall<'a> {
     rust_path: &'a str,
     method: &'a str,
     sig: &'a RustFunctionSig,
+    type_args: &'a [Spanned<Type>],
     args: &'a [CallArg],
     arg_types: &'a [ResolvedType],
     preserves_lookup_arg_shape: bool,
@@ -150,9 +150,9 @@ impl TypeChecker {
             if Self::rust_display_has_callable_fn_bound(display.as_str()) {
                 return Some(display);
             }
-            let target_ty = self.resolved_type_from_rust_display(display.as_str());
-            if let Some(expanded) =
-                self.rust_callable_alias_target_display_for_nested_type(&target_ty, canonical_path.as_str(), seen)
+            let (target_base, _) = self.rust_path_base_and_args(display.as_str());
+            if target_base != canonical_path
+                && let Some(expanded) = self.rust_callable_alias_target_display_for_path(target_base.as_str(), seen)
             {
                 return Some(expanded);
             }
@@ -160,64 +160,6 @@ impl TypeChecker {
         }
         Some(self.rust_display_for_owner_path(path, path))
             .filter(|display| Self::rust_display_has_callable_fn_bound(display.as_str()))
-    }
-
-    /// Follow nominal callable aliases nested inside Rust wrapper displays without probing the wrapper as an item.
-    fn rust_callable_alias_target_display_for_nested_type(
-        &self,
-        ty: &ResolvedType,
-        current_path: &str,
-        seen: &mut std::collections::HashSet<String>,
-    ) -> Option<String> {
-        match ty {
-            ResolvedType::RustPath(path) => {
-                let (base, args) = self.rust_path_base_and_args(path);
-                if base != current_path
-                    && Self::rust_identity_metadata_base_should_probe(base.as_str())
-                    && let Some(expanded) = self.rust_callable_alias_target_display_for_path(base.as_str(), seen)
-                {
-                    return Some(expanded);
-                }
-                for arg in args {
-                    if let Some(expanded) =
-                        self.rust_callable_alias_target_display_for_nested_type(&arg, current_path, seen)
-                    {
-                        return Some(expanded);
-                    }
-                }
-                None
-            }
-            ResolvedType::Ref(inner) | ResolvedType::RefMut(inner) => {
-                self.rust_callable_alias_target_display_for_nested_type(inner, current_path, seen)
-            }
-            ResolvedType::Generic(_, args) | ResolvedType::Tuple(args) => {
-                for arg in args {
-                    if let Some(expanded) =
-                        self.rust_callable_alias_target_display_for_nested_type(arg, current_path, seen)
-                    {
-                        return Some(expanded);
-                    }
-                }
-                None
-            }
-            ResolvedType::FrozenList(inner) | ResolvedType::FrozenSet(inner) => {
-                self.rust_callable_alias_target_display_for_nested_type(inner, current_path, seen)
-            }
-            ResolvedType::FrozenDict(key, value) => self
-                .rust_callable_alias_target_display_for_nested_type(key, current_path, seen)
-                .or_else(|| self.rust_callable_alias_target_display_for_nested_type(value, current_path, seen)),
-            ResolvedType::Function(params, ret) => {
-                for param in params {
-                    if let Some(expanded) =
-                        self.rust_callable_alias_target_display_for_nested_type(&param.ty, current_path, seen)
-                    {
-                        return Some(expanded);
-                    }
-                }
-                self.rust_callable_alias_target_display_for_nested_type(ret, current_path, seen)
-            }
-            _ => None,
-        }
     }
 
     /// Parse a Rust callable alias target such as `Arc<dyn Fn(&[T]) -> Result<U, E> + Send + Sync>`.
@@ -1493,11 +1435,6 @@ impl TypeChecker {
         if let Some(TypeInfo::Newtype(newtype)) = self.lookup_semantic_type_info(name)
             && newtype.is_rusttype
         {
-            if type_args.is_none()
-                && let Some(path) = self.rust_path_for_newtype_info(name, newtype)
-            {
-                return Some(path);
-            }
             let underlying = if let Some(args) = type_args {
                 let subst = type_param_subst_map(&newtype.type_params, args);
                 substitute_resolved_type(&newtype.underlying, &subst)
@@ -1518,19 +1455,6 @@ impl TypeChecker {
             RustImportBindingKind::CrateRoot => None,
             RustImportBindingKind::RootedPath | RustImportBindingKind::FromImport => Some(info.path.clone()),
         }
-    }
-
-    /// Return the canonical Rust backing path for a rusttype symbol.
-    fn rust_path_for_newtype_info(&self, type_name: &str, newtype: &NewtypeInfo) -> Option<String> {
-        if !newtype.is_rusttype {
-            return None;
-        }
-        self.type_info
-            .rust
-            .rusttype_canonical_paths
-            .get(type_name)
-            .cloned()
-            .or_else(|| self.rust_path_for_rusttype_underlying(&newtype.underlying))
     }
 
     /// Resolve a declared field on a nominal user-defined type, applying generic substitutions when available.
@@ -1601,15 +1525,15 @@ impl TypeChecker {
                 return None;
             }
             TypeInfo::Newtype(nt) if nt.is_rusttype => {
-                if let Some(path) = self.rust_path_for_newtype_info(type_name, nt) {
-                    if let Some(sig) = self.rust_associated_function_signature(path.as_str(), field) {
-                        return Some(self.resolved_function_type_from_rust_sig_for_path(&sig, false, path.as_str()));
+                if let ResolvedType::RustPath(path) = &nt.underlying {
+                    if let Some(sig) = self.rust_associated_function_signature(path, field) {
+                        return Some(self.resolved_function_type_from_rust_sig_for_path(&sig, false, path));
                     }
-                    if let Some(meta) = self.rust_item_metadata_for_path(path.as_str())
+                    if let Some(meta) = self.rust_item_metadata_for_path(path)
                         && let RustItemKind::Type(info) = &meta.kind
                         && let Some(rust_field) = Self::rust_field_for_source_name(&info.fields, field)
                     {
-                        return Some(self.resolved_rust_field_type(path.as_str(), rust_field));
+                        return Some(self.resolved_rust_field_type(path, rust_field));
                     }
                 }
                 return None;
@@ -1712,6 +1636,11 @@ impl TypeChecker {
         None
     }
 
+    /// Check if a Rust type has generic parameters.
+    fn is_type_generic(&self, rust_path: &str) -> Option<bool> {
+        Some(rust_path.contains('<') || rust_path.contains("::<"))
+    }
+
     /// Resolve and validate a method call on a rust-inspect-backed path.
     ///
     /// Returns:
@@ -1721,6 +1650,7 @@ impl TypeChecker {
         &mut self,
         rust_path: &str,
         method: &str,
+        type_args: &[Spanned<Type>],
         args: &[CallArg],
         arg_types: &[ResolvedType],
         receiver_span: Span,
@@ -1732,23 +1662,13 @@ impl TypeChecker {
             self.type_info.record_regular_method_arg_shape(receiver_span, method);
         }
         let Some(metadata) = self.rust_item_metadata_for_path(rust_path) else {
-            if let Some(import) = self.rust_trait_import_for_path(rust_path, method)
-                && let Some(sig) = Self::rust_trait_method_signature(import, method)
-            {
-                let sig = Self::rust_trait_namespace_function_sig(&sig);
-                return Some(self.validate_rust_function_call(
-                    format!("rust::{rust_path}.{method}").as_str(),
-                    &sig,
-                    args,
-                    span,
-                ));
-            }
             if let Some(import_use) = self.record_unique_rust_trait_import_for_method_call(method, span)
                 && let Some(sig) = import_use.signature.as_ref()
             {
                 return Some(self.validate_rust_trait_method_call(RustTraitMethodCall {
                     rust_path,
                     method,
+                    type_args,
                     sig,
                     args,
                     arg_types,
@@ -1759,6 +1679,7 @@ impl TypeChecker {
             if let Some(ret) = self.validate_metadata_free_rust_method_call(
                 rust_path,
                 method,
+                type_args,
                 args,
                 arg_types,
                 preserves_lookup_arg_shape,
@@ -1777,6 +1698,7 @@ impl TypeChecker {
                         return Some(self.validate_rust_trait_method_call(RustTraitMethodCall {
                             rust_path,
                             method,
+                            type_args,
                             sig,
                             args,
                             arg_types,
@@ -1790,6 +1712,7 @@ impl TypeChecker {
                         return Some(self.validate_rust_trait_method_call(RustTraitMethodCall {
                             rust_path,
                             method,
+                            type_args,
                             sig,
                             args,
                             arg_types,
@@ -1800,6 +1723,7 @@ impl TypeChecker {
                     if let Some(ret) = self.validate_metadata_free_rust_method_call(
                         rust_path,
                         method,
+                        type_args,
                         args,
                         arg_types,
                         preserves_lookup_arg_shape,
@@ -1810,8 +1734,6 @@ impl TypeChecker {
                     // Stay permissive when no unambiguous imported trait or trait method signature can be selected.
                     return Some(ResolvedType::Unknown);
                 };
-<<<<<<< HEAD
-=======
                 if !type_args.is_empty() {
                     let method_has_generic = sig
                         .params
@@ -1824,7 +1746,6 @@ impl TypeChecker {
                         return Some(ResolvedType::Unknown);
                     }
                 }
->>>>>>> 0d406c74 (style: apply cargo fmt to access.rs)
                 if Self::rust_signature_has_receiver(&sig)
                     && sig.params[1..].iter().any(|param| {
                         let normalized = param.type_display.replace(' ', "");
@@ -1837,30 +1758,13 @@ impl TypeChecker {
                 let ret = self.validate_rust_method_call(
                     callable_display.as_str(),
                     &sig,
+                    type_args,
                     args,
                     arg_types,
                     preserves_lookup_arg_shape,
                     span,
                 );
                 Some(Self::substitute_rust_self_type(ret, rust_path))
-            }
-            RustItemKind::Trait(info) => {
-                for item in &info.items {
-                    let RustTraitAssoc::Function { name, signature } = item else {
-                        continue;
-                    };
-                    if name == method {
-                        let signature = Self::rust_trait_namespace_function_sig(signature);
-                        let ret = self.validate_rust_function_call(
-                            format!("rust::{rust_path}.{method}").as_str(),
-                            &signature,
-                            args,
-                            span,
-                        );
-                        return Some(Self::substitute_rust_self_type(ret, rust_path));
-                    }
-                }
-                Some(ResolvedType::Unknown)
             }
             RustItemKind::Unsupported { description } => {
                 self.errors.push(errors::rust_item_shape_not_supported(
@@ -1887,6 +1791,7 @@ impl TypeChecker {
         let ret = self.validate_rust_method_call(
             callable_display.as_str(),
             call.sig,
+            call.type_args,
             call.args,
             call.arg_types,
             call.preserves_lookup_arg_shape,
@@ -1898,39 +1803,6 @@ impl TypeChecker {
         } else {
             ret
         }
-    }
-
-    /// Build a signature for `Trait.method(receiver, ...)` namespace calls.
-    ///
-    /// The first receiver-like parameter is passed explicitly in this spelling, but it may be any Rust type that
-    /// implements the imported trait. Keep that receiver permissive while preserving arity, later parameters, async
-    /// state, and return metadata.
-    fn rust_trait_namespace_function_sig(sig: &RustFunctionSig) -> RustFunctionSig {
-        let mut sig = sig.clone();
-        if Self::rust_signature_has_receiver(&sig)
-            && let Some(first) = sig.params.first_mut()
-        {
-            *first = RustParam {
-                name: first.name.clone(),
-                type_display: "{unknown}".to_string(),
-            };
-        }
-        sig
-    }
-
-    /// Resolve an imported Rust trait by its explicit namespace path.
-    fn rust_trait_import_for_path(&self, rust_path: &str, method: &str) -> Option<&RustTraitImportInfo> {
-        let rust_suffix = Self::rust_trait_path_suffix(rust_path);
-        self.type_info.rust.trait_imports.values().find(|import| {
-            import.methods.contains(method)
-                && (import.trait_path == rust_path
-                    || import.definition_path.as_deref() == Some(rust_path)
-                    || Self::rust_trait_path_suffix(import.trait_path.as_str()) == rust_suffix
-                    || import
-                        .definition_path
-                        .as_deref()
-                        .is_some_and(|definition| Self::rust_trait_path_suffix(definition) == rust_suffix))
-        })
     }
 
     /// Return whether a Rust return type still contains a generic placeholder the Incan checker cannot bind.
@@ -1957,6 +1829,7 @@ impl TypeChecker {
         &mut self,
         rust_path: &str,
         method: &str,
+        type_args: &[Spanned<Type>],
         args: &[CallArg],
         arg_types: &[ResolvedType],
         preserves_lookup_arg_shape: bool,
@@ -1968,6 +1841,7 @@ impl TypeChecker {
         let ret = self.validate_rust_method_call(
             callable_display.as_str(),
             &sig,
+            type_args,
             args,
             arg_types,
             preserves_lookup_arg_shape,
@@ -2557,7 +2431,7 @@ impl TypeChecker {
                     expected_return_ty,
                 );
                 if nt.is_rusttype {
-                    self.maybe_record_rusttype_return_coercion(type_name, &nt, resolved_method, &ret, span);
+                    self.maybe_record_rusttype_return_coercion(&nt, resolved_method, &ret, span);
                 }
                 Some(ret)
             }
@@ -2765,17 +2639,17 @@ impl TypeChecker {
     /// is not enabled or no workspace was loaded).
     fn maybe_record_rusttype_return_coercion(
         &mut self,
-        type_name: &str,
         nt: &NewtypeInfo,
         method: &str,
         incan_ret: &ResolvedType,
         span: Span,
     ) {
-        let Some(underlying_path) = self.rust_path_for_newtype_info(type_name, nt) else {
+        // Only relevant for rusttypes backed by a known Rust path.
+        let ResolvedType::RustPath(underlying_path) = &nt.underlying else {
             return;
         };
         // Consult metadata for the actual Rust return type.
-        let Some(sig) = self.rust_method_signature(underlying_path.as_str(), method) else {
+        let Some(sig) = self.rust_method_signature(underlying_path, method) else {
             return;
         };
         self.record_rust_return_coercion_from_display(sig.return_type.as_str(), incan_ret, span);
@@ -3051,24 +2925,12 @@ impl TypeChecker {
                     // Stay permissive when no exact field surface is available.
                     return ResolvedType::Unknown;
                 }
-                RustItemKind::Trait(info) => {
-                    for item in &info.items {
-                        let RustTraitAssoc::Function { name, signature } = item else {
-                            continue;
-                        };
-                        if name == field {
-                            let signature = Self::rust_trait_namespace_function_sig(signature);
-                            return self.resolved_function_type_from_rust_sig_for_path(&signature, false, path);
-                        }
-                    }
-                    return ResolvedType::Unknown;
-                }
                 RustItemKind::Unsupported { description } => {
                     self.errors
                         .push(errors::rust_item_shape_not_supported(path, description.as_str(), span));
                     return ResolvedType::Unknown;
                 }
-                // Function, Constant: metadata coverage is incomplete, stay permissive.
+                // Function, Trait, Constant: metadata coverage is incomplete, stay permissive.
                 _ => return ResolvedType::Unknown,
             };
         }
@@ -3314,6 +3176,7 @@ impl TypeChecker {
         }
 
         let base_ty = self.check_type_receiver_expr(base);
+
         // If the receiver type is Unknown, be permissive and do not error on methods.
         if matches!(base_ty, ResolvedType::Unknown) {
             self.check_call_args(args);
@@ -3425,13 +3288,9 @@ impl TypeChecker {
             if let Some(ret) = Self::known_rust_path_method_return(path.as_str(), method) {
                 return ret;
             }
-<<<<<<< HEAD
-            let Some(ret) = self.resolve_rust_path_method_call(&path, method, args, &arg_types, base.span, span) else {
-=======
             let Some(ret) =
                 self.resolve_rust_path_method_call(&path, method, type_args, args, &arg_types, base.span, span)
             else {
->>>>>>> 0d406c74 (style: apply cargo fmt to access.rs)
                 // Metadata backend disabled/unavailable: preserve permissive RFC 005 behavior.
                 return ResolvedType::Unknown;
             };
@@ -3903,29 +3762,16 @@ impl TypeChecker {
                         expected_return_ty,
                     ) {
                         if newtype.is_rusttype {
-                            self.maybe_record_rusttype_return_coercion(
-                                type_name,
-                                &newtype,
-                                resolved_method,
-                                &ret,
-                                span,
-                            );
+                            self.maybe_record_rusttype_return_coercion(&newtype, resolved_method, &ret, span);
                         }
                         return ret;
                     }
                     if newtype.is_rusttype
-<<<<<<< HEAD
-                        && let Some(path) = self.rust_path_for_newtype_info(type_name, &newtype)
-                        && let Some(ret) = self.resolve_rust_path_method_call(
-                            path.as_str(),
-                            resolved_method,
-=======
                         && let ResolvedType::RustPath(path) = &newtype.underlying
                         && let Some(ret) = self.resolve_rust_path_method_call(
                             path,
                             resolved_method,
                             type_args,
->>>>>>> 0d406c74 (style: apply cargo fmt to access.rs)
                             args,
                             &arg_types,
                             base.span,
@@ -4022,15 +3868,16 @@ impl TypeChecker {
                             // When the method body is abstract and the underlying Rust type is known,
                             // check whether the actual Rust return type needs a coercion (e.g. &str → String).
                             if nt.is_rusttype {
-                                self.maybe_record_rusttype_return_coercion(type_name, &nt, resolved_method, &ret, span);
+                                self.maybe_record_rusttype_return_coercion(&nt, resolved_method, &ret, span);
                             }
                             return ret;
                         }
                         if nt.is_rusttype
-                            && let Some(path) = self.rust_path_for_newtype_info(type_name, &nt)
+                            && let ResolvedType::RustPath(path) = &nt.underlying
                             && let Some(ret) = self.resolve_rust_path_method_call(
-                                path.as_str(),
+                                path,
                                 resolved_method,
+                                type_args,
                                 args,
                                 &arg_types,
                                 base.span,
@@ -4158,64 +4005,5 @@ impl TypeChecker {
             Expr::MethodCall(_, method, _, _) => matches!(method.as_str(), "as_bytes" | "digest" | "finalize_reset"),
             _ => false,
         }
-    }
-}
-
-#[cfg(test)]
-mod rust_callable_alias_tests {
-    use super::TypeChecker;
-    use crate::frontend::symbols::ResolvedType;
-
-    #[cfg(feature = "rust_inspect")]
-    fn type_alias_metadata(path: &str, alias_target: &str) -> incan_core::interop::RustItemMetadata {
-        use incan_core::interop::{RustItemKind, RustTypeInfo, RustVisibility};
-
-        incan_core::interop::RustItemMetadata {
-            canonical_path: path.to_string(),
-            definition_path: Some(path.to_string()),
-            visibility: RustVisibility::Public,
-            kind: RustItemKind::Type(RustTypeInfo {
-                alias_target: Some(alias_target.to_string()),
-                metadata_completeness: Default::default(),
-                methods: Vec::new(),
-                implemented_traits: Vec::new(),
-                fields: Vec::new(),
-                variants: Vec::new(),
-            }),
-        }
-    }
-
-    #[cfg(feature = "rust_inspect")]
-    #[test]
-    fn callable_alias_expansion_skips_owner_relative_wrapper_bases() -> Result<(), Box<dyn std::error::Error>> {
-        let mut checker = TypeChecker::new();
-        let tmp = tempfile::tempdir()?;
-        std::fs::write(
-            tmp.path().join("Cargo.toml"),
-            "[package]\nname = \"incan_test_rust_callable_alias\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
-        )?;
-        let manifest_dir = tmp.path().to_path_buf();
-        checker.set_rust_inspect_manifest_dir(manifest_dir.clone());
-        checker.rust_inspect_cache.insert_test_item(
-            &manifest_dir,
-            type_alias_metadata("demo::expr::Outer", "crate::expr::Box<crate::Inner>"),
-        )?;
-        checker.rust_inspect_cache.insert_test_item(
-            &manifest_dir,
-            type_alias_metadata(
-                "demo::Inner",
-                "Arc<dyn Fn(&[demo::Value]) -> Result<demo::Value, demo::Error> + Send + Sync>",
-            ),
-        )?;
-
-        let target = checker
-            .rust_callable_alias_target_display(&ResolvedType::RustPath("demo::expr::Outer".to_string()))
-            .ok_or_else(|| std::io::Error::other("expected callable alias target through nested wrapper"))?;
-
-        assert!(
-            target.contains("dyn Fn"),
-            "expected callable target after skipping owner-relative Box wrapper, got {target}"
-        );
-        Ok(())
     }
 }
