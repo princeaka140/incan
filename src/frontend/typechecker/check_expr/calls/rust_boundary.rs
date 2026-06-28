@@ -1,7 +1,6 @@
 //! Rust boundary matching, Rust call validation, and coercion metadata recording.
 
 use super::TypeChecker;
-use crate::frontend::ast::Type;
 use crate::frontend::ast::{CallArg, Expr, ParamKind, Span, Spanned};
 use crate::frontend::diagnostics::errors;
 use crate::frontend::symbols::{CallableParam, ResolvedType, TypeInfo};
@@ -662,7 +661,6 @@ impl TypeChecker {
         &mut self,
         callable_display: &str,
         sig: &RustFunctionSig,
-        _type_args: &[Spanned<Type>],
         args: &[CallArg],
         arg_types: &[ResolvedType],
         preserves_lookup_arg_shape: bool,
@@ -1072,7 +1070,7 @@ mod validate_rust_function_call_tests {
             is_unsafe: false,
         };
 
-        let _ = checker.validate_rust_method_call("rust::regex::Regex.is_match", &sig, &[], &[], &[], false, span);
+        let _ = checker.validate_rust_method_call("rust::regex::Regex.is_match", &sig, &[], &[], false, span);
 
         assert!(
             checker.errors.iter().any(
@@ -1106,8 +1104,7 @@ mod validate_rust_function_call_tests {
         let args = [CallArg::Positional(arg_expr)];
         let arg_types = [ResolvedType::Int];
 
-        let _ =
-            checker.validate_rust_method_call("rust::regex::Regex.is_match", &sig, &[], &args, &arg_types, false, span);
+        let _ = checker.validate_rust_method_call("rust::regex::Regex.is_match", &sig, &args, &arg_types, false, span);
 
         assert!(
             checker
@@ -1145,7 +1142,6 @@ mod validate_rust_function_call_tests {
         let _ = checker.validate_rust_method_call(
             "rust::std::collections::HashMap.get",
             &sig,
-            &[],
             &args,
             &arg_types,
             true,
@@ -1190,7 +1186,6 @@ mod validate_rust_function_call_tests {
         let _ = checker.validate_rust_method_call(
             "rust::std::collections::HashMap.get",
             &sig,
-            &[],
             &args,
             &arg_types,
             true,
@@ -1543,7 +1538,6 @@ mod validate_rust_function_call_tests {
         let _ = checker.validate_rust_method_call(
             "rust::demo::FileDescriptorSet.decode",
             &sig,
-            &[],
             &args,
             &arg_types,
             false,
@@ -1587,7 +1581,6 @@ mod validate_rust_function_call_tests {
         let _ = checker.validate_rust_method_call(
             "rust::demo::FileDescriptorSet.decode",
             &sig,
-            &[],
             &args,
             &arg_types,
             false,
@@ -1662,7 +1655,6 @@ mod validate_rust_function_call_tests {
         let _ = checker.validate_rust_method_call(
             "rust::demo::EmailService.set_email",
             &sig,
-            &[],
             &args,
             &arg_types,
             false,
