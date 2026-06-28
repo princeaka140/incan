@@ -662,7 +662,7 @@ impl TypeChecker {
         &mut self,
         callable_display: &str,
         sig: &RustFunctionSig,
-        type_args: &[Spanned<Type>],
+        _type_args: &[Spanned<Type>],
         args: &[CallArg],
         arg_types: &[ResolvedType],
         preserves_lookup_arg_shape: bool,
